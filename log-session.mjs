@@ -23,6 +23,7 @@
  *   node log-session.mjs --uninstall [--purge] take it out again (--purge also deletes the copies)
  *   node log-session.mjs --dry-run            show what the current transcripts would send
  *   node log-session.mjs --history [--dry-run] send the months already on this machine, as HISTORY
+ *   node log-session.mjs --history --summary   one JSON line: sessions, hours, first and last month (sends nothing)
  *   (as a hook)                                reads the hook's JSON on stdin, logs, exits
  *   (from Codex)                               notify = ["node", "~/.worktrust/log-session.mjs", "--codex-notify"]
  *                                              in ~/.codex/config.toml: Codex calls it at every turn's end and
@@ -587,6 +588,7 @@ function historyEntries() {
         from: messages[0].at, to: last,
       });
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
+      entryFile.set(entry, file);
       entries.push(entry);
       void day;
     }
@@ -765,12 +767,15 @@ const door = coupling();
 const codexDoor = codexCoupling();
 const doorFor = (entry) => (String(entry?.id ?? "").startsWith("codex:") ? codexDoor ?? door : door);
 const entrySource = new WeakMap(); // a history entry → "codex" when its rollout was Codex's; sendHistory routes by it
+const entryFile = new WeakMap(); // a history entry → its transcript, so `--summary` can count sessions
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
 
 if (flag("history")) {
   const entries = historyEntries();
   const hours = entries.reduce((sum, entry) => sum + (entry.seconds ?? 0), 0) / 3600;
   const months = [...new Set(entries.map((entry) => entry.at.slice(0, 7)))].sort();
+  // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, hours, first and last month; nothing sent.
+  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry))).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null })); process.exit(0); }
   console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} measured hours · ${months.join(", ")}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.
@@ -778,8 +783,8 @@ if (flag("history")) {
     console.log("\ndry run — nothing sent. Add --history without --dry-run to import them.");
     process.exit(0);
   }
-  await sendHistory(door, entries, true);
-  process.exit(0);
+  // A batch the door refused is a failure the caller must see, not a quiet zero.
+  process.exit((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
 }
 
 const input = hookInput();

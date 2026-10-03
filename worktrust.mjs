@@ -8,6 +8,7 @@
  *   npx worktrust --yes                 no question (for scripts); the computer is still approved in the app
  *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
  *   npx worktrust connect               couple again, also on a computer already coupled
+ *   npx worktrust history               send this computer's earlier sessions as history (asks first)
  *   npx worktrust disconnect            show what comes out, ask, take it out again
  *   npx worktrust status                what is coupled here
  *
@@ -95,9 +96,9 @@ async function scripts() {
 }
 
 /** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
-function run(path, scriptArgs, token, collect = false) {
+function run(path, scriptArgs, token, collect = false, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE } });
+    const child = spawn(process.execPath, [path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, ...extraEnv } });
     let out = "";
     child.stdout?.on("data", (chunk) => { out += chunk; });
     child.stderr?.on("data", (chunk) => { out += chunk; });
@@ -105,13 +106,14 @@ function run(path, scriptArgs, token, collect = false) {
   });
 }
 
-async function ask(question) {
-  if (has("yes")) return true;
+/** `yes` is the answer Enter gives, and the one `--yes` gives: a question whose default is No stays No under --yes. */
+async function ask(question, yes = true) {
+  if (has("yes")) return yes;
   if (!process.stdin.isTTY) fail("not a terminal: nothing was changed. Run it in a terminal, or add --yes to agree in advance.");
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await prompt.question(`  ${question} [Y/n] `)).trim().toLowerCase();
+  const answer = (await prompt.question(`  ${question} ${yes ? "[Y/n]" : "[y/N]"} `)).trim().toLowerCase();
   prompt.close();
-  return answer === "" || answer === "y" || answer === "yes";
+  return answer === "" ? yes : answer === "y" || answer === "yes";
 }
 
 function openBrowser(url) {
@@ -398,9 +400,36 @@ async function connect() {
   say();
   const hookArgs = ["--install", ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), ...(direct ? [] : ["--via", STABLE])];
   if ((await run(paths["log-session.mjs"], hookArgs, token)).code !== 0) fail("installing the session hook failed; the output above says where.");
+  await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
   say();
   say("  Done. Quit your AI apps completely and open them again. This computer appears in WorkTrust");
   say("  under Sources → Devices once one of them has spoken.");
+}
+
+/**
+ * EARLIER WORK IS SENT ONLY ON A YES (owner, 2026-10-03). After coupling, or as `npx worktrust history`:
+ * what this computer holds is counted here and shown, and nothing leaves before the person types y.
+ * Enter, --yes and a closed terminal all mean No; `--history` says yes in advance. What goes is hours
+ * and tokens per day, filed as history (never verified hours, never text).
+ */
+async function offerHistory(paths, token, devicePem, url = MCP) {
+  const env = { WORKTRUST_MCP_URL: url, ...(devicePem ? { WORKTRUST_DEVICE_KEY: devicePem } : {}) };
+  const counted = await run(paths["log-session.mjs"], ["--history", "--dry-run", "--summary"], token, true, env);
+  let found = null;
+  try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: nothing to offer */ }
+  say();
+  if (!found?.sessions) { say("  No earlier Claude Code or Codex sessions on this computer to send."); return; }
+  say(`  This computer holds ${found.sessions} earlier Claude Code / Codex sessions · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
+  if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
+  if (!has("history") && !(await ask("Send these as history (hours and tokens per day; never text)?", false))) { say("  Not sent. Send them later with: npx worktrust history"); return; }
+  const sent = await run(paths["log-session.mjs"], ["--history"], token, true, env);
+  say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as earlier work, never as verified hours." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
+}
+
+async function history() {
+  const key = await freshKey();
+  if (!key) fail("this computer is not coupled through the key file. Run npx worktrust first.");
+  await offerHistory(await scripts(), key.token, key.device ?? null, key.url);
 }
 
 async function disconnect() {
@@ -454,6 +483,7 @@ function help() {
   say("    --name <name>        the name this computer gets (default: its host name)");
   say("    --direct             put the key in each app's settings instead of the key file");
   say("  worktrust connect      couple again, also when this computer is already coupled");
+  say("  worktrust history      send this computer's earlier sessions as history (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
 }
@@ -465,6 +495,7 @@ if (command === "default") { if (keyStore.load()) { status(); say(); say("  This
 else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();
+else if (command === "history") await history();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") status();
 else help();

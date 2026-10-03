@@ -32,8 +32,12 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
 3. **The terminal finishes by itself.** It keeps the key in its private file and gives every
    AI app here the WorkTrust door, then installs the session hook. Quit your AI apps and open them
    again.
+4. **Earlier work only if you say yes.** It counts the Claude Code and Codex sessions already on
+   this computer and asks `Send these as history? [y/N]`. Enter sends nothing. What goes is hours
+   and tokens per day, never text, and WorkTrust shows it as earlier work, never as verified hours.
 
 ```
+npx worktrust history       send this computer's earlier sessions later (asks first)
 npx worktrust status        what is coupled here
 npx worktrust disconnect    take it out again (shows the plan, asks first)
 ```

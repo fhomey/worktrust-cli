@@ -1,0 +1,42 @@
+{
+  "name": "worktrust",
+  "version": "0.4.0",
+  "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
+  "type": "module",
+  "bin": {
+    "worktrust": "worktrust.mjs"
+  },
+  "files": [
+    "worktrust.mjs",
+    "setup-mcp.mjs",
+    "log-session.mjs",
+    "count-behaviour.mjs",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "homepage": "https://worktrust.io",
+  "keywords": [
+    "worktrust",
+    "mcp",
+    "claude-code",
+    "codex",
+    "cursor",
+    "ai",
+    "provenance"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fhomey/worktrust-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fhomey/worktrust-cli/issues"
+  }
+}

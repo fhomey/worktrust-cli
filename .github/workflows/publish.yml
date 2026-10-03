@@ -1,0 +1,32 @@
+# Publishes `worktrust` to npm with provenance. Runs in the PUBLIC repository that mirrors
+# tools/worktrust-cli (npm provenance requires a public source repository). Uses npm trusted
+# publishing (OIDC): no npm token is stored anywhere; the npm package is configured to trust this
+# repository and this workflow.
+name: publish
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # A person approves every release before it reaches npm: the `npm` environment requires a
+    # reviewer (repository Settings → Environments → npm → Required reviewers). Without that approval
+    # the job waits and nothing is published.
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - run: node --check worktrust.mjs && node --check setup-mcp.mjs && node --check log-session.mjs && node --check count-behaviour.mjs
+      - run: node worktrust.mjs help
+      # The first version uses the short-lived NPM_TOKEN secret; once trusted publishing is set, the
+      # secret is deleted and npm authenticates this workflow by its OIDC identity alone.
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

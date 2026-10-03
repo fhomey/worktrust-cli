@@ -7,6 +7,15 @@ record of the work you do with AI without anyone reading that work: it receives 
 npx worktrust connect
 ```
 
+**The only official package** is `worktrust`, published by the npm account **worktrustio** with
+provenance from this repository (github.com/fhomey/worktrust-cli). Check it on npmjs.com before you run
+it; a package of another name or from another publisher is not ours. Until the first version is on npm,
+use the same script from WorkTrust's own site:
+
+```
+curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs connect
+```
+
 ## What happens
 
 1. **A plan, then a question.** The command lists every AI app it found on this computer and the

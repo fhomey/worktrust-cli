@@ -1,7 +1,11 @@
-# Publishes `worktrust` to npm with provenance. Runs in the PUBLIC repository that mirrors
-# tools/worktrust-cli (npm provenance requires a public source repository). Uses npm trusted
-# publishing (OIDC): no npm token is stored anywhere; the npm package is configured to trust this
-# repository and this workflow.
+# Publishes `worktrust` to npm with provenance, from this PUBLIC repository (npm provenance requires
+# one). npm trusted publishing (OIDC): no npm token exists anywhere; npm trusts this repository and
+# this workflow by their identity. Hardened after the security audit of 2026-10-03:
+#  - every action is pinned to a full commit, not a movable tag;
+#  - npm is pinned to one version (trusted publishing needs npm 11.5.1 or later);
+#  - the job runs in the `npm` environment: a person approves every release before it publishes, and
+#    the environment only accepts version tags (v*);
+#  - the job can read the repository and mint its OIDC identity, nothing else.
 name: publish
 on:
   release:
@@ -12,21 +16,20 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # A person approves every release before it reaches npm: the `npm` environment requires a
-    # reviewer (repository Settings → Environments → npm → Required reviewers). Without that approval
-    # the job waits and nothing is published.
     environment: npm
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@latest
+      - run: npm install -g npm@11.21.0
       - run: node --check worktrust.mjs && node --check setup-mcp.mjs && node --check log-session.mjs && node --check count-behaviour.mjs
       - run: node worktrust.mjs help
-      # The first version uses the short-lived NPM_TOKEN secret; once trusted publishing is set, the
-      # secret is deleted and npm authenticates this workflow by its OIDC identity alone.
+      - name: The package carries what this commit carries, and nothing that installs or downloads
+        run: |
+          test "$(node -p "Object.keys(require('./package.json').dependencies ?? {}).length")" = "0"
+          test "$(node -p "Object.keys(require('./package.json').scripts ?? {}).length")" = "0"
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

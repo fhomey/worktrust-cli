@@ -47,7 +47,7 @@
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -138,6 +138,7 @@ const DONE_PAGE = "<!doctype html><meta charset=utf-8><title>WorkTrust</title><b
  * and exchanges the one-time code with its PKCE verifier. Ten minutes, then it gives up.
  */
 async function pairByBrowser(host, extra) {
+  const extraBound = Boolean(extra.device_key);
   const verifier = randomBytes(32).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("base64url");
@@ -154,8 +155,10 @@ async function pairByBrowser(host, extra) {
   const pairing = await post("/api/cli/pair", { host, os: OS, flow: "loopback", code_challenge: challenge, port, state, ...extra }).catch(() => null);
   if (!pairing) { server.close(); fail(`cannot reach ${ORIGIN}.`); }
   if (pairing.status !== 200) { server.close(); fail(pairing.json.error === "rate_limited" ? "too many attempts from this network; wait a minute." : `pairing refused (${pairing.json.error ?? pairing.status}).`); }
-  const { device_code: secret, authorize_url: url, expires_in: lifetime = 600 } = pairing.json;
+  const { device_code: secret, authorize_url: url, user_code: shown, expires_in: lifetime = 600, features = [] } = pairing.json;
+  if (!features.includes("loopback")) { server.close(); fail(`${ORIGIN} is older than this command. Use the command WorkTrust shows under Sources → Add a computer.`); }
   say();
+  say(`  Your code:  ${shown}  (the WorkTrust page shows the same; approve only if it matches)`);
   say("  Approve this computer in your browser (opening it now).");
   say(`  If it does not open, open this link on THIS computer: ${url}`);
   openBrowser(url);
@@ -166,13 +169,15 @@ async function pairByBrowser(host, extra) {
   if (!code) fail("no approval arrived in time. Run `worktrust connect` again.");
   const exchange = await post("/api/cli/token", { device_code: secret, code, code_verifier: verifier }).catch(() => null);
   if (!exchange || exchange.status !== 200 || !exchange.json.token) fail(`the approval could not be exchanged (${exchange?.json?.error ?? "no answer"}). Run \`worktrust connect\` again.`);
-  say(`  ✓ Approved as "${exchange.json.label}"`);
+  say(`  ✓ Approved as "${exchange.json.label}"${exchange.json.account ? ` for the WorkTrust account ${exchange.json.account}` : ""}`);
+  if (exchange.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
+  if (extraBound && exchange.json.bound === false) say("  ! WorkTrust did not bind the key to this computer; it works like a key made by hand.");
   return exchange.json.token;
 }
 
 /** WITHOUT A BROWSER: a code you type yourself on another device. Never a link with the code in it. */
 async function pairByCode(host, extra) {
-  const pairing = await post("/api/cli/pair", { host, os: OS, ...extra }).catch(() => fail(`cannot reach ${ORIGIN}.`));
+  const pairing = await post("/api/cli/pair", { host, os: OS, flow: "device", ...extra }).catch(() => fail(`cannot reach ${ORIGIN}.`));
   if (pairing.status !== 200) fail(pairing.json.error === "rate_limited" ? "too many attempts from this network; wait a minute." : `pairing refused (${pairing.json.error ?? pairing.status}).`);
   const { user_code: code, device_code: secret, verification_uri: page, interval = 3, expires_in: lifetime = 600 } = pairing.json;
   say();
@@ -185,7 +190,11 @@ async function pairByCode(host, extra) {
     await new Promise((resolve) => setTimeout(resolve, wait));
     const answer = await post("/api/cli/token", { device_code: secret }).catch(() => null);
     if (!answer) continue;
-    if (answer.status === 200 && answer.json.token) { say(`  ✓ Approved as "${answer.json.label}"`); return answer.json.token; }
+    if (answer.status === 200 && answer.json.token) {
+      say(`  ✓ Approved as "${answer.json.label}"${answer.json.account ? ` for the WorkTrust account ${answer.json.account}` : ""}`);
+      if (answer.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
+      return answer.json.token;
+    }
     if (answer.json.error === "slow_down") wait += 2000;
     else if (answer.json.error === "expired_token") fail("the code expired. Run `worktrust connect` again.");
     else if (answer.json.error === "invalid_grant") fail("this pairing was already used. Run `worktrust connect` again.");
@@ -213,10 +222,13 @@ const ensureHome = () => { mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 })
  * settings: the apps run the bridge, which reads it.
  */
 const keyStore = {
+  /** Written whole or not at all: a temporary file renamed over the old one. */
   save(entry) {
     ensureHome();
-    writeFileSync(KEY_FILE, Buffer.from(JSON.stringify(entry)).toString("base64"), { mode: 0o600 });
-    try { chmodSync(KEY_FILE, 0o600); } catch { /* Windows */ }
+    const temporary = `${KEY_FILE}.${process.pid}.tmp`;
+    writeFileSync(temporary, Buffer.from(JSON.stringify(entry)).toString("base64"), { mode: 0o600 });
+    try { chmodSync(temporary, 0o600); } catch { /* Windows */ }
+    renameSync(temporary, KEY_FILE);
   },
   load() {
     try { return JSON.parse(Buffer.from(readFileSync(KEY_FILE, "utf8"), "base64").toString("utf8")); } catch { return null; }
@@ -246,25 +258,51 @@ async function accepted(url, token, device) {
  * RENEW WHEN DUE. The new secret is made here and stored as `pending` BEFORE it is announced, so a
  * lost answer is recoverable: next time, whichever of the two keys the door accepts is kept.
  */
+/**
+ * ONE RENEWAL AT A TIME (security audit 2026-10-03, MEDIUM-2). Claude Code starts the hook and every
+ * AI app starts a bridge at the same moment, and two renewals racing used to leave the file holding a
+ * dead key. Now a renewal holds ~/.worktrust/renew.lock (created exclusively; a lock older than a minute
+ * is a crashed run's and is taken over), re-reads the file inside it, and writes back only what it
+ * just read. Whoever does not get the lock reads the file again afterwards and uses what is there.
+ */
+const LOCK_FILE = join(HOME_DIR, "renew.lock");
+function withLock(work) {
+  ensureHome();
+  try { if (Date.now() - statSync(LOCK_FILE).mtimeMs > 60_000) rmSync(LOCK_FILE); } catch { /* no lock */ }
+  let handle;
+  try { handle = openSync(LOCK_FILE, "wx", 0o600); } catch { return null; }
+  return work().finally(() => { closeSync(handle); try { rmSync(LOCK_FILE); } catch { /* gone */ } });
+}
+
 async function freshKey() {
-  const value = keyStore.load();
-  if (!value) return null;
-  if (value.pending) {
-    const next = await accepted(value.url, value.pending, value.device);
-    if (next === true) { const promoted = { ...value, token: value.pending, renewedAt: new Date().toISOString() }; delete promoted.pending; keyStore.save(promoted); return promoted; }
-    if (next === false) { delete value.pending; keyStore.save(value); }
-  }
-  if (Date.now() - Date.parse(value.renewedAt ?? 0) < RENEW_EVERY_MS) return value;
-  const pending = `wt_${randomBytes(32).toString("base64url")}`;
-  keyStore.save({ ...value, pending });
-  try {
-    const renewUrl = `${new URL(value.url).origin}/api/cli/renew`;
-    const body = JSON.stringify({ token_hash: createHash("sha256").update(pending).digest("hex"), token_prefix: pending.slice(0, 11) });
-    const response = await fetch(renewUrl, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${value.token}`, ...proof(value.device, renewUrl, body) }, body });
-    if (response.ok) { const renewed = { ...value, token: pending, renewedAt: new Date().toISOString() }; keyStore.save(renewed); return renewed; }
-    if (response.status === 400 || response.status === 401) keyStore.save(value);
-  } catch { /* offline: the pending key is settled next time */ }
-  return value;
+  const first = keyStore.load();
+  if (!first) return null;
+  if (!first.pending && Date.now() - Date.parse(first.renewedAt ?? 0) < RENEW_EVERY_MS) return first;
+  const settled = await withLock(async () => {
+    const value = keyStore.load();
+    if (!value) return null;
+    if (value.pending) {
+      const next = await accepted(value.url, value.pending, value.device);
+      if (next === true) { const promoted = { ...value, token: value.pending, renewedAt: new Date().toISOString() }; delete promoted.pending; keyStore.save(promoted); return promoted; }
+      if (next === false) { delete value.pending; keyStore.save(value); }
+    }
+    if (Date.now() - Date.parse(value.renewedAt ?? 0) < RENEW_EVERY_MS) return value;
+    const pending = `wt_${randomBytes(32).toString("base64url")}`;
+    keyStore.save({ ...value, pending });
+    try {
+      const renewUrl = `${new URL(value.url).origin}/api/cli/renew`;
+      const body = JSON.stringify({ token_hash: createHash("sha256").update(pending).digest("hex"), token_prefix: pending.slice(0, 11) });
+      const response = await fetch(renewUrl, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${value.token}`, ...proof(value.device, renewUrl, body) }, body });
+      if (response.ok) { const renewed = { ...value, token: pending, renewedAt: new Date().toISOString() }; keyStore.save(renewed); return renewed; }
+      // Refused: drop the pending key only if the file still holds the value this renewal read.
+      if (response.status === 400 || response.status === 401) { const now = keyStore.load(); if (now?.token === value.token && now?.pending === pending) keyStore.save(value); }
+    } catch { /* offline: the pending key is settled next time */ }
+    return keyStore.load();
+  });
+  if (settled) return settled;
+  // Someone else holds the lock: wait for them (ten seconds at most), then their result is in the file.
+  for (let waited = 0; waited < 10_000 && existsSync(LOCK_FILE); waited += 200) await new Promise((resolve) => setTimeout(resolve, 200));
+  return keyStore.load();
 }
 
 /**
@@ -273,7 +311,7 @@ async function freshKey() {
  * so WorkTrust still sees Claude Code or Cursor, not the bridge.
  */
 async function bridge() {
-  const key = await freshKey();
+  let key = await freshKey();
   const answer = (id, message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message } })}\n`);
   let session = null;
   let agent = "worktrust-bridge";
@@ -287,7 +325,17 @@ async function bridge() {
       const response = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
       session = response.headers.get("mcp-session-id") ?? session;
       if (message.id === undefined) continue;
-      if (response.status === 401) { answer(message.id, "WorkTrust did not accept this computer's key: run `npx worktrust connect` again."); continue; }
+      if (response.status === 401) {
+        // Another process may just have renewed the key: read the file again and try once more.
+        const reread = keyStore.load();
+        if (reread?.token && reread.token !== key.token) {
+          key = reread;
+          const again = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
+          if (again.status !== 401) { const text = await again.text(); const parts = (again.headers.get("content-type") ?? "").includes("event-stream") ? text.split("\n").filter((part) => part.startsWith("data:")).map((part) => part.slice(5).trim()) : [text.trim()]; for (const part of parts.filter(Boolean)) process.stdout.write(`${part}\n`); continue; }
+        }
+        answer(message.id, "WorkTrust did not accept this computer's key: run `npx worktrust connect` again.");
+        continue;
+      }
       const text = await response.text();
       const parts = (response.headers.get("content-type") ?? "").includes("event-stream") ? text.split("\n").filter((part) => part.startsWith("data:")).map((part) => part.slice(5).trim()) : [text.trim()];
       for (const part of parts.filter(Boolean)) process.stdout.write(`${part}\n`);

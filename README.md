@@ -4,16 +4,16 @@ Couple a computer to [WorkTrust](https://worktrust.io) in one command. WorkTrust
 record of the work you do with AI without anyone reading that work: it receives metadata only.
 
 ```
-npx worktrust connect
+npx worktrust
 ```
 
 **The only official package** is `worktrust`, published by the npm account **worktrustio** with
 provenance from this repository (github.com/fhomey/worktrust-cli). Check it on npmjs.com before you run
-it; a package of another name or from another publisher is not ours. Until the first version is on npm,
-use the same script from WorkTrust's own site:
+it; a package of another name or from another publisher is not ours. Without npm, the same script runs
+from WorkTrust's own site:
 
 ```
-curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs connect
+curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
 ```
 
 ## What happens
@@ -54,7 +54,7 @@ which would delete every password on the computer, and many people rightly keep 
   signature. A key that leaks without the file, from a log, a proxy or a config, is worth nothing.
 - **The key renews itself every week.** A new secret is made here, only its hash is sent, signed,
   and last week's key stops working.
-- `npx worktrust connect --direct` writes a plain key into the apps' settings instead, for an app
+- `npx worktrust --direct` writes a plain key into the apps' settings instead, for an app
   that cannot run a local command. Such a key is not bound to the computer and does not renew.
 
 ## What it reads, writes and sends
@@ -93,3 +93,8 @@ Then revoke the key in WorkTrust: Sources → Devices → this computer → Revo
 Node 18 or later. macOS, Linux or Windows.
 
 Security reports: see [SECURITY.md](SECURITY.md).
+
+## Licence
+
+MIT, for this command-line tool only (see LICENSE). The WorkTrust service it couples to is not
+open source.

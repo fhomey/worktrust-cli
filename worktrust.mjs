@@ -2,10 +2,12 @@
 /**
  * WorkTrust on a computer, in one command — like `gh auth login` (2026-10-03).
  *
- *   npx worktrust connect               show the plan, ask, approve a code in the app, couple
- *   npx worktrust connect --dry-run     show the plan only; nothing is written, nothing is sent
- *   npx worktrust connect --yes         no question (for scripts); the computer is still approved in the app
- *   npx worktrust connect --device      a computer without a browser (SSH): type a code on another device
+ *   npx worktrust                       show the plan, ask, approve this computer in the app, couple;
+ *                                       on a computer already coupled: what is coupled here
+ *   npx worktrust --dry-run             show the plan only; nothing is written, nothing is sent
+ *   npx worktrust --yes                 no question (for scripts); the computer is still approved in the app
+ *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
+ *   npx worktrust connect               couple again, also on a computer already coupled
  *   npx worktrust disconnect            show what comes out, ask, take it out again
  *   npx worktrust status                what is coupled here
  *
@@ -56,7 +58,7 @@ import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const VALUED = ["--name", "--origin", "--url"];
-const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALUED.includes(args[at - 1]))) ?? "help";
+const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALUED.includes(args[at - 1]))) ?? (args.includes("--help") ? "help" : "default");
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
@@ -432,7 +434,7 @@ function status() {
     for (const project of Object.values(config.projects ?? {})) Object.assign(servers, project.mcpServers ?? {});
   } catch { /* no Claude Code here */ }
   const door = Object.entries(servers).find(([name, server]) => /worktrust/i.test(`${name} ${server?.url ?? ""} ${(server?.args ?? []).join(" ")}`));
-  say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `worktrust connect`.");
+  say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust connect`.");
   const key = keyStore.load();
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
   let hook = false;
@@ -444,17 +446,23 @@ function status() {
 function help() {
   say("WorkTrust: couple this computer to your record. Metadata only.");
   say();
-  say("  worktrust connect      show the plan, ask, approve a code in your browser, couple");
+  say("  worktrust              couple this computer: show the plan, ask, approve in your browser");
+  say("                         (already coupled: shows what is coupled here)");
   say("    --dry-run            the plan only: nothing is written, nothing is sent");
   say("    --yes                no question (the computer is still approved in the browser)");
   say("    --device             no browser here (SSH): type a code on another device");
   say("    --name <name>        the name this computer gets (default: its host name)");
   say("    --direct             put the key in each app's settings instead of the key file");
+  say("  worktrust connect      couple again, also when this computer is already coupled");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
 }
 
-if (command === "mcp") await bridge();
+// THE BARE COMMAND COUPLES (owner, 2026-10-03: "zo kort mogelijk"). `npx worktrust` on a computer
+// without a key here shows the plan and asks, exactly as `connect` does; with one it says what is
+// coupled, so running it twice never re-pairs by surprise.
+if (command === "default") { if (keyStore.load()) { status(); say(); say("  This computer is coupled. `npx worktrust connect` couples it again; `npx worktrust disconnect` takes it out."); } else await connect(); }
+else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();
 else if (command === "disconnect") await disconnect();

@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -12,12 +12,13 @@
     "log-session.mjs",
     "count-behaviour.mjs",
     "README.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "homepage": "https://worktrust.io",
   "keywords": [
     "worktrust",

@@ -4,7 +4,7 @@ Couple a computer to [WorkTrust](https://worktrust.io) in one command. WorkTrust
 record of the work you do with AI without anyone reading that work: it receives metadata only.
 
 ```
-npx worktrust
+npx worktrust@latest
 ```
 
 **The only official package** is `worktrust`, published by the npm account **worktrustio** with

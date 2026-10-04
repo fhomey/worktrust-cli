@@ -753,7 +753,7 @@ if (flag("install")) {
   // Codex has no settings.json to wire; its notify hook is one line in config.toml, added by hand so
   // this script never rewrites a TOML file it did not create. Without it, Codex rollouts are still
   // swept whenever the Claude Code hook runs.
-  if (existsSync(join(homedir(), ".codex"))) console.log(`codex:      to have Codex wake this hook too, add to ~/.codex/config.toml:\n            notify = ${via ? `["${process.execPath}", "${via}", "hook", "--codex-notify"]` : `["node", "${home}", "--codex-notify"]`}\n            (its rollouts are swept on every run either way)`);
+  if (existsSync(join(homedir(), ".codex"))) console.log(`codex:      to have Codex wake this hook too, add to ~/.codex/config.toml:\n            notify = ${via ? `["${process.env.WORKTRUST_NODE || process.execPath}", "${via}", "hook", "--codex-notify"]` : `["node", "${home}", "--codex-notify"]`}\n            (its rollouts are swept on every run either way)`);
   process.exit(0);
 }
 

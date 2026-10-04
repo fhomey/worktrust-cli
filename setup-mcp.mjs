@@ -43,6 +43,23 @@ function fromClaude() {
   } catch { return null; }
 }
 const discovered = fromClaude();
+/**
+ * EVERY DIRECT WORKTRUST ENTRY CLAUDE CODE HOLDS, BY NAME (2026-10-04). A coupling made by hand may
+ * carry any name ("worktrust-imac-home") and a key in its header; `npx worktrust` once read it as
+ * "already coupled" and left Claude Code on that unbound key. With the bridge, each such entry is
+ * taken out and the bridge put in; on removal, they all go. Only entries whose address is a
+ * WorkTrust door are touched, user scope here and local scope in the folder that holds it.
+ */
+function directClaudeEntries() {
+  try {
+    const config = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8"));
+    const door = (server) => typeof server?.url === "string" && /\/api\/mcp\b/.test(server.url) && /worktrust/i.test(new URL(server.url).host);
+    const entries = Object.entries(config.mcpServers ?? {}).filter(([, server]) => door(server)).map(([name]) => ({ name, scope: "user", dir: null }));
+    for (const [dir, project] of Object.entries(config.projects ?? {})) for (const [name, server] of Object.entries(project?.mcpServers ?? {})) if (door(server)) entries.push({ name, scope: "local", dir });
+    const bridged = Object.values(config.mcpServers ?? {}).some((server) => Array.isArray(server?.args) && server.args.includes(BRIDGE));
+    return { entries, bridged };
+  } catch { return { entries: [], bridged: false }; }
+}
 const URL_ = value("url") ?? process.env.WORKTRUST_MCP_URL ?? discovered?.url;
 const TOKEN = value("token") ?? process.env.WORKTRUST_MCP_TOKEN ?? discovered?.token;
 if (!URL_ || (!TOKEN && !BRIDGE)) { console.error("no coupling: pass --url and --token (from Sources → Claude (MCP) → Add coupling), or couple Claude Code first"); process.exit(1); }
@@ -75,7 +92,15 @@ for (const client of CLIENTS) {
     // it when the command is not. User scope, so the coupling holds in every folder on this machine.
     const claudeArgs = REMOVE ? ["mcp", "remove", "-s", "user", NAME] : BRIDGE ? ["mcp", "add", "-s", "user", NAME, "--", NODE, BRIDGE, "mcp"] : ["mcp", "add", "--transport", "http", "-s", "user", NAME, URL_, "-H", `Authorization: Bearer ${TOKEN}`];
     const shown = REMOVE ? `claude mcp remove -s user ${NAME}` : BRIDGE ? `claude mcp add -s user ${NAME} -- "${NODE}" "${BRIDGE}" mcp` : `claude mcp add --transport http -s user ${NAME} "${URL_}" -H "Authorization: Bearer <token>"`;
-    if (!REMOVE && discovered) { console.log(`  ✓ ${client.label}: already coupled`); standing += 1; continue; }
+    const direct = directClaudeEntries();
+    if (!REMOVE && (BRIDGE ? direct.bridged && direct.entries.length === 0 : discovered)) { console.log(`  ✓ ${client.label}: already coupled`); standing += 1; continue; }
+    // A direct entry under any name is replaced by the bridge, and every one goes on removal.
+    if (BRIDGE || REMOVE) for (const entry of direct.entries.filter((one) => !(REMOVE && one.name === NAME && one.scope === "user"))) {
+      const verb = `claude mcp remove -s ${entry.scope} ${entry.name}`;
+      if (!WRITE) { console.log(`  ↻ ${client.label}: the direct entry "${entry.name}" (${entry.scope}) is replaced`); continue; }
+      const out = claudeOnPath() ? spawnSync("claude", ["mcp", "remove", "-s", entry.scope, entry.name], { encoding: "utf8", shell: platform() === "win32", ...(entry.dir ? { cwd: entry.dir } : {}) }) : null;
+      console.log(out?.status === 0 ? `  – ${client.label}: removed the direct entry "${entry.name}" (${entry.scope})` : `  ! ${client.label}: could not remove "${entry.name}"; run it yourself${entry.dir ? ` in ${entry.dir}` : ""}: ${verb}`);
+    }
     if (WRITE && claudeOnPath()) {
       const run = spawnSync("claude", claudeArgs, { encoding: "utf8", shell: platform() === "win32" });
       if (run.status === 0) { console.log(`  + ${client.label}: ${REMOVE ? "removed" : "coupled"} through \`claude mcp ${REMOVE ? "remove" : "add"}\` (user scope)`); touched += 1; continue; }

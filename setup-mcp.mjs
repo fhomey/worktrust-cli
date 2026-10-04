@@ -111,7 +111,8 @@ for (const client of CLIENTS) {
     continue;
   }
   const text = existsSync(client.file) ? readFileSync(client.file, "utf8") : "";
-  const already = text.includes(URL_) || (BRIDGE !== undefined && text.includes(JSON.stringify(BRIDGE).slice(1, -1))) || (REMOVE && /worktrust\.mjs/.test(text));
+  // With the bridge, coupled means the bridge is in AND no entry with a key in it is left beside it.
+  const already = REMOVE ? text.includes(URL_) || /worktrust\.mjs/.test(text) : BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE).slice(1, -1)) && !text.includes(URL_) : text.includes(URL_);
   // THE WAY OUT, ON THE MACHINE. Uncoupling in the app ends the TOKEN; the config that names the
   // door stays behind on every client here, so the next person to read this file believes the
   // machine is coupled. `--remove` takes the entry out; the account side is a separate act and
@@ -132,7 +133,10 @@ for (const client of CLIENTS) {
     } else if (client.shape === "toml") {
       const text = readFileSync(client.file, "utf8");
       // The block and nothing after it: from its own header to the next one, or the end.
-      const stripped = text.replace(new RegExp(`\\n?\\[mcp_servers\\.${NAME}\\][^\\[]*`, "g"), "\n");
+      // Every block that names the door, under any name (a hand-made one too, 2026-10-04), or ours.
+      // A block runs to the next table header at the START of a line, never to the next "[" — the
+      // bridge's own `args = ["…", "mcp"]` holds one, and cutting there left half a block behind.
+      const stripped = text.replace(/\n?\[mcp_servers\.("?)([A-Za-z0-9_.-]+)\1\][\s\S]*?(?=\n\[|$)/g, (block, _q, name) => (name === NAME || block.includes(URL_) || /worktrust\.mjs/.test(block) ? "" : block));
       console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}`);
       if (WRITE) writeFileSync(client.file, stripped);
     }

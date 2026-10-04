@@ -9,6 +9,7 @@
  *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
  *   npx worktrust connect               couple again, also on a computer already coupled
  *   npx worktrust history               send this computer's earlier sessions as history (asks first)
+ *   npx worktrust web                   connect claude.ai or ChatGPT on the web (copies the address, opens the page)
  *   npx worktrust disconnect            show what comes out, ask, take it out again
  *   npx worktrust status                what is coupled here
  *
@@ -401,6 +402,7 @@ async function connect() {
   const hookArgs = ["--install", ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), ...(direct ? [] : ["--via", STABLE])];
   if ((await run(paths["log-session.mjs"], hookArgs, token)).code !== 0) fail("installing the session hook failed; the output above says where.");
   await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
+  await offerWeb();
   say();
   say("  Done. Quit your AI apps completely and open them again. This computer appears in WorkTrust");
   say("  under Sources → Devices once one of them has spoken.");
@@ -424,6 +426,40 @@ async function offerHistory(paths, token, devicePem, url = MCP) {
   if (!has("history") && !(await ask("Send these as history (hours and tokens per day; never text)?", false))) { say("  Not sent. Send them later with: npx worktrust history"); return; }
   const sent = await run(paths["log-session.mjs"], ["--history"], token, true, env);
   say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as earlier work, never as verified hours." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
+}
+
+/**
+ * CLAUDE AND CHATGPT ON THE WEB, FROM HERE (owner, 2026-10-04). A web connector lives in the person's
+ * own account at Anthropic or OpenAI, and neither lets a program add one: the person adds it and
+ * approves it there. What this can do is the rest: copy the door's address, open the right page,
+ * say the three steps, and wait. Enter, --yes and a closed terminal mean No.
+ */
+const WEB = [
+  { name: "Claude (claude.ai)", page: "https://claude.ai/settings/connectors", steps: ["Add custom connector", "Name: WorkTrust.io · URL: paste (it is on your clipboard) · leave the OAuth fields empty", "Connect, then approve on the WorkTrust page that opens"] },
+  { name: "ChatGPT (chatgpt.com)", page: "https://chatgpt.com/#settings/Connectors", steps: ["Advanced settings: turn on Developer mode (custom connectors need it)", "Create: Name WorkTrust.io · MCP server URL: paste (it is on your clipboard) · Authentication: OAuth", "Create, then approve on the WorkTrust page that opens"] },
+];
+function copyToClipboard(text) {
+  const [cmd, cmdArgs] = OS === "macos" ? ["pbcopy", []] : OS === "windows" ? ["clip", []] : ["xclip", ["-selection", "clipboard"]];
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(cmd, cmdArgs, { stdio: ["pipe", "ignore", "ignore"] });
+      child.on("error", () => resolve(false)).on("exit", (code) => resolve(code === 0));
+      child.stdin.end(text);
+    } catch { resolve(false); }
+  });
+}
+async function offerWeb() {
+  if (has("dry-run")) return;
+  say();
+  for (const web of WEB) {
+    if (!(await ask(`Also connect ${web.name} in your browser?`, false))) continue;
+    const copied = await copyToClipboard(MCP);
+    say(`  ${copied ? "✓ Copied" : "The address is"} ${MCP}${copied ? " to your clipboard" : ""}`);
+    say(`  Opening ${web.page}. There:`);
+    web.steps.forEach((step, i) => say(`    ${i + 1}. ${step}`));
+    openBrowser(web.page);
+    if (process.stdin.isTTY) { const prompt = createInterface({ input: process.stdin, output: process.stdout }); await prompt.question("  Press Enter when it is connected (or to skip). "); prompt.close(); }
+  }
 }
 
 async function history() {
@@ -484,6 +520,7 @@ function help() {
   say("    --direct             put the key in each app's settings instead of the key file");
   say("  worktrust connect      couple again, also when this computer is already coupled");
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
+  say("  worktrust web          connect Claude or ChatGPT on the web: copies the address, opens the page");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
 }
@@ -496,6 +533,7 @@ else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();
 else if (command === "history") await history();
+else if (command === "web") await offerWeb();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") status();
 else help();

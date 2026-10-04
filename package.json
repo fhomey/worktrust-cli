@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -11,6 +11,7 @@
     "setup-mcp.mjs",
     "log-session.mjs",
     "count-behaviour.mjs",
+    "transcript-readers.mjs",
     "README.md",
     "SECURITY.md",
     "LICENSE"
@@ -25,6 +26,7 @@
     "mcp",
     "claude-code",
     "codex",
+    "antigravity",
     "cursor",
     "ai",
     "provenance"

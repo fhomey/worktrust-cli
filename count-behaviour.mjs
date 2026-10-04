@@ -1,7 +1,7 @@
 /**
  * THE LOCAL COUNTER — rubric v0.1 (`counter@0.1.0`).
  *
- * Reads this machine's own Claude Code transcripts, its Codex rollouts (2026-09-27), its VS Code
+ * Reads this machine's own Claude Code transcripts, its Codex rollouts (2026-09-27), its Antigravity conversations (2026-10-04), its VS Code
  * Copilot chat sessions (2026-09-08) and, when given, a claude.ai export (~/.claude/projects/**​/*.jsonl — transcripts
  * ONLY, never project files), classifies each of the person's OWN messages with the
  * deterministic rules below, and reports COUNTS per month through the WorkTrust MCP door's
@@ -625,101 +625,12 @@ function* claudeExportSessions() {
     }
   }
 }
-// ── codex rollout reader (the same text in count-behaviour.mjs and log-session.mjs; test-codex-rollout holds them equal) ──
 /**
- * A CODEX ROLLOUT, READ AS A TRANSCRIPT (2026-09-27). Codex keeps one JSONL per thread under
- * ~/.codex/sessions/YYYY/MM/DD/rollout-<stamp>-<uuid>.jsonl: a session_meta line, then per turn a
- * turn_context (model, effort, cwd), response_items (messages, tool calls, their outputs) and a
- * token_usage_record per model response. On the machine this was built on five of them held 679
- * million tokens that nothing read. This turns the records into the lines Claude Code writes, so
- * ONE rubric and ONE clock read both:
- *   · a user or assistant message → a user or assistant line with a text part; the developer line
- *     and the harness's own user-role messages (<environment_context>, <recommended_plugins> and
- *     the like: a tag opening the text) are the harness, not the person, and are dropped;
- *   · a tool call → an assistant line with a tool_use part: `exec` becomes Bash with the command
- *     as input, `apply_patch` an Edit with the first path it names, `spawn_agent` an Agent; its
- *     output → a user line with a tool_result, is_error read from Codex's own "exit code N";
- *   · a token_usage_record → an assistant line carrying the usage in Claude's keys, ONCE per
- *     response_id (Codex writes a response more than once): input minus cached is new input,
- *     cached is a cache read, cache_write a cache write, output already holds the reasoning tokens.
- * The running total in event_msg/token_count is never read: it is a counter, not a record.
- * Text is read here for the rubric and the layer and travels nowhere, as with every transcript.
+ * THE READERS FOR CODEX AND ANTIGRAVITY live in transcript-readers.mjs beside this file (2026-10-04;
+ * the session hook imports the same file). Run alone, without it, the counter reads Claude Code,
+ * Copilot and an export, and says that Codex and Antigravity were not read.
  */
-const CODEX_ROLLOUT = /(^|\/)rollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f-]{36}\.jsonl$/;
-const CODEX_HARNESS_TURN = /^\s*<[a-z][a-z_]*[\s>]/i;
-const codexToolName = (name) => (name === "exec" || name === "shell" || name === "container.exec" || name === "local_shell" ? "Bash" : name === "apply_patch" ? "Edit" : name === "spawn_agent" ? "Agent" : String(name ?? "tool"));
-const codexToolInput = (name, raw) => {
-  const mapped = codexToolName(name);
-  if (mapped === "Bash") {
-    if (typeof raw === "string") { try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === "object") return { command: Array.isArray(parsed.command) ? parsed.command.join(" ") : String(parsed.command ?? parsed.cmd ?? raw) }; } catch { /* the string is the command */ } return { command: raw }; }
-    return { command: Array.isArray(raw?.command) ? raw.command.join(" ") : String(raw?.command ?? raw?.cmd ?? "") };
-  }
-  if (mapped === "Edit") { const path = /\*\*\* (?:Update|Add|Delete) File: ([^\n]+)/.exec(typeof raw === "string" ? raw : JSON.stringify(raw ?? "")); return { file_path: path ? path[1].trim() : "" }; }
-  return {};
-};
-const codexOutputText = (output) => (typeof output === "string" ? output : Array.isArray(output) ? output.map((part) => (typeof part === "string" ? part : part?.text ?? "")).join("\n") : "");
-/** The rollout's raw JSON lines → transcript-shaped line objects, in file order. */
-function* codexLines(records) {
-  let cwd = null, model = null;
-  const seenResponses = new Set();
-  for (const raw of records) {
-    if (!raw || !String(raw).trim()) continue;
-    let record; try { record = JSON.parse(raw); } catch { continue; }
-    const timestamp = typeof record?.timestamp === "string" ? record.timestamp : null;
-    const payload = record?.payload && typeof record.payload === "object" ? record.payload : {};
-    if (record.type === "session_meta") { if (typeof payload.cwd === "string") cwd = payload.cwd; continue; }
-    if (record.type === "turn_context") { if (typeof payload.cwd === "string") cwd = payload.cwd; if (typeof payload.model === "string") model = payload.model; continue; }
-    if (record.type === "token_usage_record") {
-      const id = String(payload.response_id ?? "");
-      const usage = payload.usage;
-      if (!usage || typeof usage !== "object" || (id && seenResponses.has(id))) continue;
-      if (id) seenResponses.add(id);
-      const n = (key) => (typeof usage[key] === "number" && Number.isFinite(usage[key]) ? usage[key] : 0);
-      yield { type: "assistant", timestamp, cwd, uuid: id ? `codex-usage-${id}` : undefined, message: { ...(model ? { model } : {}), content: [], usage: { input_tokens: Math.max(0, n("input_tokens") - n("cached_input_tokens")), output_tokens: n("output_tokens"), cache_read_input_tokens: n("cached_input_tokens"), cache_creation_input_tokens: n("cache_write_input_tokens") } } };
-      continue;
-    }
-    if (record.type !== "response_item") continue;
-    const kind = payload.type;
-    if (kind === "message") {
-      if (payload.role !== "user" && payload.role !== "assistant") continue;
-      const text = Array.isArray(payload.content) ? payload.content.filter((part) => typeof part?.text === "string").map((part) => part.text).join("\n") : typeof payload.content === "string" ? payload.content : "";
-      if (payload.role === "user" && CODEX_HARNESS_TURN.test(text)) continue;
-      yield { type: payload.role, timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(payload.role === "assistant" && model ? { model } : {}), content: [{ type: "text", text }] } };
-      continue;
-    }
-    if (kind === "custom_tool_call" || kind === "function_call") {
-      const input = kind === "function_call" ? (() => { try { return JSON.parse(payload.arguments ?? "{}"); } catch { return {}; } })() : payload.input;
-      yield { type: "assistant", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(model ? { model } : {}), content: [{ type: "tool_use", ...(payload.call_id ? { id: String(payload.call_id) } : {}), name: codexToolName(payload.name), input: codexToolInput(payload.name, input) }] } };
-      continue;
-    }
-    if (kind === "custom_tool_call_output" || kind === "function_call_output") {
-      const text = codexOutputText(payload.output);
-      const exit = /(?:failed with|exited with|exit code)[:\s]+(-?\d+)/i.exec(text.slice(-400));
-      yield { type: "user", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { content: [{ type: "tool_result", ...(payload.call_id ? { tool_use_id: String(payload.call_id) } : {}), content: text, is_error: exit ? exit[1] !== "0" : false }] } };
-    }
-  }
-}
-/** Every rollout under a Codex sessions root, in a stable order. */
-function* codexRolloutFiles(root) {
-  let entries = []; try { entries = readdirSync(root, { withFileTypes: true }); } catch { return; }
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    const full = join(root, entry.name);
-    if (entry.isDirectory()) yield* codexRolloutFiles(full);
-    else if (CODEX_ROLLOUT.test(entry.name)) yield full;
-  }
-}
-/** The rollout's working directory, from its first line alone: the file is not read for it. */
-function codexCwd(file) {
-  let fd; try { fd = openSync(file, "r"); } catch { return null; }
-  try {
-    const buffer = Buffer.allocUnsafe(64 * 1024);
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    const first = buffer.toString("utf8", 0, read).split("\n")[0] ?? "";
-    const meta = JSON.parse(first);
-    return meta?.type === "session_meta" && typeof meta.payload?.cwd === "string" ? meta.payload.cwd : null;
-  } catch { return null; } finally { closeSync(fd); }
-}
-// ── end codex rollout reader ──
+const { codexLines, codexRolloutFiles, codexCwd, antigravityLines, antigravityRoots, antigravityTranscripts, antigravityContext } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
 
 /**
  * Codex rollouts, as sessions. The real ~/.codex/sessions is read when nothing was overridden;
@@ -730,7 +641,7 @@ function codexCwd(file) {
  */
 let codexRolloutCount = 0;
 function* codexSessions() {
-  if (flag("no-codex")) return;
+  if (flag("no-codex") || !codexRolloutFiles) return;
   const given = value("codex-root");
   if (!given && value("transcript-root")) return;
   const root = (given ?? join(homedir(), ".codex", "sessions")).replace(/^~(?=\/|$)/, homedir());
@@ -742,6 +653,21 @@ function* codexSessions() {
     if (!countedDirs.includes(projectDir)) countedDirs.push(projectDir);
     codexRolloutCount += 1;
     yield { key: file, projectDir, basename, path: file, codex: true };
+  }
+}
+/** Antigravity conversations (2026-10-04), the same way: --antigravity-root for a test, --no-antigravity to leave them out; the folder the Stop hook named decides --exclude. */
+let antigravityCount = 0;
+function* antigravitySessions() {
+  const given = value("antigravity-root");
+  if (flag("no-antigravity") || !antigravityTranscripts || (!given && value("transcript-root"))) return;
+  for (const { conversationId, file } of antigravityTranscripts(antigravityRoots(given))) {
+    const context = antigravityContext(conversationId);
+    const basename = context.cwd ? String(context.cwd).split("/").filter(Boolean).at(-1) ?? null : null;
+    if (basename && excluded(basename)) { skippedDirs.push(`antigravity:${basename}`); continue; }
+    const projectDir = basename ? `antigravity-${basename}` : "antigravity";
+    if (!countedDirs.includes(projectDir)) countedDirs.push(projectDir);
+    antigravityCount += 1;
+    yield { key: file, projectDir, basename, path: file, antigravity: { id: conversationId, ...context } };
   }
 }
 /** Every session the rubric reads: a transcript file, or one conversation from a claude.ai export. */
@@ -782,6 +708,7 @@ function* sessions() {
   }
   // A rollout is a transcript on this machine, so --only-transcripts keeps it.
   yield* codexSessions();
+  yield* antigravitySessions();
   if (!flag("only-transcripts")) { yield* claudeExportSessions(); yield* copilotSessions(); }
 }
 
@@ -899,7 +826,7 @@ const seenLines = new Set(); // v0.10: line identities already counted (a uuid o
 // scan; complete session boundaries preserve signals that depend on earlier turns.
 const manifest = [];
 for(const session of sessions())manifest.push(sessionDigest(session));
-exportConversations = 0; copilotSessionCount = 0; codexRolloutCount = 0; skippedDirs.length = 0; countedDirs.length = 0; skippedConversations.length = 0;
+exportConversations = 0; copilotSessionCount = 0; codexRolloutCount = 0; antigravityCount = 0; skippedDirs.length = 0; countedDirs.length = 0; skippedConversations.length = 0;
 const checkpoint = flag("no-checkpoint") || LABEL_OUT ? null : checkpointStore(
   value("checkpoint") ?? join(homedir(), ".worktrust", "counter-checkpoint.json"),
   fingerprint({code:readFileSync(new URL(import.meta.url)),version:ANALYZER_VERSION,months:MONTHS_BACK,thisMonth,exclude:EXCLUDE,leaveOut:LEAVE_OUT,exports:EXPORTS}),manifest);
@@ -959,7 +886,7 @@ for (const session of sessions()) {
   let lineNo = 0;
   // Streamed either way; a Codex rollout's stream is shaped into transcript lines as it passes.
   const rawLines = session.path ? fileLines(session.path, streamHash) : session.lines;
-  for (const entry of session.codex ? codexLines(rawLines) : rawLines) {
+  for (const entry of session.codex ? codexLines(rawLines) : session.antigravity ? antigravityLines(rawLines, session.antigravity) : rawLines) {
     lineNo += 1;
     if (!entry) continue;
     currentUnit = unitOf(file, lineNo);
@@ -1269,6 +1196,8 @@ console.log(` projects counted: ${countedDirs.length}${countedDirs.length ? ` ($
 console.log(` git side: ${gitSideCommits} own commit(s) read for test-first order and decision records (paths stay here)`);
 console.log(` lines read once: ${duplicateLines} line(s) already counted from another transcript file were skipped${unreadableLines ? ` · ${unreadableLines} line(s) too long to read` : ""}`);
 if (copilotSessionCount > 0) console.log(` copilot chat sessions read: ${copilotSessionCount} (VS Code workspaceStorage, this machine)`);
+if (!codexLines) console.log(" codex and antigravity: not read (transcript-readers.mjs is not beside this file)");
+if (antigravityCount > 0) console.log(` antigravity conversations read: ${antigravityCount} (~/.gemini/antigravity*, this machine; clocks and the person's turns, no tokens recorded)`);
 if (codexRolloutCount > 0) console.log(` codex rollouts read: ${codexRolloutCount} (~/.codex/sessions, this machine; tokens once per response, the person's turns only)`);
 if (EXPORTS.length > 0) console.log(` claude.ai export: ${exportConversations} conversation(s) counted${skippedConversations.length ? ` · excluded, never read: ${skippedConversations.length}` : ""}`);
 if (skippedDirs.length > 0) console.log(` excluded, never read: ${skippedDirs.join(", ")}`);

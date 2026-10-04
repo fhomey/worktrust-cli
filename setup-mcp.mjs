@@ -8,14 +8,14 @@
  *   node setup-mcp.mjs --remove --write                                             (takes it out again)
  *
  * One machine, one token, many clients: Claude Code, Cursor, Codex, Gemini CLI, VS Code's
- * Copilot agent mode, Windsurf. Each keeps its own config file in its own shape; this finds
+ * Copilot agent mode, Windsurf, Mistral Vibe, Google Antigravity, Grok Build, Zed, Cline. Each keeps its own config file in its own shape; this finds
  * the ones that exist here and adds the same WorkTrust server to each, so a coupling made once
  * counts everywhere — and every client names itself when it first speaks, which is how Sources
  * shows each product as coupled. Without --write nothing is touched. The token is shown
  * masked; it lives only in the files it is written to. A config that already names the server
  * is left as it is.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -68,7 +68,11 @@ const stdio = { command: NODE, args: [BRIDGE ?? "", "mcp"] };
 const home = homedir();
 /** Whether Claude Code's own command is on this machine: asked of the shell, never guessed from a file. */
 const claudeOnPath = () => spawnSync(platform() === "win32" ? "where" : "which", ["claude"], { encoding: "utf8", shell: platform() === "win32" }).status === 0;
+const VIBE_DIR = process.env.VIBE_HOME?.trim() || join(home, ".vibe");
+const GROK_DIR = process.env.GROK_HOME?.trim() || join(home, ".grok");
+const ZED_DIR = platform() === "win32" ? join(process.env.APPDATA ?? home, "Zed") : join(home, ".config", "zed");
 const vscodeUser = platform() === "darwin" ? join(home, "Library", "Application Support", "Code", "User") : platform() === "win32" ? join(process.env.APPDATA ?? home, "Code", "User") : join(home, ".config", "Code", "User");
+const CLINE_DIR = join(vscodeUser, "globalStorage", "saoudrizwan.claude-dev", "settings");
 
 /** Each client: where it lives, how it says "an HTTP MCP server with a header". */
 const CLIENTS = [
@@ -77,6 +81,21 @@ const CLIENTS = [
   { key: "gemini", label: "Gemini CLI", present: () => existsSync(join(home, ".gemini")), file: join(home, ".gemini", "settings.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? stdio : { httpUrl: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
   { key: "copilot", label: "VS Code (Copilot agent mode)", present: () => existsSync(vscodeUser), file: join(vscodeUser, "mcp.json"), shape: "json", root: "servers", entry: BRIDGE ? { type: "stdio", ...stdio } : { type: "http", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
   { key: "windsurf", label: "Windsurf", present: () => existsSync(join(home, ".codeium", "windsurf")), file: join(home, ".codeium", "windsurf", "mcp_config.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? stdio : { serverUrl: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
+  // MISTRAL VIBE (2026-10-04, docs.mistral.ai/vibe/code/cli/mcp-servers): `[[mcp_servers]]` tables in
+  // ~/.vibe/config.toml (or $VIBE_HOME), each with a name, a transport and a url or a command.
+  { key: "vibe", label: "Mistral Vibe", present: () => existsSync(VIBE_DIR), file: join(VIBE_DIR, "config.toml"), shape: "vibe", block: BRIDGE ? `\n[[mcp_servers]]\nname = "${NAME}"\ntransport = "stdio"\ncommand = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(BRIDGE)}, "mcp"]\n` : `\n[[mcp_servers]]\nname = "${NAME}"\ntransport = "streamable-http"\nurl = "${URL_}"\nheaders = { "Authorization" = "Bearer ${TOKEN}" }\n` },
+  // GOOGLE ANTIGRAVITY (2026-10-04, antigravity.google/docs/mcp/): the 2.0 app, the `agy` CLI and the IDE read
+  // ~/.gemini/config/mcp_config.json; a remote server is `serverUrl` with headers (`url` and `httpUrl` are not
+  // read), a local one `command` and `args`. Present when its config folder or one of its data folders is here.
+  { key: "antigravity", label: "Antigravity", present: () => existsSync(join(home, ".gemini", "config")) || (() => { try { return readdirSync(join(home, ".gemini")).some((name) => /^antigravity/.test(name)); } catch { return false; } })(), file: join(home, ".gemini", "config", "mcp_config.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? stdio : { serverUrl: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
+  // GROK BUILD (2026-10-04, docs.x.ai/build/settings/reference): `[mcp_servers.<name>]` in ~/.grok/config.toml (or
+  // $GROK_HOME), `url` and `headers` for a remote server, `command` and `args` for a local one.
+  { key: "grok", label: "Grok Build", present: () => existsSync(GROK_DIR), file: join(GROK_DIR, "config.toml"), shape: "toml", block: BRIDGE ? `\n[mcp_servers.${NAME}]\ncommand = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(BRIDGE)}, "mcp"]\n` : `\n[mcp_servers.${NAME}]\nurl = "${URL_}"\nheaders = { Authorization = "Bearer ${TOKEN}" }\n` },
+  // ZED (zed.dev/docs/ai/mcp): `context_servers` in its settings.json, `url` and `headers` for a remote server.
+  { key: "zed", label: "Zed", present: () => existsSync(ZED_DIR), file: join(ZED_DIR, "settings.json"), shape: "json", root: "context_servers", entry: BRIDGE ? { ...stdio, env: {} } : { url: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
+  // CLINE (docs.cline.bot/mcp): `mcpServers` in the extension's cline_mcp_settings.json; `type` must be
+  // "streamableHttp" exactly, or Cline falls back to SSE and the door answers 405.
+  { key: "cline", label: "Cline (VS Code)", present: () => existsSync(CLINE_DIR), file: join(CLINE_DIR, "cline_mcp_settings.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? { ...stdio, disabled: false } : { type: "streamableHttp", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` }, disabled: false } },
   { key: "claude", label: "Claude Code", present: () => existsSync(join(home, ".claude.json")), file: join(home, ".claude.json"), shape: "claude" },
 ];
 
@@ -121,7 +140,8 @@ for (const client of CLIENTS) {
     if (!already) { console.log(`  – ${client.label}: does not name the door`); continue; }
     if (client.shape === "json") {
       let config = {};
-      try { config = JSON.parse(readFileSync(client.file, "utf8")); } catch { config = {}; }
+      // A file that does not parse (comments, a trailing comma: Zed and VS Code allow both) is never rewritten.
+      try { config = JSON.parse(readFileSync(client.file, "utf8")); } catch { console.log(`  ! ${client.label}: ${client.file} is not plain JSON; take the "${NAME}" entry out by hand`); continue; }
       const root = config[client.root] ?? {};
       for (const [key, entry] of Object.entries(root)) {
         const named = JSON.stringify(entry ?? {}).includes(URL_) || /worktrust\.mjs/.test(JSON.stringify(entry ?? {}));
@@ -130,6 +150,13 @@ for (const client of CLIENTS) {
       config[client.root] = root;
       console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}`);
       if (WRITE) writeFileSync(client.file, JSON.stringify(config, null, 2) + "\n");
+    } else if (client.shape === "vibe") {
+      // Vibe's servers are an ARRAY of tables, so a block is found by what it says, not by its header: every
+      // `[[mcp_servers]]` that names ours, the door, or the bridge goes, up to the next header at a line start.
+      const text = readFileSync(client.file, "utf8");
+      const stripped = text.replace(/\n?\[\[mcp_servers\]\][\s\S]*?(?=\n\[|$)/g, (block) => (block.includes(`name = "${NAME}"`) || block.includes(URL_) || /worktrust\.mjs/.test(block) ? "" : block));
+      console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}`);
+      if (WRITE) writeFileSync(client.file, stripped);
     } else if (client.shape === "toml") {
       const text = readFileSync(client.file, "utf8");
       // The block and nothing after it: from its own header to the next one, or the end.
@@ -146,12 +173,19 @@ for (const client of CLIENTS) {
   if (already) { console.log(`  ✓ ${client.label}: already names the door (${client.file})`); standing += 1; continue; }
   if (client.shape === "json") {
     let config = {};
-    try { config = JSON.parse(readFileSync(client.file, "utf8")); } catch { config = {}; }
+    // NEVER OVERWRITE WHAT DOES NOT PARSE (2026-10-04): Zed's and VS Code's settings allow comments and trailing
+    // commas, and reading such a file as empty would write the person's settings away. An empty or absent file is
+    // a new one; anything else that fails to parse is left alone and the entry is printed to add by hand.
+    const raw = existsSync(client.file) ? readFileSync(client.file, "utf8") : "";
+    try { config = raw.trim() ? JSON.parse(raw) : {}; } catch {
+      console.log(`  ! ${client.label}: ${client.file} is not plain JSON (comments?), so it is left as it is. Add this under "${client.root}" yourself:\n    "${NAME}": ${JSON.stringify(client.entry).replace(/Bearer [^"]+/, "Bearer <token>")}`);
+      continue;
+    }
     config[client.root] = { ...(config[client.root] ?? {}), [NAME]: client.entry };
     console.log(`  + ${client.label}: ${WRITE ? "wrote" : "would write"} ${client.file} → ${client.root}.${NAME}`);
     if (WRITE) { mkdirSync(dirname(client.file), { recursive: true }); writeFileSync(client.file, JSON.stringify(config, null, 2) + "\n"); touched += 1; }
-  } else if (client.shape === "toml") {
-    console.log(`  + ${client.label}: ${WRITE ? "appended to" : "would append to"} ${client.file} → [mcp_servers.${NAME}]`);
+  } else if (client.shape === "toml" || client.shape === "vibe") {
+    console.log(`  + ${client.label}: ${WRITE ? "appended to" : "would append to"} ${client.file} → ${client.shape === "vibe" ? `[[mcp_servers]] name = "${NAME}"` : `[mcp_servers.${NAME}]`}`);
     if (WRITE) { mkdirSync(dirname(client.file), { recursive: true }); writeFileSync(client.file, (existsSync(client.file) ? readFileSync(client.file, "utf8") : "") + client.block); touched += 1; }
   }
 }

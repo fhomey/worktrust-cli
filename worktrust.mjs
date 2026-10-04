@@ -8,18 +8,16 @@
  *   npx worktrust --yes                 no question (for scripts); the computer is still approved in the app
  *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
  *   npx worktrust connect               couple again, also on a computer already coupled
+ *   npx worktrust update                this computer onto the newest CLI, same key, no new pairing
  *   npx worktrust history               send this computer's earlier sessions as history (asks first)
- *   npx worktrust web                   connect claude.ai or ChatGPT on the web (copies the address, opens the page)
- *   npx worktrust import                import earlier Claude or ChatGPT conversations (copies the prompt, opens a chat)
- *   npx worktrust sources               connect GitHub, Vercel, Supabase or Hugging Face (opens each approval page)
- *   npx worktrust codex                 let Codex wake the session hook at every turn's end (asks first)
  *   npx worktrust disconnect            show what comes out, ask, take it out again
  *   npx worktrust status                what is coupled here
  *
  * WHAT RUNS. From the npm package, everything that runs is in the package: this file,
  * `setup-mcp.mjs` (gives every AI app here the WorkTrust door), `log-session.mjs` (the session hook)
- * and `count-behaviour.mjs` (the local counter, pinned: never replaced from the network). Nothing is
- * downloaded. Run as a single file from WorkTrust's site instead, it fetches those three from that
+ * and `count-behaviour.mjs` (the local counter, pinned: never replaced from the network), with
+ * `transcript-readers.mjs` (how Codex and Antigravity logs are read, imported by the last two). Nothing
+ * is downloaded. Run as a single file from WorkTrust's site instead, it fetches those from that
  * same site, and says so before it asks.
  *
  * HOW THE ACCOUNT IS DECIDED. By default this terminal listens on 127.0.0.1 for one answer and holds
@@ -54,7 +52,7 @@
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, hostname, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -67,12 +65,14 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.6.8";
+const CLI_VERSION = "0.6.9";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs"];
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs"];
+/** The readers are imported by name from beside the scripts, so a download keeps that name. */
+const downloaded = (name) => (name === "transcript-readers.mjs" ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
 const say = (line = "") => process.stdout.write(`${line}\n`);
@@ -95,7 +95,7 @@ async function scripts() {
   for (const name of SCRIPTS) {
     const response = await fetch(`${ORIGIN}/counter/${name}`);
     if (!response.ok) fail(`could not download ${name} (${response.status}).`);
-    paths[name] = join(HOME_DIR, `${name}.download.mjs`);
+    paths[name] = join(HOME_DIR, downloaded(name));
     writeFileSync(paths[name], await response.text(), { mode: 0o600 });
   }
   return paths;
@@ -182,8 +182,15 @@ async function pairByBrowser(host, extra) {
   say(`  ✓ Approved as "${exchange.json.label}"${exchange.json.account ? ` for the WorkTrust account ${exchange.json.account}` : ""}`);
   if (exchange.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
   if (extraBound && exchange.json.bound === false) say("  ! WorkTrust did not bind the key to this computer; it works like a key made by hand.");
-  return exchange.json.token;
+  return paired(exchange.json);
 }
+
+/**
+ * What a pairing hands back: the key, its prefix (which names it to /api/cli/release), the account
+ * masked (to show), and `account_ref`, an opaque name for the account that is the same on every
+ * pairing of it, so a computer coupled again can tell "the same account" from "another one".
+ */
+const paired = (json) => ({ token: json.token, prefix: typeof json.prefix === "string" ? json.prefix : null, account: json.account ?? null, accountRef: json.account_ref ?? null });
 
 /** WITHOUT A BROWSER: a code you type yourself on another device. Never a link with the code in it. */
 async function pairByCode(host, extra) {
@@ -203,7 +210,7 @@ async function pairByCode(host, extra) {
     if (answer.status === 200 && answer.json.token) {
       say(`  ✓ Approved as "${answer.json.label}"${answer.json.account ? ` for the WorkTrust account ${answer.json.account}` : ""}`);
       if (answer.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
-      return answer.json.token;
+      return paired(answer.json);
     }
     if (answer.json.error === "slow_down") wait += 2000;
     else if (answer.json.error === "expired_token") fail("the code expired. Run `worktrust connect` again.");
@@ -245,6 +252,38 @@ const keyStore = {
   },
   erase() { try { rmSync(KEY_FILE); } catch { /* gone */ } },
 };
+
+/**
+ * WHICH ACCOUNT THIS COMPUTER LAST FED, after `disconnect` (owner, 2026-10-04). The key file goes; this
+ * small note stays (the masked address and the opaque account name, nothing secret), so that a later
+ * `connect` by ANOTHER account is recognised as a change of hands and offers none of the first
+ * person's earlier work. A successful `connect` deletes it.
+ */
+const PREVIOUS_FILE = join(HOME_DIR, "previous.json");
+const previousNote = {
+  save(entry) { if (!entry?.accountRef && !entry?.account) return; ensureHome(); writeFileSync(PREVIOUS_FILE, JSON.stringify({ account: entry.account ?? null, accountRef: entry.accountRef ?? null, until: new Date().toISOString() }), { mode: 0o600 }); },
+  load() { try { return JSON.parse(readFileSync(PREVIOUS_FILE, "utf8")); } catch { return null; } },
+  erase() { try { rmSync(PREVIOUS_FILE); } catch { /* gone */ } },
+};
+
+/**
+ * THE OLD KEY ENDS WHEN THE COMPUTER IS COUPLED AGAIN (owner, 2026-10-04). Signed with the old key's own
+ * device key, which only this computer holds, and naming the new key by its prefix: WorkTrust ends the
+ * old one at once (an AI app still open on it is refused, reads the key file again and continues on the
+ * new key) and, when the two keys belong to different accounts, tells the old account its computer
+ * moved, without saying to whom.
+ */
+async function releasePrevious(previous, nextPrefix) {
+  if (!previous?.token || !nextPrefix) return;
+  if (!previous.device) { say("  ! The previous key was not bound to this computer: end it in WorkTrust → Sources → Devices."); return; }
+  try {
+    const url = `${new URL(previous.url).origin}/api/cli/release`;
+    const body = JSON.stringify({ next_prefix: nextPrefix });
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${previous.token}`, ...proof(previous.device, url, body) }, body });
+    if (response.ok) say("  ✓ The previous key ended; WorkTrust no longer accepts it.");
+    else say(`  ! The previous key could not be ended (${response.status}): end it in WorkTrust → Sources → Devices.`);
+  } catch { say("  ! WorkTrust could not be reached to end the previous key: end it in WorkTrust → Sources → Devices."); }
+}
 
 /** `WorkTrust-Proof` for one request: seconds, a one-time nonce, and the Ed25519 signature over method, path, both and the body's hash. */
 function proof(device, url, body) {
@@ -355,10 +394,74 @@ async function bridge() {
 
 /** THE HOOK Claude Code runs (`worktrust.mjs hook`): the key from the key file, handed to the session hook. */
 async function hook() {
+  if (has("antigravity-stop")) return antigravityStop();
   const key = await freshKey();
   if (!key) process.exit(0);
   const child = spawn(process.execPath, [join(HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } });
   child.on("exit", (code) => process.exit(code ?? 0));
+}
+
+/**
+ * ANTIGRAVITY'S STOP HOOK (`worktrust.mjs hook --antigravity-stop`, 2026-10-04). Antigravity runs it
+ * synchronously when its agent loop ends and reads its stdout as JSON whose `decision` is required: "continue"
+ * would send the agent back to work, any other value lets it stop (antigravity.google/docs/hooks/). So this
+ * prints `{"decision":"stop"}` FIRST, synchronously, changing nothing, and exits 0 at once: the sweep runs detached, as
+ * `hook --antigravity`, with the payload (ids, paths and the model name; no text) in its environment.
+ * Offline, or with no key, the sweep ends quietly; Antigravity never waits for it.
+ */
+const STOP_ANSWER = { decision: "stop" };
+async function antigravityStop() {
+  writeSync(1, `${JSON.stringify(STOP_ANSWER)}\n`);
+  const input = await new Promise((resolve) => {
+    let text = "";
+    if (process.stdin.isTTY) { resolve(text); return; }
+    const timer = setTimeout(() => resolve(text), 2000);
+    process.stdin.on("data", (chunk) => { text += chunk; });
+    process.stdin.on("end", () => { clearTimeout(timer); resolve(text); });
+    process.stdin.on("error", () => { clearTimeout(timer); resolve(text); });
+  });
+  try { spawn(process.execPath, [fileURLToPath(import.meta.url), "hook", "--antigravity"], { detached: true, stdio: "ignore", env: { ...process.env, WORKTRUST_HOOK_INPUT: input.slice(0, 65536) } }).unref(); } catch { /* the next run sweeps it */ }
+  process.exit(0);
+}
+
+/**
+ * `npx worktrust update` (owner, 2026-10-04): THIS COMPUTER ONTO THE NEWEST CLI, WITHOUT PAIRING IT
+ * AGAIN. `connect` mints a new key and so a new device row to merge; an update keeps the key and the
+ * row. It writes what `connect` writes after its pairing: the bridge copy in ~/.worktrust, every
+ * WorkTrust entry in the AI apps taken out (a hand-made one with a key in it too) and the bridge put
+ * in, and the session hook. A computer coupled by hand, without the key file, is sent to `connect`.
+ */
+async function update() {
+  const key = await freshKey();
+  if (!key) fail("this computer has no WorkTrust key file yet. Run npx worktrust@latest connect.");
+  say();
+  say(`  WorkTrust · update ${hostname().replace(/\.local$/i, "")} to ${CLI_VERSION}`);
+  say();
+  const paths = await scripts();
+  const plan = await run(paths["setup-mcp.mjs"], ["--bridge", STABLE], PLACEHOLDER, true);
+  say("  Every AI app found here gets the WorkTrust door, the local command that reads the key:");
+  const found = planLines(plan.out, true).filter((line) => !line.includes("not on this machine"));
+  for (const line of found) say(line);
+  if (found.length === 0) say("    (no AI app found here)");
+  say(`  The session hook and ${STABLE} are brought to ${CLI_VERSION}.`);
+  say("  The key stays as it is: no new pairing, the same computer in WorkTrust.");
+  say();
+  if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
+  if (!(await ask("Continue?"))) { say("  Stopped. Nothing was written."); return; }
+  ensureHome();
+  copyFileSync(fileURLToPath(import.meta.url), STABLE);
+  say(`  ✓ ${STABLE} is now ${CLI_VERSION}`);
+  // Out first, then in: an app that held a key of its own (a hand-made entry) moves onto the bridge.
+  await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token, true);
+  if ((await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
+  const hookArgs = ["--install", ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), "--via", STABLE];
+  if ((await run(paths["log-session.mjs"], hookArgs, key.token, false)).code !== 0) fail("installing the session hook failed; the output above says where.");
+  // Codex installed since, or a No said at connect: the one question, asked again (or "already set").
+  await offerCodex();
+  await offerAntigravity();
+  say();
+  say("  Done. Quit your AI apps completely and open them again; the CLI version shows in WorkTrust");
+  say("  under Sources → CLI once one of them has spoken. A key an app held by hand still works until you end it there.");
 }
 
 async function connect() {
@@ -366,6 +469,17 @@ async function connect() {
   say();
   say(`  WorkTrust · connect ${host} (${OS_NAME})`);
   say();
+  // ALREADY COUPLED: SAY TO WHOM, AND ASK (owner, 2026-10-04). Coupling again moves this computer to
+  // whichever account approves it next and ends the current key; Enter, --yes and a closed terminal
+  // mean No, `--replace` says yes in advance.
+  const previous = keyStore.load();
+  const before = previous ?? previousNote.load();
+  if (previous) {
+    say(previous.account ? `  This computer is coupled to the WorkTrust account ${previous.account}.` : "  This computer is already coupled (by an older version, which did not record the account).");
+    say("  Coupling it again sends its work to the account you approve next, and its current key ends.");
+    if (!has("replace") && !(await ask("Couple it again?", false))) { say("  Stopped. Nothing was changed: this computer stays coupled as it is."); return; }
+    say();
+  }
   if (!BUNDLED) say(`  The three scripts that do the work are downloaded from ${ORIGIN} first. From npm they come in the package.\n`);
   const paths = await scripts();
   const direct = has("direct");
@@ -391,28 +505,37 @@ async function connect() {
   const device = direct ? null : generateKeyPairSync("ed25519");
   const apps = foundApps.map((line) => /^\s*[↻+✓] ([^:]+):/.exec(line)?.[1]).filter(Boolean).slice(0, 12);
   const extra = { apps, ...(device ? { device_key: device.publicKey.export({ format: "jwk" }).x } : {}) };
-  const token = useDevice() ? await pairByCode(host, extra) : await pairByBrowser(host, extra);
+  const pairing = useDevice() ? await pairByCode(host, extra) : await pairByBrowser(host, extra);
+  const { token } = pairing;
+  // ANOTHER ACCOUNT THAN BEFORE: told by the opaque account names. Unknown counts as another, the safe side.
+  const switched = Boolean(before) && !(before.accountRef && pairing.accountRef && before.accountRef === pairing.accountRef);
 
   say();
   // Out first, then in: an app that already held a WorkTrust key moves to the new one.
   await run(paths["setup-mcp.mjs"], ["--remove", "--write"], token, true);
   if (!direct) {
-    keyStore.save({ url: MCP, token, renewedAt: new Date().toISOString(), device: device.privateKey.export({ format: "pem", type: "pkcs8" }) });
+    keyStore.save({ url: MCP, token, renewedAt: new Date().toISOString(), coupledAt: new Date().toISOString(), account: pairing.account, accountRef: pairing.accountRef, device: device.privateKey.export({ format: "pem", type: "pkcs8" }) });
+    previousNote.erase();
     ensureHome();
     copyFileSync(fileURLToPath(import.meta.url), STABLE);
     say(`  ✓ Key kept in ${KEY_PLACE}`);
   }
   if ((await run(paths["setup-mcp.mjs"], direct ? ["--write"] : ["--write", "--bridge", STABLE], token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
   say();
-  const hookArgs = ["--install", ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), ...(direct ? [] : ["--via", STABLE])];
+  // The old key ends now that the new one is in place (never before: a failed pairing must not leave the computer uncoupled).
+  if (previous?.token) await releasePrevious(previous, pairing.prefix);
+  // A NEW COUPLING SENDS NOTHING FROM BEFORE IT (log-session THE FLOORS): `--from-now` for a first coupling and a change
+  // of account; the same account coupled again keeps its watermarks. A change of account also closes the history offer.
+  const floors = !previous || switched ? ["--from-now", ...(switched ? ["--history-floor", "now"] : [])] : [];
+  const hookArgs = ["--install", ...floors, ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), ...(direct ? [] : ["--via", STABLE])];
   if ((await run(paths["log-session.mjs"], hookArgs, token, false, { WORKTRUST_CODEX_OFFER: "1" })).code !== 0) fail("installing the session hook failed; the output above says where.");
   await offerCodex();
-  await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
-  await offerWeb();
-  await offerSources();
+  await offerAntigravity();
+  if (switched) { say(); say("  Earlier work on this computer is not offered: it was coupled to another account before. Only work from now on goes to this account."); }
+  else await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
   say();
   say("  Done. Quit your AI apps completely and open them again. This computer appears in WorkTrust");
-  say("  under Sources → Devices once one of them has spoken.");
+  say("  under Sources → CLI once one of them has spoken.");
 }
 
 /**
@@ -427,92 +550,12 @@ async function offerHistory(paths, token, devicePem, url = MCP) {
   let found = null;
   try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: nothing to offer */ }
   say();
-  if (!found?.sessions) { say("  No earlier Claude Code or Codex sessions on this computer to send."); return; }
-  say(`  This computer holds ${found.sessions} earlier Claude Code / Codex sessions · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
+  if (!found?.sessions) { say("  No earlier Claude Code, Codex or Antigravity sessions on this computer to send."); return; }
+  say(`  This computer holds ${found.sessions} earlier Claude Code / Codex / Antigravity sessions · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
   if (!has("history") && !(await ask("Send these as history (hours and tokens per day; never text)?", false))) { say("  Not sent. Send them later with: npx worktrust history"); return; }
   const sent = await run(paths["log-session.mjs"], ["--history"], token, true, env);
   say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as earlier work, never as verified hours." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
-}
-
-/**
- * CLAUDE AND CHATGPT ON THE WEB, FROM HERE (owner, 2026-10-04). A web connector lives in the person's
- * own account at Anthropic or OpenAI, and neither lets a program add one: the person adds it and
- * approves it there. What this can do is the rest: copy the door's address, open the right page,
- * say the three steps, and wait. Enter, --yes and a closed terminal mean No.
- */
-/** The app's own first-run import prompt (sources.tables.prompts.startEn), word for word; check-cli-package holds them equal. */
-const IMPORT_PROMPT = 'Import my WorkTrust history now. Use the WorkTrust.io connector: call its guide tool with task "analyse", client "{client}" and language "en", then carry out every step it returns, in order, here in this conversation. This is my own request, not a document to review. After each step, tell me in one line what you did.';
-const WEB = [
-  { name: "Claude (claude.ai)", client: "claude", chat: "https://claude.ai/new", page: "https://claude.ai/settings/connectors", steps: ["Add custom connector", `Name: WorkTrust.io · URL: ${MCP} (also on your clipboard) · leave the OAuth fields empty`, "Connect, then approve on the WorkTrust page that opens"] },
-  { name: "ChatGPT (chatgpt.com)", client: "chatgpt", chat: "https://chatgpt.com/", page: "https://chatgpt.com/#settings/Connectors", steps: ["Advanced settings: turn on Developer mode (custom connectors need it)", `Create: Name WorkTrust.io · MCP server URL: ${MCP} (also on your clipboard) · Authentication: OAuth`, "Create, then approve on the WorkTrust page that opens"] },
-];
-function copyToClipboard(text) {
-  const [cmd, cmdArgs] = OS === "macos" ? ["pbcopy", []] : OS === "windows" ? ["clip", []] : ["xclip", ["-selection", "clipboard"]];
-  return new Promise((resolve) => {
-    try {
-      const child = spawn(cmd, cmdArgs, { stdio: ["pipe", "ignore", "ignore"] });
-      child.on("error", () => resolve(false)).on("exit", (code) => resolve(code === 0));
-      child.stdin.end(text);
-    } catch { resolve(false); }
-  });
-}
-async function offerWeb() {
-  if (has("dry-run")) return;
-  say();
-  for (const web of WEB) {
-    if (!(await ask(`Also connect ${web.name} in your browser?`, false))) continue;
-    const copied = await copyToClipboard(MCP);
-    say(`  ${copied ? "✓ Copied" : "The address is"} ${MCP}${copied ? " to your clipboard" : ""}`);
-    say(`  Opening ${web.page}. There:`);
-    web.steps.forEach((step, i) => say(`    ${i + 1}. ${step}`));
-    openBrowser(web.page);
-    if (process.stdin.isTTY) { const prompt = createInterface({ input: process.stdin, output: process.stdout }); await prompt.question("  Press Enter when it is connected (or to skip). "); prompt.close(); }
-    // EARLIER CONVERSATIONS, SO NOBODY GETS LOST IN THE IMPORT (owner, 2026-10-04): the app's own
-    // prompt, copied, and a new conversation opened to paste it in. Only on a typed yes.
-    if (await ask(`Also import your earlier ${web.name.split(" ")[0]} conversations? (copies one prompt to paste in a new chat)`, false)) await handOverPrompt(web);
-  }
-}
-
-/** The import prompt for one product: copied (or printed when there is no clipboard), and a new conversation opened. */
-async function handOverPrompt(web) {
-  const text = IMPORT_PROMPT.replace("{client}", web.client);
-  say(`  ${(await copyToClipboard(text)) ? "✓ The import prompt is on your clipboard" : `The prompt:\n\n${text}\n`}`);
-  say(`  Opening a new conversation in ${web.name}: paste it there and send. It asks before it sends anything, and only counts leave.`);
-  openBrowser(web.chat);
-}
-
-/**
- * THE OTHER SOURCES, FROM HERE (owner, 2026-10-04): GitHub, Vercel, Supabase and Hugging Face couple
- * in the browser, through the same doors as the buttons under Sources — each opens its own approval
- * page where the person is already signed in to WorkTrust. One [y/N] per source; Enter means No.
- */
-const CLOUD = [
-  { name: "GitHub", path: "/api/connect/github", what: "commits, checks and deployments, as counts" },
-  { name: "Vercel", path: "/api/connect/vercel", what: "deployments and their outcomes" },
-  { name: "Supabase", path: "/api/connect/supabase", what: "database projects and migrations, as counts" },
-  { name: "Hugging Face", path: "/api/connect/huggingface", what: "models, datasets and spaces you published" },
-];
-async function offerSources() {
-  if (has("dry-run")) return;
-  say();
-  for (const source of CLOUD) {
-    if (!(await ask(`Also connect ${source.name} (${source.what})?`, false))) continue;
-    const page = new URL(source.path, ORIGIN).toString();
-    say(`  Opening ${page}: approve there, signed in to WorkTrust.`);
-    openBrowser(page);
-    if (process.stdin.isTTY) { const prompt = createInterface({ input: process.stdin, output: process.stdout }); await prompt.question("  Press Enter when it is approved (or to skip). "); prompt.close(); }
-  }
-}
-
-/**
- * `npx worktrust import` (owner, 2026-10-04): the earlier conversations, later. For whoever skipped
- * the question after connecting, or connected on the web without this computer. Each product asks.
- */
-async function importConversations() {
-  say();
-  say("  Your earlier conversations come in through the WorkTrust connector in that product: connect it first if you have not (npx worktrust web).");
-  for (const web of WEB) if (await ask(`Import your earlier ${web.name} conversations now?`, false)) await handOverPrompt(web);
 }
 
 async function history() {
@@ -525,7 +568,7 @@ async function history() {
  * CODEX WAKES THE HOOK ON A YES (owner, 2026-10-04). Codex has no hook settings: it runs ONE `notify`
  * program at the end of every turn, named on a top-level line of ~/.codex/config.toml. Without it
  * Codex sessions are still swept whenever the Claude Code hook runs; with it they arrive when Codex
- * works alone. Enter, --yes and a closed terminal mean No; `--codex` says yes in advance. Only a
+ * works alone. Asked by `connect` and by `update`; Enter, --yes and a closed terminal mean No; `--codex` says yes in advance. Only a
  * WorkTrust line is ever replaced or removed: another program's notify belongs to the person, and
  * Codex takes one. The file is kept beside itself before it is changed.
  */
@@ -570,13 +613,58 @@ async function offerCodex() {
   say("  Codex can wake the session hook at the end of every turn, so Codex work arrives without Claude Code running:");
   say(`    ${found.text ? "↻" : "+"} ${CODEX_CONFIG} → ${want}`);
   if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
-  if (!has("codex") && !(await ask("Let Codex wake the session hook?", false))) { say("  Not set. Set it later with: npx worktrust codex"); return; }
+  if (!has("codex") && !(await ask("Let Codex wake the session hook?", false))) { say("  Not set. npx worktrust@latest update asks again."); return; }
   const rows = [...found.rows];
   if (found.text) rows.splice(found.at, found.end - found.at + 1, want);
   else rows.splice(found.insert, 0, ...(found.insert < rows.length && rows[found.insert] !== "" ? [want, ""] : [want]));
   if (rows.at(-1) !== "") rows.push("");
   writeCodex(rows);
   say("  ✓ Codex wakes the session hook. Restart Codex to pick it up; the earlier file is kept as config.toml.worktrust-backup.");
+}
+
+/**
+ * ANTIGRAVITY WAKES THE HOOK ON A YES (owner, 2026-10-04), the way Codex does. Antigravity (the 2.0 app,
+ * the `agy` CLI, the IDE) reads named hooks from ~/.gemini/config/hooks.json, each with its events
+ * (antigravity.google/docs/hooks/). This adds one hook named `worktrust` with a single Stop command, merged
+ * into whatever else the file holds, the file kept beside itself first. Enter, --yes and a closed
+ * terminal mean No; `--antigravity` says yes in advance. Without it, Antigravity conversations are still
+ * swept whenever another client's hook runs.
+ */
+const AGY_HOOKS = join(homedir(), ".gemini", "config", "hooks.json");
+const antigravityHere = () => ["config", ...readdirSafe(join(homedir(), ".gemini")).filter((name) => /^antigravity/.test(name))].some((name) => existsSync(join(homedir(), ".gemini", name)));
+function readdirSafe(dir) { try { return readdirSync(dir); } catch { return []; } }
+/** The hooks file as an object; null when it exists and is not JSON, which is never overwritten. */
+function agyHooks() {
+  if (!existsSync(AGY_HOOKS)) return {};
+  try { const parsed = JSON.parse(readFileSync(AGY_HOOKS, "utf8") || "{}"); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null; } catch { return null; }
+}
+function writeAgyHooks(hooks) {
+  mkdirSync(dirname(AGY_HOOKS), { recursive: true });
+  if (existsSync(AGY_HOOKS)) copyFileSync(AGY_HOOKS, `${AGY_HOOKS}.worktrust-backup`);
+  writeFileSync(AGY_HOOKS, `${JSON.stringify(hooks, null, 2)}\n`);
+}
+async function offerAntigravity() {
+  if (!antigravityHere()) { if (command === "antigravity") say("  Antigravity is not on this computer (no ~/.gemini/config or ~/.gemini/antigravity*)."); return; }
+  if (!existsSync(STABLE)) { say("  Couple this computer first: npx worktrust"); return; }
+  const want = { enabled: true, Stop: [{ type: "command", command: `"${NODE}" "${STABLE}" hook --antigravity-stop`, timeout: 10 }] };
+  const hooks = agyHooks();
+  say();
+  if (hooks === null) { say(`  ${AGY_HOOKS} is not readable JSON, so it is left as it is; Antigravity sessions are still sent whenever another hook runs.`); return; }
+  if (JSON.stringify(hooks.worktrust) === JSON.stringify(want)) { say("  ✓ Antigravity already wakes the session hook when its agent stops."); return; }
+  say("  Antigravity can wake the session hook when its agent stops, so Antigravity work arrives without Claude Code running:");
+  say(`    ${hooks.worktrust ? "↻" : "+"} ${AGY_HOOKS} → worktrust: Stop runs ${want.Stop[0].command}`);
+  if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
+  if (!has("antigravity") && !(await ask("Let Antigravity wake the session hook?", false))) { say("  Not set. npx worktrust@latest update asks again."); return; }
+  writeAgyHooks({ ...hooks, worktrust: want });
+  say(`  ✓ Antigravity wakes the session hook. Restart Antigravity to pick it up${existsSync(`${AGY_HOOKS}.worktrust-backup`) ? "; the earlier file is kept as hooks.json.worktrust-backup" : ""}.`);
+}
+/** Disconnect takes the hook named worktrust out of Antigravity's hooks, and nothing else. */
+function removeAntigravityHook() {
+  const hooks = agyHooks();
+  if (!hooks?.worktrust) return false;
+  delete hooks.worktrust;
+  writeAgyHooks(hooks);
+  return true;
 }
 
 /** Disconnect takes WorkTrust's notify line out, never another program's: the hook it named is about to be deleted. */
@@ -597,7 +685,8 @@ async function disconnect() {
   const plan = await run(paths["setup-mcp.mjs"], ["--remove"], PLACEHOLDER, true);
   say("  1. The WorkTrust door comes out of every AI app here:");
   for (const line of planLines(plan.out)) say(line);
-  say("  2. The session hook comes out of ~/.claude/settings.json (and Codex's notify line, when WorkTrust set it), the key file is deleted, and ~/.worktrust is emptied.");
+  say("  2. The session hook comes out of ~/.claude/settings.json (and Codex's notify line and Antigravity's worktrust hook, when WorkTrust set them), the key file is deleted, and ~/.worktrust is emptied");
+  say("     but for one note of which account this computer fed (masked), so a later coupling by another account starts clean.");
   say("  3. The key itself stays valid until you revoke it: WorkTrust → Sources → Devices → this computer → Revoke.");
   say();
   if (has("dry-run")) { say("  Dry run: nothing was changed."); return; }
@@ -605,9 +694,11 @@ async function disconnect() {
   await run(paths["setup-mcp.mjs"], ["--remove", "--write"], PLACEHOLDER);
   await run(paths["log-session.mjs"], ["--uninstall", "--purge"], PLACEHOLDER);
   if (removeCodexNotify()) say("  ✓ Codex no longer wakes the session hook.");
+  if (removeAntigravityHook()) say("  ✓ Antigravity no longer wakes the session hook.");
+  previousNote.save(keyStore.load());
   keyStore.erase();
   // Everything of ours on this computer goes; the folder too, when nothing else is left in it.
-  for (const name of [STABLE, ...SCRIPTS.map((script) => join(HOME_DIR, `${script}.download.mjs`)), join(HOME_DIR, "pinned")]) { try { rmSync(name); } catch { /* gone */ } }
+  for (const name of [STABLE, ...SCRIPTS.map((script) => join(HOME_DIR, downloaded(script))), join(HOME_DIR, "pinned")]) { try { rmSync(name); } catch { /* gone */ } }
   try { rmSync(HOME_DIR, { recursive: false }); } catch { /* not empty, or gone */ }
   say();
   say("  Done. Revoke the key in WorkTrust to finish.");
@@ -624,10 +715,12 @@ function status() {
   say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust connect`.");
   const key = keyStore.load();
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
+  if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
   let hook = false;
   try { hook = /log-session|worktrust\.mjs\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
   say(hook ? "  Session hook: installed" : "  Session hook: not installed");
-  if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust codex)"); }
+  if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust@latest update asks)"); }
+  if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust@latest update asks)");
   say(existsSync(join(HOME_DIR, "pinned")) ? "  Counter: from the package, pinned" : existsSync(join(HOME_DIR, "count-behaviour.mjs")) ? "  Counter: follows the site" : "  Counter: not installed");
 }
 
@@ -641,12 +734,10 @@ function help() {
   say("    --device             no browser here (SSH): type a code on another device");
   say("    --name <name>        the name this computer gets (default: its host name)");
   say("    --direct             put the key in each app's settings instead of the key file");
-  say("  worktrust connect      couple again, also when this computer is already coupled");
+  say("  worktrust connect      couple again, also when this computer is already coupled (asks first)");
+  say("    --replace            yes in advance to coupling a computer that is already coupled");
+  say("  worktrust update       this computer onto the newest CLI: same key, no new pairing");
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
-  say("  worktrust web          connect Claude or ChatGPT on the web: copies the address, opens the page");
-  say("  worktrust import       import your earlier Claude or ChatGPT conversations: copies the prompt, opens a chat");
-  say("  worktrust sources      connect GitHub, Vercel, Supabase or Hugging Face: opens each approval page");
-  say("  worktrust codex        let Codex wake the session hook at the end of every turn (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
 }
@@ -658,11 +749,17 @@ if (command === "default") { if (keyStore.load()) { status(); say(); say("  This
 else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();
+else if (command === "update") await update();
 else if (command === "history") await history();
-else if (command === "web") await offerWeb();
-else if (command === "import") await importConversations();
-else if (command === "sources") await offerSources();
+// NOT FROM THE TERMINAL (owner, 2026-10-04): an ACCOUNT is connected under Sources in the app, where the
+// page also says what is already connected: Claude and ChatGPT on the web and their earlier
+// conversations, GitHub, Vercel, Supabase and Hugging Face. The CLI does what happens on this
+// computer. The old words still answer, with the address.
+else if (command === "sources" || command === "web" || command === "import") { say(); say(`  Claude and ChatGPT on the web, their earlier conversations, GitHub, Vercel, Supabase and Hugging Face`); say(`  are connected in WorkTrust, under Sources: ${new URL("/sources", ORIGIN)}`); }
+// CODEX IS ASKED BY CONNECT AND BY UPDATE (owner, 2026-10-04): a person knows those two. `codex` stays, unlisted,
+// as plumbing like `mcp` and `hook`: the one question alone, which is also what check-cli-package runs on real configs.
 else if (command === "codex") await offerCodex();
+else if (command === "antigravity") await offerAntigravity();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") status();
 else help();

@@ -35,13 +35,21 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
 4. **Earlier work only if you say yes.** It counts the Claude Code and Codex sessions already on
    this computer and asks `Send these as history? [y/N]`. Enter sends nothing. What goes is hours
    and tokens per day, never text, and WorkTrust shows it as earlier work, never as verified hours.
+   Nothing from before the coupling is ever sent without that yes: the session hook starts at the
+   moment of coupling.
 5. **Codex only if you say yes.** With Codex on this computer it asks `Let Codex wake the session
    hook? [y/N]` and, on a yes, sets the one `notify` line in `~/.codex/config.toml` (the file is
    kept as `config.toml.worktrust-backup` first). Another program's `notify` is never replaced.
+6. **Antigravity only if you say yes.** With Google Antigravity on this computer it asks `Let
+   Antigravity wake the session hook? [y/N]` and, on a yes, adds one hook named `worktrust` with a
+   single `Stop` command to `~/.gemini/config/hooks.json` (kept as `hooks.json.worktrust-backup`
+   first). Other hooks in that file stay as they are. Antigravity records no token counts, so its
+   sessions arrive with durations and turn counts only.
 
 ```
 npx worktrust history       send this computer's earlier sessions later (asks first)
 npx worktrust codex         let Codex wake the session hook (asks first)
+npx worktrust antigravity   let Antigravity wake the session hook (asks first)
 npx worktrust status        what is coupled here
 npx worktrust disconnect    take it out again (shows the plan, asks first)
 ```
@@ -69,9 +77,9 @@ which would delete every password on the computer, and many people rightly keep 
 
 | | |
 |---|---|
-| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, VS Code, Windsurf). Afterwards, the session hook reads Claude Code's and Codex's own session files on this computer to measure durations and token counts. |
-| **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, VS Code's `mcp.json`, Windsurf's `mcp_config.json`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
-| **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. Not its network address. |
+| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's own session files on this computer to measure durations and token counts. |
+| **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
+| **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. WorkTrust also records the network address the request arrives from, as a security record kept 90 days and seen only by WorkTrust staff (to answer a theft or fraud report). |
 | **Sends, afterwards** | Durations, token counts, model names, one layer keyword (frontend, backend …), counts of how you work. |
 | **Never sends** | Prompts, answers, code, file names or paths, commit messages, branch or project names. The door has no field for them and refuses a submission that carries them. |
 
@@ -90,11 +98,27 @@ which would delete every password on the computer, and many people rightly keep 
 - **The key** never appears on a command line a process list could show: it is written to its file
   and reaches the bridge and the hook only in their environment.
 
+## A computer that is already coupled, or shared
+
+- `npx worktrust connect` on a computer that is already coupled says to which account (masked) and
+  asks `Couple it again? [y/N]`. Enter and `--yes` mean No; `--replace` says yes in advance.
+- The browser page that approves it shows, large, which WorkTrust account is signed in, with
+  **Use another account**: the computer goes to whoever approves it there.
+- Once the new key is in place, the old key is ended at WorkTrust (the request is signed by this
+  computer's own device key). An AI app still open on the old key is refused and moves to the new one.
+- When the new account is a different one, the old account sees a notice that its computer moved,
+  with the computer's name and the moment, never the other account; no earlier work on this
+  computer is offered to the new account, only work from the moment of coupling.
+- `npx worktrust status` shows the account this computer sends to.
+- Different people on one computer with their own OS user each couple their own: everything lives
+  in that user's home folder, and the accounts never meet.
+
 ## Undo
 
-`npx worktrust disconnect` removes the WorkTrust entries, the hook (and Codex's `notify` line when
-WorkTrust set it) and the key file, and empties
-`~/.worktrust`.
+`npx worktrust disconnect` removes the WorkTrust entries, the hook (and Codex's `notify` line and
+Antigravity's `worktrust` hook when WorkTrust set them) and the key file, and empties
+`~/.worktrust` but for one small note of which account it fed (masked), so that a later coupling by
+another account offers none of this computer's earlier work.
 Then revoke the key in WorkTrust: Sources → Devices → this computer → Revoke.
 
 ## Requirements

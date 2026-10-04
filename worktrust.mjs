@@ -11,6 +11,7 @@
  *   npx worktrust history               send this computer's earlier sessions as history (asks first)
  *   npx worktrust web                   connect claude.ai or ChatGPT on the web (copies the address, opens the page)
  *   npx worktrust import                import earlier Claude or ChatGPT conversations (copies the prompt, opens a chat)
+ *   npx worktrust sources               connect GitHub, Vercel, Supabase or Hugging Face (opens each approval page)
  *   npx worktrust disconnect            show what comes out, ask, take it out again
  *   npx worktrust status                what is coupled here
  *
@@ -64,6 +65,8 @@ const VALUED = ["--name", "--origin", "--url"];
 const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALUED.includes(args[at - 1]))) ?? (args.includes("--help") ? "help" : "default");
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
+/** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
+const CLI_VERSION = "0.6.7";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -325,7 +328,7 @@ async function bridge() {
     if (!line.trim()) continue;
     let message;
     try { message = JSON.parse(line); } catch { continue; }
-    if (message.method === "initialize" && message.params?.clientInfo?.name) agent = `${message.params.clientInfo.name}/${message.params.clientInfo.version ?? "0"} (worktrust-bridge)`;
+    if (message.method === "initialize" && message.params?.clientInfo?.name) agent = `${message.params.clientInfo.name}/${message.params.clientInfo.version ?? "0"} (worktrust-bridge) worktrust-cli/${CLI_VERSION}`;
     if (!key) { if (message.id !== undefined) answer(message.id, "WorkTrust is not connected on this computer: run `npx worktrust connect`."); continue; }
     try {
       const response = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
@@ -404,6 +407,7 @@ async function connect() {
   if ((await run(paths["log-session.mjs"], hookArgs, token)).code !== 0) fail("installing the session hook failed; the output above says where.");
   await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
   await offerWeb();
+  await offerSources();
   say();
   say("  Done. Quit your AI apps completely and open them again. This computer appears in WorkTrust");
   say("  under Sources → Devices once one of them has spoken.");
@@ -477,6 +481,29 @@ async function handOverPrompt(web) {
 }
 
 /**
+ * THE OTHER SOURCES, FROM HERE (owner, 2026-10-04): GitHub, Vercel, Supabase and Hugging Face couple
+ * in the browser, through the same doors as the buttons under Sources — each opens its own approval
+ * page where the person is already signed in to WorkTrust. One [y/N] per source; Enter means No.
+ */
+const CLOUD = [
+  { name: "GitHub", path: "/api/connect/github", what: "commits, checks and deployments, as counts" },
+  { name: "Vercel", path: "/api/connect/vercel", what: "deployments and their outcomes" },
+  { name: "Supabase", path: "/api/connect/supabase", what: "database projects and migrations, as counts" },
+  { name: "Hugging Face", path: "/api/connect/huggingface", what: "models, datasets and spaces you published" },
+];
+async function offerSources() {
+  if (has("dry-run")) return;
+  say();
+  for (const source of CLOUD) {
+    if (!(await ask(`Also connect ${source.name} (${source.what})?`, false))) continue;
+    const page = new URL(source.path, ORIGIN).toString();
+    say(`  Opening ${page}: approve there, signed in to WorkTrust.`);
+    openBrowser(page);
+    if (process.stdin.isTTY) { const prompt = createInterface({ input: process.stdin, output: process.stdout }); await prompt.question("  Press Enter when it is approved (or to skip). "); prompt.close(); }
+  }
+}
+
+/**
  * `npx worktrust import` (owner, 2026-10-04): the earlier conversations, later. For whoever skipped
  * the question after connecting, or connected on the web without this computer. Each product asks.
  */
@@ -546,6 +573,7 @@ function help() {
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
   say("  worktrust web          connect Claude or ChatGPT on the web: copies the address, opens the page");
   say("  worktrust import       import your earlier Claude or ChatGPT conversations: copies the prompt, opens a chat");
+  say("  worktrust sources      connect GitHub, Vercel, Supabase or Hugging Face: opens each approval page");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
 }
@@ -560,6 +588,7 @@ else if (command === "connect") await connect();
 else if (command === "history") await history();
 else if (command === "web") await offerWeb();
 else if (command === "import") await importConversations();
+else if (command === "sources") await offerSources();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") status();
 else help();

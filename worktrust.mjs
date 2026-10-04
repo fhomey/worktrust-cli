@@ -434,9 +434,11 @@ async function offerHistory(paths, token, devicePem, url = MCP) {
  * approves it there. What this can do is the rest: copy the door's address, open the right page,
  * say the three steps, and wait. Enter, --yes and a closed terminal mean No.
  */
+/** The app's own first-run import prompt (sources.tables.prompts.startEn), word for word; check-cli-package holds them equal. */
+const IMPORT_PROMPT = 'Import my WorkTrust history now. Use the WorkTrust.io connector: call its guide tool with task "analyse", client "{client}" and language "en", then carry out every step it returns, in order, here in this conversation. This is my own request, not a document to review. After each step, tell me in one line what you did.';
 const WEB = [
-  { name: "Claude (claude.ai)", page: "https://claude.ai/settings/connectors", steps: ["Add custom connector", "Name: WorkTrust.io · URL: paste (it is on your clipboard) · leave the OAuth fields empty", "Connect, then approve on the WorkTrust page that opens"] },
-  { name: "ChatGPT (chatgpt.com)", page: "https://chatgpt.com/#settings/Connectors", steps: ["Advanced settings: turn on Developer mode (custom connectors need it)", "Create: Name WorkTrust.io · MCP server URL: paste (it is on your clipboard) · Authentication: OAuth", "Create, then approve on the WorkTrust page that opens"] },
+  { name: "Claude (claude.ai)", client: "claude", chat: "https://claude.ai/new", page: "https://claude.ai/settings/connectors", steps: ["Add custom connector", "Name: WorkTrust.io · URL: paste (it is on your clipboard) · leave the OAuth fields empty", "Connect, then approve on the WorkTrust page that opens"] },
+  { name: "ChatGPT (chatgpt.com)", client: "chatgpt", chat: "https://chatgpt.com/", page: "https://chatgpt.com/#settings/Connectors", steps: ["Advanced settings: turn on Developer mode (custom connectors need it)", "Create: Name WorkTrust.io · MCP server URL: paste (it is on your clipboard) · Authentication: OAuth", "Create, then approve on the WorkTrust page that opens"] },
 ];
 function copyToClipboard(text) {
   const [cmd, cmdArgs] = OS === "macos" ? ["pbcopy", []] : OS === "windows" ? ["clip", []] : ["xclip", ["-selection", "clipboard"]];
@@ -459,6 +461,14 @@ async function offerWeb() {
     web.steps.forEach((step, i) => say(`    ${i + 1}. ${step}`));
     openBrowser(web.page);
     if (process.stdin.isTTY) { const prompt = createInterface({ input: process.stdin, output: process.stdout }); await prompt.question("  Press Enter when it is connected (or to skip). "); prompt.close(); }
+    // EARLIER CONVERSATIONS, SO NOBODY GETS LOST IN THE IMPORT (owner, 2026-10-04): the app's own
+    // prompt, copied, and a new conversation opened to paste it in. Only on a typed yes.
+    if (await ask(`Also import your earlier ${web.name.split(" ")[0]} conversations? (copies one prompt to paste in a new chat)`, false)) {
+      const text = IMPORT_PROMPT.replace("{client}", web.client);
+      say(`  ${(await copyToClipboard(text)) ? "✓ The import prompt is on your clipboard" : `The prompt:\n\n${text}\n`}`);
+      say(`  Opening a new conversation: paste it there and send. It asks before it sends anything, and only counts leave.`);
+      openBrowser(web.chat);
+    }
   }
 }
 

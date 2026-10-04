@@ -10,6 +10,7 @@
  *   npx worktrust connect               couple again, also on a computer already coupled
  *   npx worktrust history               send this computer's earlier sessions as history (asks first)
  *   npx worktrust web                   connect claude.ai or ChatGPT on the web (copies the address, opens the page)
+ *   npx worktrust import                import earlier Claude or ChatGPT conversations (copies the prompt, opens a chat)
  *   npx worktrust disconnect            show what comes out, ask, take it out again
  *   npx worktrust status                what is coupled here
  *
@@ -437,8 +438,8 @@ async function offerHistory(paths, token, devicePem, url = MCP) {
 /** The app's own first-run import prompt (sources.tables.prompts.startEn), word for word; check-cli-package holds them equal. */
 const IMPORT_PROMPT = 'Import my WorkTrust history now. Use the WorkTrust.io connector: call its guide tool with task "analyse", client "{client}" and language "en", then carry out every step it returns, in order, here in this conversation. This is my own request, not a document to review. After each step, tell me in one line what you did.';
 const WEB = [
-  { name: "Claude (claude.ai)", client: "claude", chat: "https://claude.ai/new", page: "https://claude.ai/settings/connectors", steps: ["Add custom connector", "Name: WorkTrust.io · URL: paste (it is on your clipboard) · leave the OAuth fields empty", "Connect, then approve on the WorkTrust page that opens"] },
-  { name: "ChatGPT (chatgpt.com)", client: "chatgpt", chat: "https://chatgpt.com/", page: "https://chatgpt.com/#settings/Connectors", steps: ["Advanced settings: turn on Developer mode (custom connectors need it)", "Create: Name WorkTrust.io · MCP server URL: paste (it is on your clipboard) · Authentication: OAuth", "Create, then approve on the WorkTrust page that opens"] },
+  { name: "Claude (claude.ai)", client: "claude", chat: "https://claude.ai/new", page: "https://claude.ai/settings/connectors", steps: ["Add custom connector", `Name: WorkTrust.io · URL: ${MCP} (also on your clipboard) · leave the OAuth fields empty`, "Connect, then approve on the WorkTrust page that opens"] },
+  { name: "ChatGPT (chatgpt.com)", client: "chatgpt", chat: "https://chatgpt.com/", page: "https://chatgpt.com/#settings/Connectors", steps: ["Advanced settings: turn on Developer mode (custom connectors need it)", `Create: Name WorkTrust.io · MCP server URL: ${MCP} (also on your clipboard) · Authentication: OAuth`, "Create, then approve on the WorkTrust page that opens"] },
 ];
 function copyToClipboard(text) {
   const [cmd, cmdArgs] = OS === "macos" ? ["pbcopy", []] : OS === "windows" ? ["clip", []] : ["xclip", ["-selection", "clipboard"]];
@@ -463,13 +464,26 @@ async function offerWeb() {
     if (process.stdin.isTTY) { const prompt = createInterface({ input: process.stdin, output: process.stdout }); await prompt.question("  Press Enter when it is connected (or to skip). "); prompt.close(); }
     // EARLIER CONVERSATIONS, SO NOBODY GETS LOST IN THE IMPORT (owner, 2026-10-04): the app's own
     // prompt, copied, and a new conversation opened to paste it in. Only on a typed yes.
-    if (await ask(`Also import your earlier ${web.name.split(" ")[0]} conversations? (copies one prompt to paste in a new chat)`, false)) {
-      const text = IMPORT_PROMPT.replace("{client}", web.client);
-      say(`  ${(await copyToClipboard(text)) ? "✓ The import prompt is on your clipboard" : `The prompt:\n\n${text}\n`}`);
-      say(`  Opening a new conversation: paste it there and send. It asks before it sends anything, and only counts leave.`);
-      openBrowser(web.chat);
-    }
+    if (await ask(`Also import your earlier ${web.name.split(" ")[0]} conversations? (copies one prompt to paste in a new chat)`, false)) await handOverPrompt(web);
   }
+}
+
+/** The import prompt for one product: copied (or printed when there is no clipboard), and a new conversation opened. */
+async function handOverPrompt(web) {
+  const text = IMPORT_PROMPT.replace("{client}", web.client);
+  say(`  ${(await copyToClipboard(text)) ? "✓ The import prompt is on your clipboard" : `The prompt:\n\n${text}\n`}`);
+  say(`  Opening a new conversation in ${web.name}: paste it there and send. It asks before it sends anything, and only counts leave.`);
+  openBrowser(web.chat);
+}
+
+/**
+ * `npx worktrust import` (owner, 2026-10-04): the earlier conversations, later. For whoever skipped
+ * the question after connecting, or connected on the web without this computer. Each product asks.
+ */
+async function importConversations() {
+  say();
+  say("  Your earlier conversations come in through the WorkTrust connector in that product: connect it first if you have not (npx worktrust web).");
+  for (const web of WEB) if (await ask(`Import your earlier ${web.name} conversations now?`, false)) await handOverPrompt(web);
 }
 
 async function history() {
@@ -531,6 +545,7 @@ function help() {
   say("  worktrust connect      couple again, also when this computer is already coupled");
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
   say("  worktrust web          connect Claude or ChatGPT on the web: copies the address, opens the page");
+  say("  worktrust import       import your earlier Claude or ChatGPT conversations: copies the prompt, opens a chat");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
 }
@@ -544,6 +559,7 @@ else if (command === "hook") await hook();
 else if (command === "connect") await connect();
 else if (command === "history") await history();
 else if (command === "web") await offerWeb();
+else if (command === "import") await importConversations();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") status();
 else help();

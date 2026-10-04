@@ -12,6 +12,7 @@
  *   npx worktrust web                   connect claude.ai or ChatGPT on the web (copies the address, opens the page)
  *   npx worktrust import                import earlier Claude or ChatGPT conversations (copies the prompt, opens a chat)
  *   npx worktrust sources               connect GitHub, Vercel, Supabase or Hugging Face (opens each approval page)
+ *   npx worktrust codex                 let Codex wake the session hook at every turn's end (asks first)
  *   npx worktrust disconnect            show what comes out, ask, take it out again
  *   npx worktrust status                what is coupled here
  *
@@ -66,7 +67,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.6.7";
+const CLI_VERSION = "0.6.8";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -404,7 +405,8 @@ async function connect() {
   if ((await run(paths["setup-mcp.mjs"], direct ? ["--write"] : ["--write", "--bridge", STABLE], token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
   say();
   const hookArgs = ["--install", ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), ...(direct ? [] : ["--via", STABLE])];
-  if ((await run(paths["log-session.mjs"], hookArgs, token)).code !== 0) fail("installing the session hook failed; the output above says where.");
+  if ((await run(paths["log-session.mjs"], hookArgs, token, false, { WORKTRUST_CODEX_OFFER: "1" })).code !== 0) fail("installing the session hook failed; the output above says where.");
+  await offerCodex();
   await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
   await offerWeb();
   await offerSources();
@@ -519,6 +521,74 @@ async function history() {
   await offerHistory(await scripts(), key.token, key.device ?? null, key.url);
 }
 
+/**
+ * CODEX WAKES THE HOOK ON A YES (owner, 2026-10-04). Codex has no hook settings: it runs ONE `notify`
+ * program at the end of every turn, named on a top-level line of ~/.codex/config.toml. Without it
+ * Codex sessions are still swept whenever the Claude Code hook runs; with it they arrive when Codex
+ * works alone. Enter, --yes and a closed terminal mean No; `--codex` says yes in advance. Only a
+ * WorkTrust line is ever replaced or removed: another program's notify belongs to the person, and
+ * Codex takes one. The file is kept beside itself before it is changed.
+ */
+const CODEX_CONFIG = join(homedir(), ".codex", "config.toml");
+const isOurNotify = (text) => /--codex-notify/.test(text) && /worktrust|log-session\.mjs/i.test(text);
+
+/** The top-level `notify = [...]` of a Codex config (it may span lines), or where one would go: before the first table. */
+function codexNotify() {
+  let toml = "";
+  try { toml = readFileSync(CODEX_CONFIG, "utf8"); } catch { /* none yet */ }
+  const rows = toml === "" ? [] : toml.split("\n");
+  for (let at = 0; at < rows.length; at += 1) {
+    if (/^\s*\[/.test(rows[at])) return { rows, at: -1, end: -1, insert: at };
+    if (/^\s*notify\s*=/.test(rows[at])) {
+      let end = at;
+      while (!rows[end].includes("]") && end < rows.length - 1) end += 1;
+      return { rows, at, end, text: rows.slice(at, end + 1).join("\n") };
+    }
+  }
+  return { rows, at: -1, end: -1, insert: rows.at(-1) === "" ? rows.length - 1 : rows.length };
+}
+
+function writeCodex(rows) {
+  if (existsSync(CODEX_CONFIG)) copyFileSync(CODEX_CONFIG, `${CODEX_CONFIG}.worktrust-backup`);
+  writeFileSync(CODEX_CONFIG, rows.join("\n"));
+}
+
+async function offerCodex() {
+  if (!existsSync(join(homedir(), ".codex"))) { if (command === "codex") say("  Codex is not on this computer (no ~/.codex)."); return; }
+  const viaBridge = existsSync(STABLE);
+  const hookFile = viaBridge ? STABLE : join(HOME_DIR, "log-session.mjs");
+  if (!existsSync(hookFile)) { say("  Couple this computer first: npx worktrust"); return; }
+  const want = `notify = [${(viaBridge ? [NODE, STABLE, "hook", "--codex-notify"] : [NODE, hookFile, "--codex-notify"]).map((part) => JSON.stringify(part)).join(", ")}]`;
+  const found = codexNotify();
+  say();
+  if (found.text === want) { say("  ✓ Codex already wakes the session hook at the end of every turn."); return; }
+  if (found.text && !isOurNotify(found.text)) {
+    say("  Codex already runs another program at the end of each turn (notify in ~/.codex/config.toml).");
+    say("  Codex takes one, so it stays as it is; Codex sessions are still sent whenever the Claude Code hook runs.");
+    return;
+  }
+  say("  Codex can wake the session hook at the end of every turn, so Codex work arrives without Claude Code running:");
+  say(`    ${found.text ? "↻" : "+"} ${CODEX_CONFIG} → ${want}`);
+  if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
+  if (!has("codex") && !(await ask("Let Codex wake the session hook?", false))) { say("  Not set. Set it later with: npx worktrust codex"); return; }
+  const rows = [...found.rows];
+  if (found.text) rows.splice(found.at, found.end - found.at + 1, want);
+  else rows.splice(found.insert, 0, ...(found.insert < rows.length && rows[found.insert] !== "" ? [want, ""] : [want]));
+  if (rows.at(-1) !== "") rows.push("");
+  writeCodex(rows);
+  say("  ✓ Codex wakes the session hook. Restart Codex to pick it up; the earlier file is kept as config.toml.worktrust-backup.");
+}
+
+/** Disconnect takes WorkTrust's notify line out, never another program's: the hook it named is about to be deleted. */
+function removeCodexNotify() {
+  const found = codexNotify();
+  if (!found.text || !isOurNotify(found.text)) return false;
+  const rows = [...found.rows];
+  rows.splice(found.at, found.end - found.at + 1);
+  writeCodex(rows);
+  return true;
+}
+
 async function disconnect() {
   say();
   say(`  WorkTrust · disconnect ${hostname().replace(/\.local$/i, "")}`);
@@ -527,13 +597,14 @@ async function disconnect() {
   const plan = await run(paths["setup-mcp.mjs"], ["--remove"], PLACEHOLDER, true);
   say("  1. The WorkTrust door comes out of every AI app here:");
   for (const line of planLines(plan.out)) say(line);
-  say("  2. The session hook comes out of ~/.claude/settings.json, the key file is deleted, and ~/.worktrust is emptied.");
+  say("  2. The session hook comes out of ~/.claude/settings.json (and Codex's notify line, when WorkTrust set it), the key file is deleted, and ~/.worktrust is emptied.");
   say("  3. The key itself stays valid until you revoke it: WorkTrust → Sources → Devices → this computer → Revoke.");
   say();
   if (has("dry-run")) { say("  Dry run: nothing was changed."); return; }
   if (!(await ask("Continue?"))) { say("  Stopped. Nothing was changed."); return; }
   await run(paths["setup-mcp.mjs"], ["--remove", "--write"], PLACEHOLDER);
   await run(paths["log-session.mjs"], ["--uninstall", "--purge"], PLACEHOLDER);
+  if (removeCodexNotify()) say("  ✓ Codex no longer wakes the session hook.");
   keyStore.erase();
   // Everything of ours on this computer goes; the folder too, when nothing else is left in it.
   for (const name of [STABLE, ...SCRIPTS.map((script) => join(HOME_DIR, `${script}.download.mjs`)), join(HOME_DIR, "pinned")]) { try { rmSync(name); } catch { /* gone */ } }
@@ -556,6 +627,7 @@ function status() {
   let hook = false;
   try { hook = /log-session|worktrust\.mjs\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
   say(hook ? "  Session hook: installed" : "  Session hook: not installed");
+  if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust codex)"); }
   say(existsSync(join(HOME_DIR, "pinned")) ? "  Counter: from the package, pinned" : existsSync(join(HOME_DIR, "count-behaviour.mjs")) ? "  Counter: follows the site" : "  Counter: not installed");
 }
 
@@ -574,6 +646,7 @@ function help() {
   say("  worktrust web          connect Claude or ChatGPT on the web: copies the address, opens the page");
   say("  worktrust import       import your earlier Claude or ChatGPT conversations: copies the prompt, opens a chat");
   say("  worktrust sources      connect GitHub, Vercel, Supabase or Hugging Face: opens each approval page");
+  say("  worktrust codex        let Codex wake the session hook at the end of every turn (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
 }
@@ -589,6 +662,7 @@ else if (command === "history") await history();
 else if (command === "web") await offerWeb();
 else if (command === "import") await importConversations();
 else if (command === "sources") await offerSources();
+else if (command === "codex") await offerCodex();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") status();
 else help();

@@ -35,9 +35,13 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
 4. **Earlier work only if you say yes.** It counts the Claude Code and Codex sessions already on
    this computer and asks `Send these as history? [y/N]`. Enter sends nothing. What goes is hours
    and tokens per day, never text, and WorkTrust shows it as earlier work, never as verified hours.
+5. **Codex only if you say yes.** With Codex on this computer it asks `Let Codex wake the session
+   hook? [y/N]` and, on a yes, sets the one `notify` line in `~/.codex/config.toml` (the file is
+   kept as `config.toml.worktrust-backup` first). Another program's `notify` is never replaced.
 
 ```
 npx worktrust history       send this computer's earlier sessions later (asks first)
+npx worktrust codex         let Codex wake the session hook (asks first)
 npx worktrust status        what is coupled here
 npx worktrust disconnect    take it out again (shows the plan, asks first)
 ```
@@ -88,7 +92,8 @@ which would delete every password on the computer, and many people rightly keep 
 
 ## Undo
 
-`npx worktrust disconnect` removes the WorkTrust entries, the hook and the key file, and empties
+`npx worktrust disconnect` removes the WorkTrust entries, the hook (and Codex's `notify` line when
+WorkTrust set it) and the key file, and empties
 `~/.worktrust`.
 Then revoke the key in WorkTrust: Sources → Devices → this computer → Revoke.
 

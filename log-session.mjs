@@ -750,10 +750,10 @@ if (flag("install")) {
   console.log(repaired
     ? `repaired: ${file} pointed at ${repaired}\n          it now runs ${command}`
     : `installed: ${home}\n           ${file} → ${HOOK_EVENTS.join(", ")} run it\n           the file you downloaded may be deleted; this copy is the one that runs`);
-  // Codex has no settings.json to wire; its notify hook is one line in config.toml, added by hand so
-  // this script never rewrites a TOML file it did not create. Without it, Codex rollouts are still
-  // swept whenever the Claude Code hook runs.
-  if (existsSync(join(homedir(), ".codex"))) console.log(`codex:      to have Codex wake this hook too, add to ~/.codex/config.toml:\n            notify = ${via ? `["${process.env.WORKTRUST_NODE || process.execPath}", "${via}", "hook", "--codex-notify"]` : `["node", "${home}", "--codex-notify"]`}\n            (its rollouts are swept on every run either way)`);
+  // Codex has no settings.json to wire; its notify hook is one line in config.toml, which this script
+  // never rewrites: `npx worktrust` asks and writes it (WORKTRUST_CODEX_OFFER, so no hint twice), and
+  // without it Codex rollouts are still swept whenever the Claude Code hook runs.
+  if (existsSync(join(homedir(), ".codex")) && !process.env.WORKTRUST_CODEX_OFFER) console.log(`codex:      to have Codex wake this hook too, add to ~/.codex/config.toml:\n            notify = ${via ? `["${process.env.WORKTRUST_NODE || process.execPath}", "${via}", "hook", "--codex-notify"]` : `["node", "${home}", "--codex-notify"]`}\n            (its rollouts are swept on every run either way)`);
   process.exit(0);
 }
 

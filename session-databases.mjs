@@ -371,7 +371,7 @@ export function cursorLines(pseudo) {
  * model finished (`modelState.completedAt`), the model it resolved to and the prompt and output tokens. The messages,
  * the responses and the tool calls' text are parsed with the file and never kept. Agent mode runs a request's tools
  * between those two clocks without stamping each step, so under the same rule as every other client that span counts
- * up to the idle cap, as one gap.
+ * up to the idle cap, as one gap, in `seconds`; in the layers it is the agent's run, whole (the assistant line says `agentic`).
  */
 export function copilotHomes(given) { return given ? [given.replace(/^~(?=\/|$)/, homedir())] : [...userDirs("Code"), ...userDirs("Code - Insiders")]; }
 export function* copilotSessions(homes) {
@@ -420,7 +420,8 @@ export function copilotLines(pseudo) {
     if (!done || done < asked) continue;
     const meta = request?.result?.metadata ?? {};
     const usage = Number(meta.promptTokens) || Number(meta.outputTokens) ? { usage: { input_tokens: Number(meta.promptTokens) || 0, output_tokens: Number(meta.outputTokens) || 0 } } : {};
-    lines.push({ type: "assistant", timestamp: new Date(done).toISOString(), message: { model: cleanModel(String(meta.resolvedModel ?? request?.modelId ?? "").replace(/^copilot\//, "")), ...usage, content: [] } });
+    // `agentic` (owner, 2026-10-06): the request's own run, asked → completed, is the agent's time; the hook files that gap as tool time, uncapped.
+    lines.push({ type: "assistant", timestamp: new Date(done).toISOString(), agentic: true, message: { model: cleanModel(String(meta.resolvedModel ?? request?.modelId ?? "").replace(/^copilot\//, "")), ...usage, content: [] } });
   }
   return lines;
 }

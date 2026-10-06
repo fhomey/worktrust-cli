@@ -129,6 +129,14 @@ const MIN_SECONDS = 60;
  * guessing where one piece of work ended and the next began.
  */
 const MAX_SECONDS = 28800;
+/** The door's ceilings for the layers (a day) and for a day's subagents: the same bounds its columns check. */
+const DAY_SECONDS = 86400;
+/** A tool gap is tool time up to thirty minutes (proposed, owner 2026-10-06); past that it is a wait, counted as idle. */
+const TOOL_CAP = 1800;
+/** Tools whose result waits for the person: the gap to it is the person's time. Names only; nothing of the call is read. */
+const WAITS_FOR_PERSON = new Set(["AskUserQuestion", "ExitPlanMode"]);
+const AGENT_RUNS_MAX = 10000;
+const AGENT_SECONDS_MAX = 2592000;
 
 /**
  * WHEN THE HOOK RUNS. SessionEnd alone was a bet that sessions end, and a session that stays open
@@ -332,7 +340,7 @@ function stretchesOf(file, since) {
     const at = Date.parse(line.timestamp);
     if (!Number.isFinite(at)) continue;
     if (since && at <= since) continue;
-    messages.push({ at, type: line.type, usage: line.message?.usage ?? null, model: line.message?.model ?? null, meta: line.isMeta === true, content: line.message?.content ?? null });
+    messages.push(messageOf(line, at));
   }
   if (messages.length === 0) return [];
   messages.sort((a, b) => a.at - b.at);
@@ -342,8 +350,76 @@ function stretchesOf(file, since) {
     if (!byDay.has(day)) byDay.set(day, []);
     byDay.get(day).push(message);
   }
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered }; }).filter(Boolean);
+  const agents = agentsByDay(file, since);
+  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null }; }).filter(Boolean);
 }
+
+/** One transcript line as the measure reads it: the clock, the role, what KIND of message it is (for the layers), its counts. */
+const messageOf = (line, at) => {
+  const content = line.message?.content ?? null;
+  const blocks = Array.isArray(content) ? content : [];
+  return {
+    at, type: line.type, usage: line.message?.usage ?? null, model: line.message?.model ?? null, meta: line.isMeta === true, content,
+    // A tool's answer comes back on the user role; a line a reader marks `agentic` is an agent run (Copilot's asked → completed).
+    kind: line.type === "assistant" ? "assistant" : blocks.some((block) => block && block.type === "tool_result") ? "tool_result" : "user",
+    toolUse: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use"),
+    // A tool that waits for the PERSON (a question, a plan to approve): the gap to its result is the person's, not the tool's. The name is read, never the input.
+    waitsForPerson: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use" && WAITS_FOR_PERSON.has(String(block.name))),
+    agentic: line.agentic === true,
+  };
+};
+
+/**
+ * SUBAGENTS AS AGENT TIME, NEVER AS HOURS (owner, 2026-10-06). Claude Code writes each subagent's transcript beside its
+ * session (`<session>/subagents/*.jsonl`: 279 of them beside 48 sessions on the computer this was built on), and the
+ * sweep read only the sessions, so delegated work was invisible. Now each run is read for its clocks and sent as
+ * METADATA beside the parent's day: how many runs started that day, their own measured seconds (the same gap rule, the
+ * same cap), and how many were open at once at the busiest moment. None of it enters `seconds`: four agents working an
+ * hour are four agent-hours and one hour of the person's, and the record says which is which. Only Claude Code keeps
+ * subagents this way; every other client answers an empty map.
+ */
+function subagentFiles(file) {
+  if (!/\.jsonl$/.test(String(file)) || CODEX_ROLLOUT.test(file) || ANTIGRAVITY_TRANSCRIPT.test(file) || DATABASE_SESSION.test(file)) return [];
+  const dir = join(String(file).replace(/\.jsonl$/, ""), "subagents");
+  try { return readdirSync(dir).filter((name) => name.endsWith(".jsonl")).map((name) => join(dir, name)); } catch { return []; }
+}
+function agentsByDay(file, since) {
+  const byDay = new Map();
+  for (const sub of subagentFiles(file)) {
+    const lines = parsedLines(sub);
+    if (!lines) continue;
+    const stamps = [];
+    let started = Infinity;
+    for (const line of lines) {
+      if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
+      const at = Date.parse(line.timestamp);
+      if (!Number.isFinite(at)) continue;
+      started = Math.min(started, at);
+      if (!(since && at <= since)) stamps.push(at);
+    }
+    // A RUN IS COUNTED ONCE, on the side of the watermark where it STARTED (review, 2026-10-06): a run that straddles the
+    // watermark was sent with the day it began and is not a second run on the next sweep; what it did after the
+    // watermark stays unsent, which is the safe direction.
+    if (stamps.length === 0 || (since && started <= since)) continue;
+    stamps.sort((a, b) => a - b);
+    // A run is counted on the day it started; its seconds go with it, the same rule as the parent's.
+    const day = new Date(stamps[0]).toISOString().slice(0, 10);
+    let seconds = 0;
+    for (let i = 1; i < stamps.length; i += 1) seconds += Math.min(IDLE_CAP, Math.round((stamps[i] - stamps[i - 1]) / 1000));
+    if (!byDay.has(day)) byDay.set(day, { runs: 0, seconds: 0, spans: [] });
+    const entry = byDay.get(day);
+    entry.runs += 1; entry.seconds += seconds; entry.spans.push([stamps[0], stamps[stamps.length - 1]]);
+  }
+  for (const entry of byDay.values()) entry.peak = peakOf(entry.spans);
+  return byDay;
+}
+/** The most spans open at one instant; a span that ends where another starts does not overlap it. */
+const peakOf = (spans) => {
+  const events = spans.flatMap(([from, to]) => [[from, 1], [to, -1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let open = 0, peak = 0;
+  for (const [, delta] of events) { open += delta; peak = Math.max(peak, open); }
+  return peak;
+};
 
 /**
  * IS THIS A HUMAN TURN? (2026-09-20)
@@ -387,7 +463,35 @@ function measure(cwd, messages) {
   }
   const model = [...models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
   const tokens = tokensOf(messages);
-  return { cwd, seconds: measured, ...tokens, exchanges, model, from: messages[0].at, to: messages[messages.length - 1].at };
+  return { cwd, seconds: measured, layers: measured !== null ? timeLayers(messages) : null, ...tokens, exchanges, model, from: messages[0].at, to: messages[messages.length - 1].at };
+}
+
+/**
+ * HOW THE SECONDS WERE SPENT (owner, 2026-10-06: "observed time → AI active → agent-directed → verified work activity").
+ * `seconds` keeps its exact meaning above; this reads the same gaps a second time and says what each one WAS, by the
+ * message that ends it: the model's message (model time, capped as before), a tool's result or an agent run (tool time,
+ * NOT capped at five minutes, because a test suite that ran twenty minutes was twenty minutes of the agent's work; bounded
+ * by the stretch's own ceiling), or the person's next turn (human time, capped). What a cap cut off is idle, counted as
+ * idle and never as work. The four sum to the stretch's span, so nothing is hidden and nothing is double-counted.
+ */
+function timeLayers(messages) {
+  const split = { model: 0, tool: 0, human: 0, idle: 0 };
+  for (let i = 1; i < messages.length; i += 1) {
+    const gap = Math.max(0, Math.round((messages[i].at - messages[i - 1].at) / 1000));
+    const next = messages[i], prev = messages[i - 1];
+    // WAITS FOR THE PERSON ARE NOT TOOL TIME (review, 2026-10-06). A tool's result arrives when the tool is done, or when the
+    // person answered a question, approved a plan, or sat on a permission prompt. The first two are named by the tool and
+    // counted as human time; the third is invisible in the transcript, so a tool gap is counted as tool time only up to
+    // TOOL_CAP, and the rest as idle: a tool runs minutes, a person away from the keyboard does not.
+    const tool = (next.kind === "tool_result" || next.agentic || (prev.toolUse && next.kind === "assistant")) && !prev.waitsForPerson;
+    // ONE DEFINITION OF A HUMAN TURN (review, 2026-10-06): the same `isHumanTurn` that counts `exchanges`; a user line that
+    // is not one (a meta line the client injected, a textless line) is the loop's own and counts as model time.
+    const human = !tool && ((prev.waitsForPerson && next.kind === "tool_result") || (next.kind === "user" && !next.meta && isHumanTurn(next.content)));
+    const counted = Math.min(tool ? TOOL_CAP : IDLE_CAP, gap);
+    split[tool ? "tool" : human ? "human" : "model"] += counted;
+    split.idle += gap - counted;
+  }
+  return split;
 }
 
 /**
@@ -455,6 +559,10 @@ function payloadFor(stretch) {
     ...(repo ? { repo } : {}),
     ...(touched.shas.length > 0 ? { commits: touched.shas.slice(0, 50) } : {}),
     ...(stretch.ref ? { stretch_ref: stretch.ref } : {}), ...(stretch.steered ? { steered_from: stretch.steered } : {}),
+    // THE LAYERS (2026-10-06), only on a measured stretch, each bounded by a day: what the seconds were. `seconds` above is untouched.
+    ...(stretch.seconds !== null && stretch.layers ? { model_seconds: Math.min(DAY_SECONDS, stretch.layers.model), tool_seconds: Math.min(DAY_SECONDS, stretch.layers.tool), human_seconds: Math.min(DAY_SECONDS, stretch.layers.human), idle_seconds: Math.min(DAY_SECONDS, stretch.layers.idle) } : {}),
+    // THE SUBAGENTS, as agent metadata beside the day: runs, their own seconds, the peak open at once. Never in `seconds`.
+    ...(stretch.agents && stretch.agents.runs > 0 ? { agent_runs: Math.min(AGENT_RUNS_MAX, stretch.agents.runs), agent_seconds: Math.min(AGENT_SECONDS_MAX, stretch.agents.seconds), agent_peak: Math.min(AGENT_RUNS_MAX, stretch.agents.peak) } : {}),
     at: new Date(stretch.to).toISOString(),
   };
 }
@@ -540,8 +648,9 @@ function historyEntries(floor = null) {
       if (!Number.isFinite(at)) continue;
       const day = new Date(at).toISOString().slice(0, 10);
       if (!byDay.has(day)) byDay.set(day, []);
-      byDay.get(day).push({ at, type: line.type, usage: line.message?.usage ?? null, model: line.message?.model ?? null, meta: line.isMeta === true, content: line.message?.content ?? null });
+      byDay.get(day).push(messageOf(line, at));
     }
+    const agents = agentsByDay(file, null);
     for (const [day, messages] of byDay) {
       if (messages.length === 0) continue;
       messages.sort((a, b) => a.at - b.at);
@@ -550,20 +659,8 @@ function historyEntries(floor = null) {
       const last = messages[messages.length - 1].at;
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
       if (Date.now() - last < WINDOW_HOURS * 3600_000) continue;
-      let seconds = 0;
-      for (let i = 1; i < messages.length; i += 1) seconds += Math.min(IDLE_CAP, Math.round((messages[i].at - messages[i - 1].at) / 1000));
-      const models = new Map();
-      let exchanges = 0;
-      for (const message of messages) {
-        if (message.type === "user" && !message.meta && isHumanTurn(message.content)) exchanges += 1;
-        if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);
-      }
-      const { tokensIn, tokensOut, cacheRead, cacheWrite, shapeKnown } = tokensOf(messages);
-      const entry = payloadFor({
-        cwd, seconds: seconds >= MIN_SECONDS ? Math.min(MAX_SECONDS, seconds) : null,
-        tokensIn, tokensOut, cacheRead, cacheWrite, shapeKnown, exchanges, model: [...models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
-        from: messages[0].at, to: last, ref: stretchRef(file, day), steered,
-      });
+      // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
+      const entry = payloadFor({ ...measure(cwd, messages), ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null });
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
       if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));

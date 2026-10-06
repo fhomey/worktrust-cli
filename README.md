@@ -36,7 +36,9 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
    this computer and asks `Send these as history? [y/N]`. Enter sends nothing. What goes is hours
    and tokens per day, never text, and WorkTrust shows it as earlier work, never as verified hours.
    Nothing from before the coupling is ever sent without that yes: the session hook starts at the
-   moment of coupling.
+   moment of coupling. Beside the seconds, each day says what they were (the model answering, tools
+   running, your own turns, pauses) and what the session's subagents did on their own clocks, as
+   counts; a subagent's hour is shown as an agent-hour and never as one of yours.
 5. **Codex only if you say yes.** With Codex on this computer it asks `Let Codex wake the session
    hook? [y/N]` and, on a yes, sets the one `notify` line in `~/.codex/config.toml` (the file is
    kept as `config.toml.worktrust-backup` first). Another program's `notify` is never replaced.

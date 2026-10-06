@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {

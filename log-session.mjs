@@ -107,7 +107,6 @@ async function refreshCounter(origin, announce) {
   } catch { return false; }
 }
 
-
 /** A pause longer than this is not work, so it is not counted. Five minutes. */
 const IDLE_CAP = 300;
 /**
@@ -276,7 +275,6 @@ function codexCoupling() {
   }
   return null;
 }
-
 
 /** Which layer a set of paths touched — the same plain reading the connector uses for classes. */
 const LAYER_RULES = [
@@ -633,7 +631,7 @@ async function send(door, payload) {
  * matches commits by, and cutting on the calendar keeps `at` a real instant rather than an
  * average of one. Younger than the live window is left alone — that is `log_work`'s half.
  */
-function historyEntries(floor = null) {
+function historyEntries(floor = null, all = false) {
   const entries = [];
   for (const { file } of allTranscripts()) {
     const lines = parsedLines(file);
@@ -658,13 +656,13 @@ function historyEntries(floor = null) {
       if (floor !== null && messages[0].at < floor) continue;
       const last = messages[messages.length - 1].at;
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
-      if (Date.now() - last < WINDOW_HOURS * 3600_000) continue;
+      if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
       // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
       const entry = payloadFor({ ...measure(cwd, messages), ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null });
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
       if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));
-      entryFile.set(entry, file);
+      entryFile.set(entry, { file, from: messages[0].at, folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null });
       entries.push(entry);
     }
   }
@@ -853,7 +851,9 @@ const door = coupling();
 const codexDoor = codexCoupling();
 const doorFor = (entry) => (String(entry?.id ?? "").startsWith("codex:") ? codexDoor ?? door : door);
 const entrySource = new WeakMap(); // an entry → "codex" or "antigravity" by the client that wrote it; the sends route and name by it
-const entryFile = new WeakMap(); // a history entry → its transcript, so `--summary` can count sessions
+const entryFile = new WeakMap(); // a history entry → its transcript (`--summary` counts sessions), first moment and folder name (`--archive-lines`)
+// THE LOCAL ARCHIVE (`npx worktrust preserve --archive`, 2026-10-06): every measured day, live window and floors aside, as JSON lines to preserve.mjs on this computer, which keeps metadata only; nothing is sent.
+if (flag("archive-lines")) { for (const entry of historyEntries(null, true)) console.log(JSON.stringify({ ...entry, client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.exit(0); }
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
 
 if (flag("history")) {
@@ -862,7 +862,7 @@ if (flag("history")) {
   const hours = entries.reduce((sum, entry) => sum + (entry.seconds ?? 0), 0) / 3600;
   const months = [...new Set(entries.map((entry) => entry.at.slice(0, 7)))].sort();
   // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, hours, first and last month; nothing sent.
-  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry))).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null })); process.exit(0); }
+  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null })); process.exit(0); }
   console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} measured hours · ${months.join(", ")}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.

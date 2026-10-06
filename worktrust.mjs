@@ -7,11 +7,15 @@
  *   npx worktrust --dry-run             show the plan only; nothing is written, nothing is sent
  *   npx worktrust --yes                 no question (for scripts); the computer is still approved in the app
  *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
- *   npx worktrust connect               couple again, also on a computer already coupled
- *   npx worktrust update                this computer onto the newest CLI, same key, no new pairing
- *   npx worktrust history               send this computer's earlier sessions as history (asks first)
- *   npx worktrust disconnect            show what comes out, ask, take it out again
- *   npx worktrust status                what is coupled here
+ *   npx worktrust@latest connect               couple again, also on a computer already coupled
+ *   npx worktrust@latest update                this computer onto the newest CLI, same key, no new pairing
+ *   npx worktrust@latest history               send this computer's earlier sessions as history (asks first)
+ *   npx worktrust@latest disconnect            show what comes out, ask, take it out again
+ *   npx worktrust@latest status                what is coupled here
+ *   npx worktrust@latest preserve              how long each AI app here keeps its sessions (--apply keeps them,
+ *                                       --archive [dir] a local metadata-only record, --verify [dir] checks it,
+ *                                       --summary [dir] counts hours, tokens and parallel sessions from it);
+ *                                       local only: no account, no key, no network (preserve.mjs)
  *
  * WHAT RUNS. From the npm package, everything that runs is in the package: this file,
  * `setup-mcp.mjs` (gives every AI app here the WorkTrust door), `log-session.mjs` (the session hook)
@@ -65,7 +69,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.6.12";
+const CLI_VERSION = "0.6.13";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -208,7 +212,7 @@ async function pairByBrowser(host, extra) {
   const exchange = await post("/api/cli/token", { device_code: secret, code, code_verifier: verifier }).catch(() => null);
   if (!exchange || exchange.status !== 200 || !exchange.json.token) fail(`the approval could not be exchanged (${exchange?.json?.error ?? "no answer"}). Run \`worktrust connect\` again.`);
   say(`  ✓ Approved as "${exchange.json.label}"${exchange.json.account ? ` for the WorkTrust account ${exchange.json.account}` : ""}`);
-  if (exchange.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
+  if (exchange.json.account) say("    Not your account? Run `npx worktrust@latest disconnect` now and revoke it in WorkTrust.");
   if (extraBound && exchange.json.bound === false) say("  ! WorkTrust did not bind the key to this computer; it works like a key made by hand.");
   return paired(exchange.json);
 }
@@ -237,7 +241,7 @@ async function pairByCode(host, extra) {
     if (!answer) continue;
     if (answer.status === 200 && answer.json.token) {
       say(`  ✓ Approved as "${answer.json.label}"${answer.json.account ? ` for the WorkTrust account ${answer.json.account}` : ""}`);
-      if (answer.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
+      if (answer.json.account) say("    Not your account? Run `npx worktrust@latest disconnect` now and revoke it in WorkTrust.");
       return paired(answer.json);
     }
     if (answer.json.error === "slow_down") wait += 2000;
@@ -354,7 +358,7 @@ function withLock(work) {
 /**
  * A KEY FILE ON OTHER HARDWARE (0.6.10, owner 2026-10-05: "a backup restored onto a new device must not upload to the
  * passport unseen"). The key file remembers the profile it was made on; on any other computer it sends nothing, and
- * WorkTrust is told once (`/api/cli/moved`), so the key is ended and the owner sees it. `npx worktrust connect` couples this one.
+ * WorkTrust is told once (`/api/cli/moved`), so the key is ended and the owner sees it. `npx worktrust@latest connect` couples this one.
  */
 async function copiedHere(key) {
   const here = computerIds().profile_id;
@@ -364,7 +368,7 @@ async function copiedHere(key) {
     const url = `${new URL(key.url).origin}/api/cli/moved`, body = JSON.stringify(computerIds());
     await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, ...proof(key.device, url, body) }, body });
   } catch { /* offline: it is told next time */ }
-  process.stderr.write("WorkTrust: this key was made on another computer (copied from a backup?). Nothing is sent from here; run `npx worktrust connect` on this computer.\n");
+  process.stderr.write("WorkTrust: this key was made on another computer (copied from a backup?). Nothing is sent from here; run `npx worktrust@latest connect` on this computer.\n");
   return true;
 }
 
@@ -431,7 +435,7 @@ async function bridge() {
     let message;
     try { message = JSON.parse(line); } catch { continue; }
     if (message.method === "initialize" && message.params?.clientInfo?.name) agent = `${message.params.clientInfo.name}/${message.params.clientInfo.version ?? "0"} (worktrust-bridge) worktrust-cli/${CLI_VERSION}`;
-    if (!key) { if (message.id !== undefined) answer(message.id, "WorkTrust is not connected on this computer: run `npx worktrust connect`."); continue; }
+    if (!key) { if (message.id !== undefined) answer(message.id, "WorkTrust is not connected on this computer: run `npx worktrust@latest connect`."); continue; }
     try {
       const response = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
       session = response.headers.get("mcp-session-id") ?? session;
@@ -444,7 +448,7 @@ async function bridge() {
           const again = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
           if (again.status !== 401) { const text = await again.text(); const parts = (again.headers.get("content-type") ?? "").includes("event-stream") ? text.split("\n").filter((part) => part.startsWith("data:")).map((part) => part.slice(5).trim()) : [text.trim()]; for (const part of parts.filter(Boolean)) process.stdout.write(`${part}\n`); continue; }
         }
-        answer(message.id, "WorkTrust did not accept this computer's key: run `npx worktrust connect` again.");
+        answer(message.id, "WorkTrust did not accept this computer's key: run `npx worktrust@latest connect` again.");
         continue;
       }
       const text = await response.text();
@@ -502,7 +506,7 @@ async function sessionEnd() {
 }
 
 /**
- * `npx worktrust update` (owner, 2026-10-04): THIS COMPUTER ONTO THE NEWEST CLI, WITHOUT PAIRING IT
+ * `npx worktrust@latest update` (owner, 2026-10-04): THIS COMPUTER ONTO THE NEWEST CLI, WITHOUT PAIRING IT
  * AGAIN. `connect` mints a new key and so a new device row to merge; an update keeps the key and the
  * row. It writes what `connect` writes after its pairing: the bridge copy in ~/.worktrust, every
  * WorkTrust entry in the AI apps taken out (a hand-made one with a key in it too) and the bridge put
@@ -611,12 +615,15 @@ async function connect() {
   if (switched) { say(); say("  Earlier work on this computer is not offered: it was coupled to another account before. Only work from now on goes to this account."); }
   else await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
   say();
+  // ONE LINE, NO CHANGE (2026-10-06): Claude Code deletes what the hook measures from; `preserve --apply` keeps it, on a yes.
+  const keeps = claudeKeepsDays();
+  if (keeps !== null && keeps < 90) say(`  Claude Code deletes sessions after ${keeps} days. Keep them: npx worktrust@latest preserve --apply`);
   say("  Done. Quit your AI apps completely and open them again. This computer appears in WorkTrust");
   say("  under Sources → CLI once one of them has spoken.");
 }
 
 /**
- * EARLIER WORK IS SENT ONLY ON A YES (owner, 2026-10-03). After coupling, or as `npx worktrust history`:
+ * EARLIER WORK IS SENT ONLY ON A YES (owner, 2026-10-03). After coupling, or as `npx worktrust@latest history`:
  * what this computer holds is counted here and shown, and nothing leaves before the person types y.
  * Enter, --yes and a closed terminal all mean No; `--history` says yes in advance. What goes is hours
  * and tokens per day, filed as history (never verified hours, never text).
@@ -630,9 +637,9 @@ async function offerHistory(paths, token, devicePem, url = MCP) {
   if (!found?.sessions) { say("  No earlier Claude Code, Codex or Antigravity sessions on this computer to send."); return; }
   say(`  This computer holds ${found.sessions} earlier Claude Code / Codex / Antigravity sessions · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
-  if (!has("history") && !(await ask("Send these as history (hours and tokens per day; never text)?", false))) { say("  Not sent. Send them later with: npx worktrust history"); return; }
+  if (!has("history") && !(await ask("Send these as history (hours and tokens per day; never text)?", false))) { say("  Not sent. Send them later with: npx worktrust@latest history"); return; }
   const sent = await run(paths["log-session.mjs"], ["--history"], token, true, env);
-  say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as earlier work, never as verified hours." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
+  say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as earlier work, never as verified hours." : "  Not all of it arrived. Run npx worktrust@latest history again: a line already received is kept once.");
 }
 
 async function history() {
@@ -789,10 +796,10 @@ function status() {
     for (const project of Object.values(config.projects ?? {})) Object.assign(servers, project.mcpServers ?? {});
   } catch { /* no Claude Code here */ }
   const door = Object.entries(servers).find(([name, server]) => /worktrust/i.test(`${name} ${server?.url ?? ""} ${(server?.args ?? []).join(" ")}`));
-  say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust connect`.");
+  say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust@latest connect`.");
   const key = keyStore.load();
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
-  if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
+  if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust@latest connect` records it)");
   let hook = false;
   try { hook = /log-session|worktrust\.mjs\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
   say(hook ? "  Session hook: installed" : "  Session hook: not installed");
@@ -800,6 +807,23 @@ function status() {
   if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust\.mjs\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust@latest update writes it)"); }
   if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust@latest update asks)");
   say(existsSync(join(HOME_DIR, "pinned")) ? "  Counter: from the package, pinned" : existsSync(join(HOME_DIR, "count-behaviour.mjs")) ? "  Counter: follows the site" : "  Counter: not installed");
+}
+
+/** Claude Code's `cleanupPeriodDays` (its default 30), or null without Claude Code here. Read only: preserve.mjs changes it, on a yes. */
+function claudeKeepsDays() {
+  if (!existsSync(join(homedir(), ".claude"))) return null;
+  try { const days = JSON.parse(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")).cleanupPeriodDays; return typeof days === "number" ? days : 30; } catch { return 30; }
+}
+
+/**
+ * KEEP YOUR HISTORY (`npx worktrust@latest preserve`, 2026-10-06): preserve.mjs beside this file, run as it is. Local only: no
+ * key, no account, no connection. From a single downloaded file it is not offered, since fetching it would be one.
+ */
+async function preserve() {
+  const script = join(HERE, "preserve.mjs");
+  if (!existsSync(script)) fail("preserve runs from the package: npx worktrust@latest preserve");
+  const child = spawn(process.execPath, [script, ...args.filter((arg) => arg !== "preserve")], { stdio: "inherit", env: { ...process.env, WORKTRUST_COLLECTOR: `worktrust-cli/${CLI_VERSION}` } });
+  process.exitCode = await new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
 }
 
 function help() {
@@ -818,12 +842,17 @@ function help() {
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
+  say("  worktrust preserve     keep your AI history: the report, then the settings and a local archive, each on your yes");
+  say("    --apply              keep them: asks per change, backs the file up first (--yes: no question)");
+  say("    --archive [dir]      a local, metadata-only, hash-chained record of the measured days (~/AI-Evidence)");
+  say("    --verify [dir]       check that record: every hash, the chain, each day's root and signature");
+  say("    --summary [dir]      hours, tokens per model, cache share and parallel sessions, counted from that record");
 }
 
 // THE BARE COMMAND COUPLES (owner, 2026-10-03: "zo kort mogelijk"). `npx worktrust` on a computer
 // without a key here shows the plan and asks, exactly as `connect` does; with one it says what is
 // coupled, so running it twice never re-pairs by surprise.
-if (command === "default") { if (keyStore.load()) { status(); say(); say("  This computer is coupled. `npx worktrust connect` couples it again; `npx worktrust disconnect` takes it out."); } else await connect(); }
+if (command === "default") { if (keyStore.load()) { status(); say(); say("  This computer is coupled. `npx worktrust@latest connect` couples it again; `npx worktrust@latest disconnect` takes it out."); } else await connect(); }
 else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();
@@ -840,4 +869,5 @@ else if (command === "codex") await offerCodex();
 else if (command === "antigravity") await offerAntigravity();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") status();
+else if (command === "preserve") await preserve();
 else help();

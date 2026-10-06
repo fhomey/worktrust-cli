@@ -16,6 +16,12 @@ from WorkTrust's own site:
 curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
 ```
 
+**No account? Keep your history anyway.** Claude Code and Gemini CLI delete their sessions after 30
+days by default, and a deleted session can never be measured again. `npx worktrust@latest preserve` shows what
+each AI app on this computer keeps, keeps it longer on your yes, and writes a local, metadata-only
+record. It needs no account and opens no network connection: it stays on this computer until you
+yourself run a command that sends. See [Keep your history](#keep-your-history).
+
 ## What happens
 
 1. **A plan, then a question.** The command lists every AI app it found on this computer and the
@@ -72,12 +78,106 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
    open, starts the session hook in the background, at most once an hour.
 
 ```
-npx worktrust history       send this computer's earlier sessions later (asks first)
+npx worktrust@latest history       send this computer's earlier sessions later (asks first)
 npx worktrust codex         let Codex wake the session hook (asks first)
 npx worktrust antigravity   let Antigravity wake the session hook (asks first)
-npx worktrust status        what is coupled here
-npx worktrust disconnect    take it out again (shows the plan, asks first)
+npx worktrust@latest status        what is coupled here
+npx worktrust@latest disconnect    take it out again (shows the plan, asks first)
 ```
+
+## Keep your history
+
+**Why.** Your AI apps decide how long your history lives, and several delete it on their own schedule:
+
+| App | Kept by default | `preserve --apply` |
+|---|---|---|
+| Claude Code | 30 days, then deleted without notice | sets `cleanupPeriodDays` to 3650 |
+| Gemini CLI | 30 days | turns `general.sessionRetention` off |
+| Hermes Agent | 90 days after a session ended | prints the line to add (`sessions.auto_prune: false`) |
+| Codex CLI | no deletion documented | nothing to change |
+| Cursor, Copilot Chat, OpenCode, Goose, LM Studio | not documented | left alone |
+
+(From each vendor's own documentation, checked 6 October 2026. Copilot Chat also syncs its sessions
+to GitHub by default: `chat.sessionSync.enabled`.) A deleted session is a day of work that can never
+be shown again, by WorkTrust or by anyone.
+
+**Local, and yours.** `preserve` works on this computer only. It needs no WorkTrust account and no
+key, and it opens no network connection; `check-cli-package` refuses the package if `preserve.mjs` so
+much as imports a network module. What it keeps stays here **until you yourself run a command that
+sends**: `npx worktrust` to couple this computer, then `npx worktrust@latest history`, which shows what it
+would send and asks `[y/N]` first. Without those two, nothing ever leaves.
+
+```
+npx worktrust@latest preserve                  every step: the report, then asks to keep the settings and a local archive
+npx worktrust@latest preserve --apply          the settings step only: asks [y/N] per change, backs the file up first
+npx worktrust@latest preserve --archive [dir]  a local record of the measured days (default ~/AI-Evidence)
+npx worktrust@latest preserve --verify [dir]   check that record: was anything changed afterwards?
+npx worktrust@latest preserve --summary [dir]  hours, tokens per model, cache share and parallel sessions, from that record
+```
+
+**Always the newest, from any terminal or agent.** Run it as `npx worktrust@latest …`: npx then asks npm for the
+newest version every time, where a bare `npx worktrust` may reuse a copy npm cached earlier. Which terminal or AI
+agent runs it makes no difference: `preserve` writes to your own user's places (the apps' settings files and
+`~/AI-Evidence`), so every terminal and agent on this computer under your user reaches the same archive, and lines
+from different versions sit side by side, each naming the version that measured it. Another user on the same computer
+gets an archive of their own. A coupled computer's session hook runs from its own copy in `~/.worktrust` and changes
+only with `npx worktrust@latest update`; the WorkTrust app says when a newer version is out.
+
+**One command walks it all.** `npx worktrust@latest preserve` shows the report, asks `Keep these settings? [y/N]`
+(then does what `--apply` does), asks `Keep a local archive in ~/AI-Evidence? [y/N]` (then does what `--archive`
+does; an archive already there is simply added to), and with an archive prints its check and its summary. Enter is
+No. Without a terminal, and without `--yes`, it changes nothing. The flags each do one step, for scripts.
+
+**Later, into WorkTrust, if you want.** Because `--apply` keeps the apps' own session files, coupling
+this computer months from now still finds them: `npx worktrust@latest history` measures them the same way the
+live hook does, and they arrive as history, labelled as such, never as work WorkTrust watched happen.
+The archive is a plain, documented format made for the same purpose; importing it directly is planned,
+not built.
+
+**What `--archive` keeps, per AI app per day.** The same measurement the session hook makes, and
+nothing it does not:
+
+| Field | What it is |
+|---|---|
+| `client` | the AI app (`claude`, `codex`, `cursor`, `copilot`, `hermes` …) |
+| `day`, `started_at`, `ended_at` | the day, and when the measured stretch began and ended |
+| `seconds` | measured time: every gap between stamped events up to five minutes |
+| `model_seconds`, `tool_seconds`, `human_seconds`, `idle_seconds` | what those seconds were: the model answering, tools or an agent run, your own turns, and what a cap cut off |
+| `tokens_in`, `tokens_out`, `tokens_cache_read`, `tokens_cache_write` | token counts, when the app records them |
+| `agent_runs`, `agent_seconds`, `agent_peak` | subagents: how many ran, their own time, the most open at once (never added to `seconds`) |
+| `model` | the model's name as the app reported it |
+| `kind`, `layer`, `layers` | the kind of work (built, changed, researched) and the area it touched (front end, back end, data …), as the session hook names them |
+| `exchanges` | how many times you and the model took turns |
+| `commits` | the hashes of commits made in the stretch, never a message: what ties AI time to work in the repository |
+| `steered_from` | `remote` when the session ran over SSH |
+| `duration_basis`, `token_basis`, `turn_basis` | how the seconds, tokens and turns were measured |
+| `project` | a one-way hash of the project's name: which days belong together, never which project |
+| `stretch_ref` | a hash of the session's id and the day, so a stretch is archived once |
+| `device_id`, `profile_id` | which computer and which user profile on it, as one-way hashes (the machine's own id never appears) |
+| `collector_version` | the CLI version that measured it |
+| `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
+
+A value the app did not record is left out, never written as 0. Each day also gets a proof in
+`proofs/<day>.json` (the day's line count, a root hash over its lines, and a signature with this
+computer's device key when it is coupled), and `manifest.json` holds the count and the last hash, so a
+removed line is caught. The manifest names the computer and profile too.
+
+**Never kept:** a prompt, an answer, code, a file or its path, a branch, a commit message, a title,
+terminal output, or anything typed. The text in your sessions is read only to find clocks, model names
+and counts, exactly as the session hook reads it.
+
+- **What `--apply` writes.** Only the settings in the table above, each on a typed `y`. The file is
+  copied to `settings.json.worktrust-backup-<date>` first, every other setting stays as it was, and a
+  value you set higher is never lowered. Hermes's YAML is never edited.
+- **Today is archived tomorrow.** A day goes into the archive once it is over; a later run only adds
+  lines and never rewrites one.
+- **What `--summary` counts.** From the archive, after its chain checks out: per month the measured
+  hours, the tokens per model and the share of input served from the cache (where tokens go, and so
+  where they can be saved), and the days on which two or more sessions ran in one project at the same
+  time, with the most open at once and their session time against the wall-clock time they covered.
+- **The archive is yours** to keep, copy, back up or delete. The free kit on
+  [worktrust.io/preserve](https://worktrust.io/preserve) is this package plus a guideline, for teams
+  that want the same record without WorkTrust.
 
 ## Where the key lives, and why it only works here
 
@@ -110,9 +210,10 @@ which would delete every password on the computer, and many people rightly keep 
 
 ## Why you can check it
 
-- **No dependencies and no install scripts.** Four plain files, about 2,600 lines in total, readable
+- **No dependencies and no install scripts.** Plain files, readable
   in an afternoon: `worktrust.mjs` (this command), `setup-mcp.mjs` (writes the MCP entries),
-  `log-session.mjs` (the session hook) and `count-behaviour.mjs` (the local counter).
+  `log-session.mjs` (the session hook), `count-behaviour.mjs` (the local counter) and `preserve.mjs`
+  (keep your history), with the readers they import.
 - **Nothing is downloaded at run time.** Everything that runs is in the package. The counter is
   pinned: it is not replaced from the network; a new one comes with a new version of this package.
 - **Provenance.** Every version is built and published from a public repository by GitHub Actions
@@ -125,7 +226,7 @@ which would delete every password on the computer, and many people rightly keep 
 
 ## A computer that is already coupled, or shared
 
-- `npx worktrust connect` on a computer that is already coupled says to which account (masked) and
+- `npx worktrust@latest connect` on a computer that is already coupled says to which account (masked) and
   asks `Couple it again? [y/N]`. Enter and `--yes` mean No; `--replace` says yes in advance.
 - The browser page that approves it shows, large, which WorkTrust account is signed in, with
   **Use another account**: the computer goes to whoever approves it there.
@@ -134,13 +235,13 @@ which would delete every password on the computer, and many people rightly keep 
 - When the new account is a different one, the old account sees a notice that its computer moved,
   with the computer's name and the moment, never the other account; no earlier work on this
   computer is offered to the new account, only work from the moment of coupling.
-- `npx worktrust status` shows the account this computer sends to.
+- `npx worktrust@latest status` shows the account this computer sends to.
 - Different people on one computer with their own OS user each couple their own: everything lives
   in that user's home folder, and the accounts never meet.
 
 ## Undo
 
-`npx worktrust disconnect` removes the WorkTrust entries (Hermes's hook with them), the hook (and Codex's `notify` line and
+`npx worktrust@latest disconnect` removes the WorkTrust entries (Hermes's hook with them), the hook (and Codex's `notify` line and
 Antigravity's `worktrust` hook when WorkTrust set them) and the key file, and empties
 `~/.worktrust` but for one small note of which account it fed (masked), so that a later coupling by
 another account offers none of this computer's earlier work.

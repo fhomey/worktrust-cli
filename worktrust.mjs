@@ -49,7 +49,7 @@
  *
  * No dependencies: Node 18 or later.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
@@ -65,20 +65,43 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.6.9";
+const CLI_VERSION = "0.6.10";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs"];
-/** The readers are imported by name from beside the scripts, so a download keeps that name. */
-const downloaded = (name) => (name === "transcript-readers.mjs" ? name : `${name}.download.mjs`);
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs"];
+/** The modules the scripts import by name from beside them; a download keeps that name. */
+const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs"]);
+const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
 const say = (line = "") => process.stdout.write(`${line}\n`);
 const fail = (line) => { process.stderr.write(`worktrust: ${line}\n`); process.exit(1); };
 const OS = { darwin: "macos", win32: "windows", linux: "linux" }[platform()] ?? "other";
 const OS_NAME = { macos: "macOS", windows: "Windows", linux: "Linux", other: "this system" }[OS];
+
+/**
+ * WHICH COMPUTER, WHICH PROFILE (0.6.10, owner 2026-10-05: one computer coupled twice sent its history twice). The
+ * machine's own id (macOS hardware UUID, Windows MachineGuid, Linux machine-id) and, for the profile, that id with this
+ * user's home folder: two people or two environments on one computer stay two. Only one-way hashes leave the computer,
+ * and WorkTrust keeps them only mixed with the account, so the same machine under two accounts matches nothing.
+ * A machine whose id cannot be read sends nothing, and is a computer as before.
+ */
+function machineId() {
+  try {
+    if (OS === "macos") return execFileSync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8", timeout: 3000 }).match(/"IOPlatformUUID" = "([0-9A-Fa-f-]{36})"/)?.[1] ?? null;
+    if (OS === "windows") return execFileSync("reg", ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"], { encoding: "utf8", timeout: 3000 }).match(/MachineGuid\s+REG_SZ\s+([0-9A-Fa-f-]{36})/)?.[1] ?? null;
+    if (OS === "linux") for (const file of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) if (existsSync(file)) { const id = readFileSync(file, "utf8").trim(); if (/^[0-9a-f]{32}$/.test(id)) return id; }
+  } catch { /* unreadable: no identity */ }
+  return null;
+}
+function computerIds() {
+  const machine = machineId();
+  if (!machine) return {};
+  const hash = (text) => createHash("sha256").update(text).digest("base64url");
+  return { device_id: hash(`worktrust-machine|${machine.toLowerCase()}`), profile_id: hash(`worktrust-profile|${machine.toLowerCase()}|${homedir()}`) };
+}
 
 if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or later (fetch is built in from 18).");
 
@@ -323,10 +346,30 @@ function withLock(work) {
   return work().finally(() => { closeSync(handle); try { rmSync(LOCK_FILE); } catch { /* gone */ } });
 }
 
+/**
+ * A KEY FILE ON OTHER HARDWARE (0.6.10, owner 2026-10-05: "a backup restored onto a new device must not upload to the
+ * passport unseen"). The key file remembers the profile it was made on; on any other computer it sends nothing, and
+ * WorkTrust is told once (`/api/cli/moved`), so the key is ended and the owner sees it. `npx worktrust connect` couples this one.
+ */
+async function copiedHere(key) {
+  const here = computerIds().profile_id;
+  if (!key.profile || !here || key.profile === here) return false;
+  try {
+    // Its own door, which only ends and marks the key: nothing is renewed, so no new secret is ever announced here.
+    const url = `${new URL(key.url).origin}/api/cli/moved`, body = JSON.stringify(computerIds());
+    await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, ...proof(key.device, url, body) }, body });
+  } catch { /* offline: it is told next time */ }
+  process.stderr.write("WorkTrust: this key was made on another computer (copied from a backup?). Nothing is sent from here; run `npx worktrust connect` on this computer.\n");
+  return true;
+}
+
 async function freshKey() {
   const first = keyStore.load();
   if (!first) return null;
-  if (!first.pending && Date.now() - Date.parse(first.renewedAt ?? 0) < RENEW_EVERY_MS) return first;
+  if (await copiedHere(first)) return null;
+  // A key made before 0.6.10 renews now, once: the renewal carries the computer's identity. `identified` means it was
+  // tried, so a machine whose id cannot be read does not renew on every use.
+  if (!first.pending && first.identified && Date.now() - Date.parse(first.renewedAt ?? 0) < RENEW_EVERY_MS) return first;
   const settled = await withLock(async () => {
     const value = keyStore.load();
     if (!value) return null;
@@ -335,14 +378,15 @@ async function freshKey() {
       if (next === true) { const promoted = { ...value, token: value.pending, renewedAt: new Date().toISOString() }; delete promoted.pending; keyStore.save(promoted); return promoted; }
       if (next === false) { delete value.pending; keyStore.save(value); }
     }
-    if (Date.now() - Date.parse(value.renewedAt ?? 0) < RENEW_EVERY_MS) return value;
+    if (value.identified && Date.now() - Date.parse(value.renewedAt ?? 0) < RENEW_EVERY_MS) return value;
     const pending = `wt_${randomBytes(32).toString("base64url")}`;
     keyStore.save({ ...value, pending });
     try {
       const renewUrl = `${new URL(value.url).origin}/api/cli/renew`;
-      const body = JSON.stringify({ token_hash: createHash("sha256").update(pending).digest("hex"), token_prefix: pending.slice(0, 11) });
+      const ids = computerIds();
+      const body = JSON.stringify({ token_hash: createHash("sha256").update(pending).digest("hex"), token_prefix: pending.slice(0, 11), ...ids });
       const response = await fetch(renewUrl, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${value.token}`, ...proof(value.device, renewUrl, body) }, body });
-      if (response.ok) { const renewed = { ...value, token: pending, renewedAt: new Date().toISOString() }; keyStore.save(renewed); return renewed; }
+      if (response.ok) { const renewed = { ...value, token: pending, renewedAt: new Date().toISOString(), identified: true, profile: value.profile ?? ids.profile_id }; keyStore.save(renewed); return renewed; }
       // Refused: drop the pending key only if the file still holds the value this renewal read.
       if (response.status === 400 || response.status === 401) { const now = keyStore.load(); if (now?.token === value.token && now?.pending === pending) keyStore.save(value); }
     } catch { /* offline: the pending key is settled next time */ }
@@ -395,6 +439,7 @@ async function bridge() {
 /** THE HOOK Claude Code runs (`worktrust.mjs hook`): the key from the key file, handed to the session hook. */
 async function hook() {
   if (has("antigravity-stop")) return antigravityStop();
+  if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
   if (!key) process.exit(0);
   const child = spawn(process.execPath, [join(HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } });
@@ -421,6 +466,20 @@ async function antigravityStop() {
     process.stdin.on("error", () => { clearTimeout(timer); resolve(text); });
   });
   try { spawn(process.execPath, [fileURLToPath(import.meta.url), "hook", "--antigravity"], { detached: true, stdio: "ignore", env: { ...process.env, WORKTRUST_HOOK_INPUT: input.slice(0, 65536) } }).unref(); } catch { /* the next run sweeps it */ }
+  process.exit(0);
+}
+
+/**
+ * A SESSION-END HOOK THAT READS JSON AND ANSWERS JSON: Hermes Agent's (`hook --hermes`) and Goose's SessionEnd
+ * (`hook --goose`, an Open Plugins hook: JSON on stdin, run with sh -c), 2026-10-05. Hermes pipes a JSON payload (ids, the
+ * model, the platform; no message body) to a shell hook on every `on_session_end` and reads stdout as JSON
+ * (hermes-agent.nousresearch.com/docs/user-guide/features/hooks). This answers `{}` (nothing to change), reads and drops
+ * the payload, and runs the sweep detached: the session hook reads Hermes's own database (transcript-readers.mjs).
+ */
+async function sessionEnd() {
+  writeSync(1, "{}\n");
+  if (!process.stdin.isTTY) await new Promise((resolve) => { const timer = setTimeout(resolve, 2000); process.stdin.on("data", () => {}); process.stdin.on("end", () => { clearTimeout(timer); resolve(); }); process.stdin.on("error", () => { clearTimeout(timer); resolve(); }); });
+  try { spawn(process.execPath, [fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
   process.exit(0);
 }
 
@@ -504,7 +563,7 @@ async function connect() {
   // The device key: made here, its private half kept with the key, its public half bound at WorkTrust.
   const device = direct ? null : generateKeyPairSync("ed25519");
   const apps = foundApps.map((line) => /^\s*[↻+✓] ([^:]+):/.exec(line)?.[1]).filter(Boolean).slice(0, 12);
-  const extra = { apps, ...(device ? { device_key: device.publicKey.export({ format: "jwk" }).x } : {}) };
+  const extra = { apps, ...computerIds(), ...(device ? { device_key: device.publicKey.export({ format: "jwk" }).x } : {}) };
   const pairing = useDevice() ? await pairByCode(host, extra) : await pairByBrowser(host, extra);
   const { token } = pairing;
   // ANOTHER ACCOUNT THAN BEFORE: told by the opaque account names. Unknown counts as another, the safe side.
@@ -514,7 +573,7 @@ async function connect() {
   // Out first, then in: an app that already held a WorkTrust key moves to the new one.
   await run(paths["setup-mcp.mjs"], ["--remove", "--write"], token, true);
   if (!direct) {
-    keyStore.save({ url: MCP, token, renewedAt: new Date().toISOString(), coupledAt: new Date().toISOString(), account: pairing.account, accountRef: pairing.accountRef, device: device.privateKey.export({ format: "pem", type: "pkcs8" }) });
+    keyStore.save({ url: MCP, token, renewedAt: new Date().toISOString(), coupledAt: new Date().toISOString(), identified: true, profile: computerIds().profile_id, account: pairing.account, accountRef: pairing.accountRef, device: device.privateKey.export({ format: "pem", type: "pkcs8" }) });
     previousNote.erase();
     ensureHome();
     copyFileSync(fileURLToPath(import.meta.url), STABLE);
@@ -720,6 +779,7 @@ function status() {
   try { hook = /log-session|worktrust\.mjs\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
   say(hook ? "  Session hook: installed" : "  Session hook: not installed");
   if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust@latest update asks)"); }
+  if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust\.mjs\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust@latest update writes it)"); }
   if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust@latest update asks)");
   say(existsSync(join(HOME_DIR, "pinned")) ? "  Counter: from the package, pinned" : existsSync(join(HOME_DIR, "count-behaviour.mjs")) ? "  Counter: follows the site" : "  Counter: not installed");
 }

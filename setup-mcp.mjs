@@ -8,17 +8,18 @@
  *   node setup-mcp.mjs --remove --write                                             (takes it out again)
  *
  * One machine, one token, many clients: Claude Code, Cursor, Codex, Gemini CLI, VS Code's
- * Copilot agent mode, Windsurf, Mistral Vibe, Google Antigravity, Grok Build, Zed, Cline. Each keeps its own config file in its own shape; this finds
+ * Copilot agent mode, Windsurf, Mistral Vibe, Google Antigravity, Grok Build, Zed, Cline, Hermes Agent, Goose. Each keeps its own config file in its own shape; this finds
  * the ones that exist here and adds the same WorkTrust server to each, so a coupling made once
  * counts everywhere — and every client names itself when it first speaks, which is how Sources
  * shows each product as coupled. Without --write nothing is touched. The token is shown
  * masked; it lives only in the files it is written to. A config that already names the server
  * is left as it is.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
+import { placeUnder, takeOut } from "./config-edits.mjs";
 
 const args = process.argv.slice(2);
 const value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -67,12 +68,109 @@ const masked = BRIDGE ? "kept in ~/.worktrust/key.json, not in these files" : `$
 const stdio = { command: NODE, args: [BRIDGE ?? "", "mcp"] };
 const home = homedir();
 /** Whether Claude Code's own command is on this machine: asked of the shell, never guessed from a file. */
-const claudeOnPath = () => spawnSync(platform() === "win32" ? "where" : "which", ["claude"], { encoding: "utf8", shell: platform() === "win32" }).status === 0;
+const onPath = (command) => spawnSync(platform() === "win32" ? "where" : "which", [command], { encoding: "utf8", shell: platform() === "win32" }).status === 0;
+const claudeOnPath = () => onPath("claude");
 const VIBE_DIR = process.env.VIBE_HOME?.trim() || join(home, ".vibe");
 const GROK_DIR = process.env.GROK_HOME?.trim() || join(home, ".grok");
 const ZED_DIR = platform() === "win32" ? join(process.env.APPDATA ?? home, "Zed") : join(home, ".config", "zed");
 const vscodeUser = platform() === "darwin" ? join(home, "Library", "Application Support", "Code", "User") : platform() === "win32" ? join(process.env.APPDATA ?? home, "Code", "User") : join(home, ".config", "Code", "User");
 const CLINE_DIR = join(vscodeUser, "globalStorage", "saoudrizwan.claude-dev", "settings");
+/**
+ * HERMES AGENT (Nous Research, 2026-10-05): `mcp_servers` in config.yaml under its home (~/.hermes, %LOCALAPPDATA%/hermes
+ * on Windows, HERMES_HOME) and under every profile's own home (profiles/<name>), `command`/`args` for a local server,
+ * `url`/`headers` for a remote one (hermes-agent.nousresearch.com/docs/user-guide/features/mcp). With the bridge it also
+ * gets one shell hook on `on_session_end` that wakes the session hook, which reads Hermes's own session database
+ * (features/hooks); Hermes asks the person once before it runs a new hook. YAML is edited line by line and only in
+ * block style: a file whose sections are written inline is left alone and the entry printed to add by hand.
+ */
+const HERMES_BASE = platform() === "win32" && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "hermes") : join(home, ".hermes");
+const hermesHomes = () => {
+  const homes = new Set([HERMES_BASE, ...(process.env.HERMES_HOME ? [process.env.HERMES_HOME] : [])]);
+  try { for (const name of readdirSync(join(HERMES_BASE, "profiles")).sort()) homes.add(join(HERMES_BASE, "profiles", name)); } catch { /* no profiles */ }
+  return [...homes].filter((dir) => existsSync(dir));
+};
+const HERMES_HOOK = `"${NODE}" "${BRIDGE ?? ""}" hook --hermes`;
+const ours = (text) => text.includes(URL_) || /worktrust\.mjs/.test(text);
+/** A YAML client's file with our entry (and hook) taken out and, unless removing, put back in; null when it cannot be. */
+function yamlConfig(client, text, remove) {
+  const lines = text.trim() === "" ? [] : text.replace(/\n$/, "").split("\n");
+  takeOut(lines, [client.root], (unit) => new RegExp(`^\\s*${NAME}:`).test(unit) || ours(unit));
+  if (client.hook) takeOut(lines, client.hook.path, ours);
+  if (!remove) {
+    if (!placeUnder(lines, [client.root], client.server)) return null;
+    if (client.hook && BRIDGE && !placeUnder(lines, client.hook.path, client.hook.unit)) return null;
+  }
+  return lines.length ? `${lines.join("\n")}\n` : "";
+}
+const bridgeOrUrl = (local, remote) => (BRIDGE ? local : remote);
+const HERMES_SERVER = bridgeOrUrl([`${NAME}:`, `  command: ${JSON.stringify(NODE)}`, `  args: [${JSON.stringify(BRIDGE)}, "mcp"]`], [`${NAME}:`, `  url: ${JSON.stringify(URL_)}`, "  headers:", `    Authorization: ${JSON.stringify(`Bearer ${TOKEN}`)}`]);
+/**
+ * GOOSE (2026-10-05, aaif-goose/goose: crates/goose/src/config/extensions.rs, agents/extension.rs; documentation
+ * guides/config-files.md): `extensions` in config.yaml (~/.config/goose, %APPDATA%\\Block\\goose\\config on Windows,
+ * <GOOSE_PATH_ROOT>/config), each entry `type: stdio` with `cmd` and `args`, or `type: streamable_http` with `uri` and
+ * `headers`. Its hooks come from Open Plugins folders (~/.agents/plugins/<name>/plugin.json + hooks/hooks.json,
+ * guides/context-engineering/hooks.md); with the bridge one plugin named worktrust runs the session hook on SessionEnd.
+ */
+const GOOSE_SERVER = bridgeOrUrl(
+  [`${NAME}:`, "  type: stdio", `  name: ${NAME}`, "  enabled: true", `  cmd: ${JSON.stringify(NODE)}`, `  args: [${JSON.stringify(BRIDGE)}, "mcp"]`, "  envs: {}", "  timeout: 300"],
+  [`${NAME}:`, "  type: streamable_http", `  name: ${NAME}`, "  enabled: true", `  uri: ${JSON.stringify(URL_)}`, "  headers:", `    Authorization: ${JSON.stringify(`Bearer ${TOKEN}`)}`, "  envs: {}", "  timeout: 300"],
+);
+const gooseDirs = () => [...new Set([...(process.env.GOOSE_PATH_ROOT ? [join(process.env.GOOSE_PATH_ROOT, "config")] : []), join(home, ".config", "goose"), ...(platform() === "win32" && process.env.APPDATA ? [join(process.env.APPDATA, "Block", "goose", "config")] : [])])].filter((dir) => existsSync(dir));
+const GOOSE_PLUGIN = join(process.env.GOOSE_PATH_ROOT || home, ".agents", "plugins", NAME);
+const GOOSE_HOOKS = { hooks: { SessionEnd: [{ hooks: [{ type: "command", command: `"${NODE}" "${BRIDGE ?? ""}" hook --goose`, timeout: 30 }] }] } };
+const goosePluginStands = () => { try { return JSON.stringify(JSON.parse(readFileSync(join(GOOSE_PLUGIN, "hooks", "hooks.json"), "utf8"))) === JSON.stringify(GOOSE_HOOKS); } catch { return false; } };
+/** Our plugin folder in, or out; another plugin is never touched, and a folder of that name that is not ours stays. */
+function goosePlugin(remove) {
+  let manifest = null; try { manifest = JSON.parse(readFileSync(join(GOOSE_PLUGIN, "plugin.json"), "utf8")); } catch { /* none */ }
+  if (existsSync(GOOSE_PLUGIN) && manifest?.description !== GOOSE_DESCRIPTION) return false;
+  if (remove) { rmSync(GOOSE_PLUGIN, { recursive: true, force: true }); return true; }
+  mkdirSync(join(GOOSE_PLUGIN, "hooks"), { recursive: true });
+  writeFileSync(join(GOOSE_PLUGIN, "plugin.json"), `${JSON.stringify({ name: NAME, version: "1.0.0", description: GOOSE_DESCRIPTION }, null, 2)}\n`);
+  writeFileSync(join(GOOSE_PLUGIN, "hooks", "hooks.json"), `${JSON.stringify(GOOSE_HOOKS, null, 2)}\n`);
+  return true;
+}
+const GOOSE_DESCRIPTION = "WorkTrust: wakes the WorkTrust session hook when a goose session ends (counts only, never content).";
+
+/**
+ * OPENCODE (2026-10-05, anomalyco/opencode: packages/core/src/v1/config/mcp.ts, opencode.ai/docs/mcp-servers): `mcp` in
+ * ~/.config/opencode/opencode.json(c) (XDG_CONFIG_HOME moves it), `type: "local"` with `command` as one array, or
+ * `type: "remote"` with `url` and `headers`. A file with comments is left alone, as for Zed. With the bridge one plugin
+ * file, plugin/worktrust.js, wakes the session hook when a session goes idle (opencode.ai/docs/plugins: `session.idle`).
+ */
+const OPENCODE_DIR = join(process.env.XDG_CONFIG_HOME || join(home, ".config"), "opencode");
+const OPENCODE_FILE = ["opencode.jsonc", "opencode.json", "config.json"].map((name) => join(OPENCODE_DIR, name)).find((file) => existsSync(file)) ?? join(OPENCODE_DIR, "opencode.json");
+const OPENCODE_PLUGIN = join(OPENCODE_DIR, "plugin", `${NAME}.js`);
+const OPENCODE_MARK = "// WorkTrust: wakes the WorkTrust session hook when an OpenCode session goes idle (counts only, never content).";
+const OPENCODE_PLUGIN_TEXT = `${OPENCODE_MARK}
+import { spawn } from "node:child_process";
+let last = 0;
+export const WorkTrust = async () => ({
+  event: async ({ event }) => {
+    if (event?.type !== "session.idle" || Date.now() - last < 30_000) return;
+    last = Date.now();
+    try { spawn(${JSON.stringify(NODE)}, [${JSON.stringify(BRIDGE ?? "")}, "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
+  },
+});
+`;
+/** Our plugin file in, or out; a file of that name that is not ours stays. */
+function opencodePlugin(remove) {
+  let text = null; try { text = readFileSync(OPENCODE_PLUGIN, "utf8"); } catch { /* none */ }
+  if (text !== null && !text.startsWith(OPENCODE_MARK)) return false;
+  if (remove) { rmSync(OPENCODE_PLUGIN, { force: true }); return true; }
+  mkdirSync(dirname(OPENCODE_PLUGIN), { recursive: true });
+  writeFileSync(OPENCODE_PLUGIN, OPENCODE_PLUGIN_TEXT);
+  return true;
+}
+const opencodePluginStands = () => { try { return readFileSync(OPENCODE_PLUGIN, "utf8") === OPENCODE_PLUGIN_TEXT; } catch { return false; } };
+/**
+ * OPENCLAW (2026-10-05, openclaw/openclaw: docs/cli/mcp/registry.md, transports.md): its servers live under `mcp.servers`
+ * in ~/.openclaw/openclaw.json, a JSON5 file OpenClaw replaces atomically, so it is never edited here: `openclaw mcp set
+ * <name> <json>` writes the entry and `openclaw mcp unset <name>` takes it out (config only, no connection is made).
+ * Without the `openclaw` command on this machine's PATH the command is printed to run. OpenClaw runs no shell hook; its
+ * sessions are read whenever another client's hook runs.
+ */
+const OPENCLAW_FILE = process.env.OPENCLAW_CONFIG_PATH || join(process.env.OPENCLAW_STATE_DIR || join(home, ".openclaw"), "openclaw.json");
+const OPENCLAW_ENTRY = BRIDGE ? { command: NODE, args: [BRIDGE, "mcp"] } : { url: URL_, transport: "streamable-http", headers: { Authorization: `Bearer ${TOKEN}` } };
 
 /** Each client: where it lives, how it says "an HTTP MCP server with a header". */
 const CLIENTS = [
@@ -96,6 +194,10 @@ const CLIENTS = [
   // CLINE (docs.cline.bot/mcp): `mcpServers` in the extension's cline_mcp_settings.json; `type` must be
   // "streamableHttp" exactly, or Cline falls back to SSE and the door answers 405.
   { key: "cline", label: "Cline (VS Code)", present: () => existsSync(CLINE_DIR), file: join(CLINE_DIR, "cline_mcp_settings.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? { ...stdio, disabled: false } : { type: "streamableHttp", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` }, disabled: false } },
+  ...hermesHomes().map((dir) => ({ key: "hermes", label: dir === HERMES_BASE ? "Hermes Agent" : `Hermes Agent (${dir.split(/[\\/]/).pop()})`, present: () => true, file: join(dir, "config.yaml"), shape: "yaml", root: "mcp_servers", server: HERMES_SERVER, hook: { path: ["hooks", "on_session_end"], unit: [`- command: ${JSON.stringify(HERMES_HOOK)}`, "  timeout: 30"], note: "an on_session_end hook (Hermes asks once before it runs it)" } })),
+  ...gooseDirs().map((dir) => ({ key: "goose", label: "Goose", present: () => true, file: join(dir, "config.yaml"), shape: "yaml", root: "extensions", server: GOOSE_SERVER, plugin: true })),
+  { key: "opencode", label: "OpenCode", present: () => existsSync(OPENCODE_DIR), file: OPENCODE_FILE, shape: "json", root: "mcp", entry: BRIDGE ? { type: "local", command: [NODE, BRIDGE, "mcp"], enabled: true } : { type: "remote", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` }, enabled: true }, plugin: "opencode" },
+  { key: "openclaw", label: "OpenClaw", present: () => existsSync(dirname(OPENCLAW_FILE)) || onPath("openclaw"), file: OPENCLAW_FILE, shape: "openclaw" },
   { key: "claude", label: "Claude Code", present: () => existsSync(join(home, ".claude.json")), file: join(home, ".claude.json"), shape: "claude" },
 ];
 
@@ -104,6 +206,19 @@ let touched = 0;
 let standing = 0;
 for (const client of CLIENTS) {
   if (!client.present()) { console.log(`  – ${client.label}: not on this machine`); continue; }
+  if (client.shape === "openclaw") {
+    const text = existsSync(client.file) ? readFileSync(client.file, "utf8") : "";
+    const named = new RegExp(`["']?${NAME}["']?\\s*:\\s*\\{`).test(text) && ours(text);
+    const verb = REMOVE ? ["mcp", "unset", NAME] : ["mcp", "set", NAME, JSON.stringify(OPENCLAW_ENTRY)];
+    const shown = `openclaw ${verb.slice(0, 3).join(" ")}${REMOVE ? "" : ` '${JSON.stringify(OPENCLAW_ENTRY).replace(/Bearer [^"]+/, "Bearer <token>")}'`}`;
+    if (REMOVE ? !named : named && text.includes(JSON.stringify(BRIDGE ?? URL_).slice(1, -1)) && (BRIDGE === undefined || !text.includes(URL_))) { console.log(REMOVE ? `  – ${client.label}: does not name the door` : `  ✓ ${client.label}: already names the door (${client.file})`); if (!REMOVE) standing += 1; continue; }
+    if (!WRITE) { console.log(`  ${REMOVE ? "−" : "+"} ${client.label}: would run ${shown}`); continue; }
+    if (!onPath("openclaw")) { console.log(`  ! ${client.label}: the \`openclaw\` command is not on this machine's PATH; run ${shown}`); continue; }
+    const run = spawnSync("openclaw", verb, { encoding: "utf8", shell: platform() === "win32" });
+    if (run.status === 0) { console.log(`  ${REMOVE ? "−" : "+"} ${client.label}: ${REMOVE ? "removed" : "coupled"} through \`openclaw mcp ${REMOVE ? "unset" : "set"}\``); touched += 1; }
+    else console.log(`  ! ${client.label}: \`openclaw mcp\` refused (${(run.stderr || run.stdout || "").trim().split("\n")[0] || "no output"}); run it yourself: ${shown}`);
+    continue;
+  }
   if (client.shape === "claude") {
     // Claude Code owns this file and has its own verb for it, so this never edits the file: it RUNS
     // the verb when the `claude` command is on this machine (2026-09-28; before, the line was only
@@ -131,7 +246,7 @@ for (const client of CLIENTS) {
   }
   const text = existsSync(client.file) ? readFileSync(client.file, "utf8") : "";
   // With the bridge, coupled means the bridge is in AND no entry with a key in it is left beside it.
-  const already = REMOVE ? text.includes(URL_) || /worktrust\.mjs/.test(text) : BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE).slice(1, -1)) && !text.includes(URL_) : text.includes(URL_);
+  const already = client.shape === "yaml" && !REMOVE ? (BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE)) && (!client.plugin || goosePluginStands()) : text.includes(URL_)) && yamlConfig(client, text, false) === text : REMOVE ? text.includes(URL_) || /worktrust\.mjs/.test(text) : BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE).slice(1, -1)) && !text.includes(URL_) : text.includes(URL_);
   // THE WAY OUT, ON THE MACHINE. Uncoupling in the app ends the TOKEN; the config that names the
   // door stays behind on every client here, so the next person to read this file believes the
   // machine is coupled. `--remove` takes the entry out; the account side is a separate act and
@@ -148,8 +263,12 @@ for (const client of CLIENTS) {
         if (key === NAME || named) delete root[key];
       }
       config[client.root] = root;
-      console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}`);
-      if (WRITE) writeFileSync(client.file, JSON.stringify(config, null, 2) + "\n");
+      console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}${client.plugin && existsSync(OPENCODE_PLUGIN) ? ` and ${OPENCODE_PLUGIN}` : ""}`);
+      if (WRITE) { writeFileSync(client.file, JSON.stringify(config, null, 2) + "\n"); if (client.plugin) opencodePlugin(true); }
+    } else if (client.shape === "yaml") {
+      const next = yamlConfig(client, readFileSync(client.file, "utf8"), true);
+      console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}${client.plugin && existsSync(GOOSE_PLUGIN) ? ` and ${GOOSE_PLUGIN}` : ""}`);
+      if (WRITE) { writeFileSync(client.file, next); if (client.plugin) goosePlugin(true); }
     } else if (client.shape === "vibe") {
       // Vibe's servers are an ARRAY of tables, so a block is found by what it says, not by its header: every
       // `[[mcp_servers]]` that names ours, the door, or the bridge goes, up to the next header at a line start.
@@ -170,7 +289,7 @@ for (const client of CLIENTS) {
     touched += 1;
     continue;
   }
-  if (already) { console.log(`  ✓ ${client.label}: already names the door (${client.file})`); standing += 1; continue; }
+  if (already && !(client.plugin === "opencode" && BRIDGE && !opencodePluginStands())) { console.log(`  ✓ ${client.label}: already names the door (${client.file})`); standing += 1; continue; }
   if (client.shape === "json") {
     let config = {};
     // NEVER OVERWRITE WHAT DOES NOT PARSE (2026-10-04): Zed's and VS Code's settings allow comments and trailing
@@ -182,8 +301,20 @@ for (const client of CLIENTS) {
       continue;
     }
     config[client.root] = { ...(config[client.root] ?? {}), [NAME]: client.entry };
-    console.log(`  + ${client.label}: ${WRITE ? "wrote" : "would write"} ${client.file} → ${client.root}.${NAME}`);
-    if (WRITE) { mkdirSync(dirname(client.file), { recursive: true }); writeFileSync(client.file, JSON.stringify(config, null, 2) + "\n"); touched += 1; }
+    console.log(`  + ${client.label}: ${WRITE ? "wrote" : "would write"} ${client.file} → ${client.root}.${NAME}${client.plugin && BRIDGE ? ` and ${OPENCODE_PLUGIN}` : ""}`);
+    if (WRITE) {
+      mkdirSync(dirname(client.file), { recursive: true }); writeFileSync(client.file, JSON.stringify(config, null, 2) + "\n"); touched += 1;
+      if (client.plugin && BRIDGE && !opencodePlugin(false)) console.log(`  ! ${client.label}: ${OPENCODE_PLUGIN} exists and is not WorkTrust's, so no plugin was written; OpenCode sessions are still read whenever another hook runs`);
+    }
+  } else if (client.shape === "yaml") {
+    const next = yamlConfig(client, text, false);
+    if (next === null) { console.log(`  ! ${client.label}: ${client.file} writes ${client.root}${client.hook ? " or hooks" : ""} inline, so it is left as it is. Add under ${client.root}:\n    ${client.server.join("\n    ")}`); continue; }
+    const hookNote = !BRIDGE ? "" : client.hook ? ` and ${client.hook.note}` : client.plugin ? ` and a SessionEnd hook in ${GOOSE_PLUGIN}` : "";
+    console.log(`  + ${client.label}: ${WRITE ? "wrote" : "would write"} ${client.file} → ${client.root}.${NAME}${hookNote}`);
+    if (WRITE) {
+      mkdirSync(dirname(client.file), { recursive: true }); writeFileSync(client.file, next); touched += 1;
+      if (client.plugin && BRIDGE && !goosePlugin(false)) console.log(`  ! ${client.label}: ${GOOSE_PLUGIN} exists and is not WorkTrust's, so no hook was written; goose sessions are still read whenever another hook runs`);
+    }
   } else if (client.shape === "toml" || client.shape === "vibe") {
     console.log(`  + ${client.label}: ${WRITE ? "appended to" : "would append to"} ${client.file} → ${client.shape === "vibe" ? `[[mcp_servers]] name = "${NAME}"` : `[mcp_servers.${NAME}]`}`);
     if (WRITE) { mkdirSync(dirname(client.file), { recursive: true }); writeFileSync(client.file, (existsSync(client.file) ? readFileSync(client.file, "utf8") : "") + client.block); touched += 1; }

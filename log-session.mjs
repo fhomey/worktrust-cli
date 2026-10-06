@@ -196,24 +196,26 @@ const excludes = (() => {
 })();
 const excluded = (path) => excludes.some((text) => text && path.includes(text));
 /**
- * THE READERS FOR CODEX AND ANTIGRAVITY live in transcript-readers.mjs beside this file (2026-10-04;
- * the counter imports the same file, so there is one reader, not two copies). The install copies it
- * into ~/.worktrust with this hook. Without it this hook still reads Claude Code; the never-matching
- * patterns below keep every other client out rather than half read.
+ * THE READERS live beside this file: Codex and Antigravity in transcript-readers.mjs (the counter imports it too, one
+ * reader), the database clients in session-databases.mjs. The install copies both into ~/.worktrust with this hook.
+ * Without them this hook still reads Claude Code; the never-matching patterns keep every other client out.
  */
 const { CODEX_ROLLOUT = /(?!)/, codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
-const READERS = join(dirname(fileURLToPath(import.meta.url)), "transcript-readers.mjs");
-const READERS_HOME = join(homedir(), ".worktrust", "transcript-readers.mjs");
+const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
+const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw"]; // the registry's keys, the name each line carries
+const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs"];
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {
-  try {
-    if (!fromNetwork && existsSync(READERS)) { mkdirSync(dirname(READERS_HOME), { recursive: true }); if (READERS !== READERS_HOME) copyFileSync(READERS, READERS_HOME); return true; }
-    if (!origin) return false;
-    const response = await fetch(`${origin}/counter/transcript-readers.mjs`);
-    if (!response.ok) return false;
-    writeFileSync(READERS_HOME, await response.text());
-    return true;
-  } catch { return false; }
+  let installed = true;
+  for (const name of READER_FILES) { // Hermes, Goose, OpenCode and OpenClaw are read by session-databases.mjs
+    const here = join(dirname(fileURLToPath(import.meta.url)), name), home = join(homedir(), ".worktrust", name);
+    try {
+      if (!fromNetwork && existsSync(here)) { mkdirSync(dirname(home), { recursive: true }); if (here !== home) copyFileSync(here, home); continue; }
+      const response = origin ? await fetch(`${origin}/counter/${name}`) : null;
+      if (response?.ok) writeFileSync(home, await response.text()); else installed = false;
+    } catch { installed = false; }
+  }
+  return installed;
 }
 
 /** The roots this machine's transcripts live under; a test names its own. */
@@ -228,6 +230,14 @@ function* codexRollouts() {
     yield { id: `codex:${file.split("/").at(-1).replace(/\.jsonl$/, "")}`, file };
   }
   yield* antigravityConversations();
+  yield* databaseConversations();
+}
+/** The attended sessions of the clients that keep a database (session-databases.mjs); an excluded folder skipped. */
+function* databaseConversations() {
+  const given = Object.fromEntries(DATABASE_CLIENTS.map((client) => [client, value(`${client}-root`)]).filter(([, root]) => root));
+  for (const { client, sessionId, file, cwd, writtenAt } of databaseSessions(given, Boolean(value("transcript-root")))) {
+    if (!(cwd && excluded(cwd))) yield { id: `${client}:${sessionId}`, file, writtenAt };
+  }
 }
 /** Antigravity beside Codex: one transcript per conversation, its folder known only from the Stop hook. */
 function* antigravityConversations() {
@@ -239,6 +249,7 @@ function* antigravityConversations() {
 }
 /** A transcript's lines as objects, whichever client wrote it; null when the file cannot be read. */
 const parsedLines = (file) => {
+  if (DATABASE_SESSION.test(file)) return databaseLines(file);
   let lines; try { lines = readFileSync(file, "utf8").split("\n"); } catch { return null; }
   if (CODEX_ROLLOUT.test(file)) return [...codexLines(lines)];
   if (ANTIGRAVITY_TRANSCRIPT.test(file)) { const id = file.split("/").at(-4); return [...antigravityLines(lines, { id, ...antigravityContext(id) })]; }
@@ -313,9 +324,10 @@ function stretchesOf(file, since) {
   const lines = parsedLines(file);
   if (!lines) return [];
   const messages = [];
-  let cwd = null;
+  let cwd = null, steered = STEERED_HERE;
   for (const line of lines) {
     if (typeof line.cwd === "string") cwd = line.cwd;
+    if (typeof line.steered === "string") steered = line.steered; // a client that says how it was steered (Hermes's source)
     if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
     const at = Date.parse(line.timestamp);
     if (!Number.isFinite(at)) continue;
@@ -330,7 +342,7 @@ function stretchesOf(file, since) {
     if (!byDay.has(day)) byDay.set(day, []);
     byDay.get(day).push(message);
   }
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, ofDay]) => measure(cwd, ofDay)).filter(Boolean);
+  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered }; }).filter(Boolean);
 }
 
 /**
@@ -408,6 +420,11 @@ function tokensOf(messages) {
   return { tokensIn, tokensOut, cacheRead, cacheWrite, shapeKnown: counted > 0 };
 }
 
+// WHICH STRETCH, HOW STEERED (0.6.10): a hash of the session id (the file name) and the day, the same on any computer, so a
+// restored backup is never counted twice; `remote` only when the session runs over SSH, otherwise nothing is said.
+const stretchRef = (file, day) => createHash("sha256").update(`worktrust-stretch|${String(file).split(/[\\/]/).pop().replace(/\.jsonl?$/, "")}|${day}`).digest("base64url");
+const STEERED_HERE = process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY ? "remote" : null;
+
 /** The one payload shape this script can build. Every key is a number, a date or an enum value. */
 function payloadFor(stretch) {
   const cwd = stretch.cwd && existsSync(stretch.cwd) ? stretch.cwd : null;
@@ -437,6 +454,7 @@ function payloadFor(stretch) {
     ...(stretch.model ? { model: stretch.model } : {}),
     ...(repo ? { repo } : {}),
     ...(touched.shas.length > 0 ? { commits: touched.shas.slice(0, 50) } : {}),
+    ...(stretch.ref ? { stretch_ref: stretch.ref } : {}), ...(stretch.steered ? { steered_from: stretch.steered } : {}),
     at: new Date(stretch.to).toISOString(),
   };
 }
@@ -453,7 +471,7 @@ async function sendHistory(door, entries, announce = false) {
   // A Codex entry goes through Codex's own coupling where one exists (see codexDoor), the rest
   // through the door given: the record files a line under the coupling that sent it. Antigravity's
   // go apart too, so their batch can name the client (clientOf).
-  for (const [source, group] of [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ["antigravity", entries.filter((entry) => entrySource.get(entry) === "antigravity")]]) {
+  for (const [source, group] of [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])]) {
   const target = source === "codex" ? codexDoor ?? door : door;
   if (group.length === 0 || !target) continue;
   for (let i = 0; i < group.length; i += 200) {
@@ -484,7 +502,7 @@ const proofFor = (url, body) => {
  * on this computer, and the door names a coupling's clients by the user-agent it hears (mcp_identify's
  * agents_seen). An Antigravity line names Antigravity: the product name, nothing of the work.
  */
-const clientOf = (source) => (source === "antigravity" ? { "user-agent": "antigravity/hook (worktrust-hook)" } : {});
+const clientOf = (source) => (source === "antigravity" || DATABASE_CLIENTS.includes(source) ? { "user-agent": `${source}/hook (worktrust-hook)` } : {});
 
 async function send(door, payload) {
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "log_work", arguments: payload } });
@@ -512,10 +530,11 @@ function historyEntries(floor = null) {
   for (const { file } of allTranscripts()) {
     const lines = parsedLines(file);
     if (!lines) continue;
-    let cwd = null;
+    let cwd = null, steered = null;
     const byDay = new Map();
     for (const line of lines) {
       if (typeof line.cwd === "string") cwd = line.cwd;
+      if (typeof line.steered === "string") steered = line.steered;
       if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
       const at = Date.parse(line.timestamp);
       if (!Number.isFinite(at)) continue;
@@ -543,13 +562,13 @@ function historyEntries(floor = null) {
       const entry = payloadFor({
         cwd, seconds: seconds >= MIN_SECONDS ? Math.min(MAX_SECONDS, seconds) : null,
         tokensIn, tokensOut, cacheRead, cacheWrite, shapeKnown, exchanges, model: [...models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
-        from: messages[0].at, to: last,
+        from: messages[0].at, to: last, ref: stretchRef(file, day), steered,
       });
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
+      if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));
       entryFile.set(entry, file);
       entries.push(entry);
-      void day;
     }
   }
   return entries.sort((a, b) => a.at.localeCompare(b.at));
@@ -581,6 +600,7 @@ function* allTranscripts() {
  */
 function* candidates() {
   for (const rollout of codexRollouts()) {
+    if (rollout.writtenAt) { yield rollout; continue; } // a database session knows its own last moment
     let stat; try { stat = statSync(rollout.file); } catch { continue; }
     yield { ...rollout, writtenAt: stat.mtimeMs };
   }
@@ -630,7 +650,7 @@ if (flag("uninstall")) {
   }
   const removed = before !== JSON.stringify(HOOK_EVENTS.map((event) => settings.hooks?.[event] ?? []));
   if (removed) writeFileSync(file, JSON.stringify(settings, null, 2));
-  if (flag("purge")) for (const path of [COUNTER, PINNED, join(homedir(), ".worktrust", "log-session.mjs"), STATE, READERS_HOME, join(homedir(), ".worktrust", "antigravity.json")]) { try { rmSync(path); } catch { /* already gone */ } }
+  if (flag("purge")) for (const path of [COUNTER, PINNED, join(homedir(), ".worktrust", "log-session.mjs"), STATE, ...READER_FILES.map((name) => join(homedir(), ".worktrust", name)), join(homedir(), ".worktrust", "antigravity.json")]) { try { rmSync(path); } catch { /* already gone */ } }
   console.log(`${removed ? "removed" : "nothing wired"}: ${file}${flag("purge") ? "\n         purged ~/.worktrust" : ""}`);
   console.log("the coupling itself still exists: end it in the app (Sources → the computer's row → end this coupling)");
   process.exit(0);
@@ -698,7 +718,7 @@ if (flag("install")) {
   // The counting half, from the same deployment the hook came from: one command installs both, or
   // says plainly that it could not — a half nobody knows is missing is the worse outcome.
   const counterOrigin = coupling()?.url ? new URL(coupling().url).origin : null;
-  if (!(await installReaders(counterOrigin))) console.log("readers:   transcript-readers.mjs not found beside this file nor at the deployment; Codex and Antigravity are not read until it is");
+  if (!(await installReaders(counterOrigin))) console.log("readers:   transcript-readers.mjs or session-databases.mjs not found beside this file nor at the deployment; the clients they read are not read until they are");
   if (existsSync(COUNTER)) await refreshCounter(counterOrigin, (line) => console.log(line));
   if (!existsSync(COUNTER)) {
     const origin = counterOrigin;
@@ -802,7 +822,7 @@ for (const entry of work) {
     // every day but today, on whichever run comes first — it no longer waits for its own end.
     if (Date.now() - stretch.to < IDLE_BEFORE_SWEEP) break;
     const payload = payloadFor(stretch);
-    const source = /^(codex|antigravity):/.exec(String(entry.id))?.[1];
+    const source = /^(codex|antigravity|hermes|goose|opencode|openclaw):/.exec(String(entry.id))?.[1];
     if (source) entrySource.set(payload, source);
     if (DRY) { console.log(JSON.stringify({ ...payload, client: source ?? "claude", route: Date.now() - stretch.to > WINDOW_HOURS * 3600_000 ? "history" : "log_work" }, null, 1)); through = stretch.to; continue; }
     // MEASURED TIME IS NEVER DROPPED. The live door takes work as it happens and refuses anything

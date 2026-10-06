@@ -45,6 +45,23 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
    single `Stop` command to `~/.gemini/config/hooks.json` (kept as `hooks.json.worktrust-backup`
    first). Other hooks in that file stay as they are. Antigravity records no token counts, so its
    sessions arrive with durations and turn counts only.
+7. **Hermes Agent with the other apps.** With Hermes on this computer (`~/.hermes`, and every profile
+   under `~/.hermes/profiles`) its `config.yaml` gets the WorkTrust entry under `mcp_servers` and one
+   `on_session_end` hook that wakes the session hook; Hermes itself asks once before it runs a new
+   hook. A file that writes those sections inline is left as it is. The session hook reads Hermes's
+   own `state.db`: clocks, roles, the model and the session's token totals, never a message. A chat
+   app (Telegram, WhatsApp, Slack …) is sent as work steered from elsewhere; a subagent's, a
+   scheduled job's or a board task's session is not counted. Needs Node 22.5 or newer.
+8. **Goose, OpenCode and OpenClaw the same way.** Goose gets the entry under `extensions` in
+   `~/.config/goose/config.yaml` and one plugin folder, `~/.agents/plugins/worktrust`, whose
+   SessionEnd hook wakes the session hook. OpenCode gets it under `mcp` in
+   `~/.config/opencode/opencode.json` (a file with comments is left as it is) and one plugin file,
+   `plugin/worktrust.js`, that wakes the session hook when a session goes idle. OpenClaw is coupled
+   through its own `openclaw mcp set` (and `openclaw mcp unset` on disconnect); without that command
+   on this computer it is printed for you to run. Each is read from its own session database, the
+   same way as Hermes: clocks, roles, models and token counts, never a message. OpenClaw's Talk
+   sessions are sent as voice, its chat-app sessions as remote; subagents and scheduled runs are
+   not counted.
 
 ```
 npx worktrust history       send this computer's earlier sessions later (asks first)
@@ -77,8 +94,8 @@ which would delete every password on the computer, and many people rightly keep 
 
 | | |
 |---|---|
-| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's own session files on this computer to measure durations and token counts. |
-| **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
+| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files and the session databases of Hermes, Goose, OpenCode and OpenClaw on this computer to measure durations and token counts. |
+| **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`, Hermes's and Goose's `config.yaml`, OpenCode's `opencode.json`, OpenClaw through `openclaw mcp set`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
 | **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. WorkTrust also records the network address the request arrives from, as a security record kept 90 days and seen only by WorkTrust staff (to answer a theft or fraud report). |
 | **Sends, afterwards** | Durations, token counts, model names, one layer keyword (frontend, backend …), counts of how you work. |
 | **Never sends** | Prompts, answers, code, file names or paths, commit messages, branch or project names. The door has no field for them and refuses a submission that carries them. |
@@ -115,7 +132,7 @@ which would delete every password on the computer, and many people rightly keep 
 
 ## Undo
 
-`npx worktrust disconnect` removes the WorkTrust entries, the hook (and Codex's `notify` line and
+`npx worktrust disconnect` removes the WorkTrust entries (Hermes's hook with them), the hook (and Codex's `notify` line and
 Antigravity's `worktrust` hook when WorkTrust set them) and the key file, and empties
 `~/.worktrust` but for one small note of which account it fed (masked), so that a later coupling by
 another account offers none of this computer's earlier work.

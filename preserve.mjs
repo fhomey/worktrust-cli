@@ -271,10 +271,12 @@ function archive(dir) {
   if (existing.broken) { say(`  The archive in ${dir} does not verify, so nothing was added: ${existing.broken}`); process.exit(1); }
   const hook = spawnSync(process.execPath, [join(HERE, "log-session.mjs"), "--archive-lines"], { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "", WORKTRUST_HOOK_INPUT: "" } });
   if (hook.status !== 0) { say(`  The session hook could not read this computer's sessions: ${(hook.stderr || "").trim().split("\n").pop()}`); process.exit(1); }
-  const known = new Set(existing.lines.map((line) => line.stretch_ref));
-  const fresh = [];
+  // A WHOLE ANSWER OR NOTHING: the hook ends with its own count; one line missing or cut is a read to refuse, never part of an archive.
+  const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();
+  if (!Number.isInteger(end) || end !== rows.length - 1) { say(`  The session hook's answer came back incomplete (${rows.length - 1} of ${end ?? "an unknown number of"} lines), so nothing was added. Run it again.`); process.exit(1); }
+  const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [];
   let waiting = 0;
-  for (const text of hook.stdout.split("\n")) {
+  for (const text of rows.slice(0, -1)) {
     let entry; try { entry = JSON.parse(text); } catch { continue; }
     const line = archiveLine(entry);
     if (!line || known.has(line.stretch_ref)) continue;
@@ -303,7 +305,7 @@ function archive(dir) {
   }
   if (fresh.length > 0 || !existing.manifest) writeFileSync(join(dir, "manifest.json"), `${JSON.stringify({ format: "worktrust-ai-evidence/1", collector_version: COLLECTOR, created: existing.manifest?.created ?? new Date().toISOString(), updated: new Date().toISOString(), clients: [...new Set(all.map((line) => line.client))].sort(), ...IDS, count: all.length, head: prev }, null, 1)}\n`);
   say();
-  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir} (${all.length} in all)${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
+  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${all.length}, the session hook measures ${rows.length - 1 - waiting} finished ones here now${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
   if (waiting > 0) say(`    ${waiting} of today wait for tomorrow's run: a day is archived once it is over.`);
   say("    Metadata only: clocks, counts, model names, a hash of each project's name. Nothing was sent.");
 }

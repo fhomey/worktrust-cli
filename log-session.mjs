@@ -62,6 +62,8 @@ import { createHash, randomBytes, sign as cryptoSign } from "node:crypto";
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
+// Exit once stdout is written: to a pipe it is asynchronous and process.exit drops what is queued (0.6.13 cut --archive-lines).
+const exitFlushed = (code) => new Promise((resolve) => process.stdout.write("", resolve)).then(() => process.exit(code));
 const value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
 const DRY = flag("dry-run");
 
@@ -748,7 +750,7 @@ if (flag("uninstall")) {
   if (flag("purge")) for (const path of [COUNTER, PINNED, join(homedir(), ".worktrust", "log-session.mjs"), STATE, ...READER_FILES.map((name) => join(homedir(), ".worktrust", name)), join(homedir(), ".worktrust", "antigravity.json")]) { try { rmSync(path); } catch { /* already gone */ } }
   console.log(`${removed ? "removed" : "nothing wired"}: ${file}${flag("purge") ? "\n         purged ~/.worktrust" : ""}`);
   console.log("the coupling itself still exists: end it in the app (Sources → the computer's row → end this coupling)");
-  process.exit(0);
+  await exitFlushed(0);
 }
 
 if (flag("install")) {
@@ -827,7 +829,7 @@ if (flag("install")) {
       } catch (error) { console.log(`counter: could not fetch it (${error.message}) — the hook works without it; fetch /counter/count-behaviour.mjs later`); }
     }
   }
-  if (already && !repaired) { console.log(hookRefreshed ? `hook updated: ${home} now runs the version you downloaded; the wiring was already right (${command})` : `already installed — nothing changed (${command})`); process.exit(0); }
+  if (already && !repaired) { console.log(hookRefreshed ? `hook updated: ${home} now runs the version you downloaded; the wiring was already right (${command})` : `already installed — nothing changed (${command})`); await exitFlushed(0); }
   for (const event of added) settings.hooks[event].push({ hooks: [{ type: "command", command }] });
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2));
@@ -838,7 +840,7 @@ if (flag("install")) {
   // never rewrites: `npx worktrust` asks and writes it (WORKTRUST_CODEX_OFFER, so no hint twice), and
   // without it Codex rollouts are still swept whenever the Claude Code hook runs.
   if (existsSync(join(homedir(), ".codex")) && !process.env.WORKTRUST_CODEX_OFFER) console.log(`codex:      to have Codex wake this hook too, add to ~/.codex/config.toml:\n            notify = ${via ? `["${process.env.WORKTRUST_NODE || process.execPath}", "${via}", "hook", "--codex-notify"]` : `["node", "${home}", "--codex-notify"]`}\n            (its rollouts are swept on every run either way)`);
-  process.exit(0);
+  await exitFlushed(0);
 }
 
 const door = coupling();
@@ -853,7 +855,7 @@ const doorFor = (entry) => (String(entry?.id ?? "").startsWith("codex:") ? codex
 const entrySource = new WeakMap(); // an entry → "codex" or "antigravity" by the client that wrote it; the sends route and name by it
 const entryFile = new WeakMap(); // a history entry → its transcript (`--summary` counts sessions), first moment and folder name (`--archive-lines`)
 // THE LOCAL ARCHIVE (`npx worktrust preserve --archive`, 2026-10-06): every measured day, live window and floors aside, as JSON lines to preserve.mjs on this computer, which keeps metadata only; nothing is sent.
-if (flag("archive-lines")) { for (const entry of historyEntries(null, true)) console.log(JSON.stringify({ ...entry, client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.exit(0); }
+if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
 
 if (flag("history")) {
@@ -862,16 +864,16 @@ if (flag("history")) {
   const hours = entries.reduce((sum, entry) => sum + (entry.seconds ?? 0), 0) / 3600;
   const months = [...new Set(entries.map((entry) => entry.at.slice(0, 7)))].sort();
   // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, hours, first and last month; nothing sent.
-  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null })); process.exit(0); }
+  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null })); await exitFlushed(0); }
   console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} measured hours · ${months.join(", ")}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.
     if (entries[0]) console.log(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`);
     console.log("\ndry run — nothing sent. Add --history without --dry-run to import them.");
-    process.exit(0);
+    await exitFlushed(0);
   }
   // A batch the door refused is a failure the caller must see, not a quiet zero.
-  process.exit((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
+  await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
 }
 
 const input = hookInput();
@@ -964,4 +966,4 @@ if (!DRY && existsSync(COUNTER)) {
     } catch { /* the counter is a bonus; a hook that fails on it would cost the stretch it just logged */ }
   }
 }
-process.exit(0);
+await exitFlushed(0);

@@ -65,7 +65,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.6.10";
+const CLI_VERSION = "0.6.11";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -177,10 +177,14 @@ async function pairByBrowser(host, extra) {
   const state = randomBytes(24).toString("base64url");
   let deliver;
   const answer = new Promise((resolve) => { deliver = resolve; });
+  // Where the browser goes once this terminal has its code (0.6.11, owner 2026-10-06): WorkTrust's own "connected" page in
+  // the house style, not a bare page on 127.0.0.1. Known once the pairing has its code; until then the plain page.
+  let doneUrl = null;
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname !== "/callback" || url.searchParams.get("state") !== state || !url.searchParams.get("code")) { response.writeHead(404).end(); return; }
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(DONE_PAGE);
+    if (doneUrl) response.writeHead(303, { location: doneUrl, "cache-control": "no-store" }).end();
+    else response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(DONE_PAGE);
     deliver(url.searchParams.get("code"));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -189,6 +193,7 @@ async function pairByBrowser(host, extra) {
   if (!pairing) { server.close(); fail(`cannot reach ${ORIGIN}.`); }
   if (pairing.status !== 200) { server.close(); fail(pairing.json.error === "rate_limited" ? "too many attempts from this network; wait a minute." : `pairing refused (${pairing.json.error ?? pairing.status}).`); }
   const { device_code: secret, authorize_url: url, user_code: shown, expires_in: lifetime = 600, features = [] } = pairing.json;
+  doneUrl = `${ORIGIN}/connect/computer/done?code=${encodeURIComponent(shown)}`;
   if (!features.includes("loopback")) { server.close(); fail(`${ORIGIN} is older than this command. Use the command WorkTrust shows under Sources → Add a computer.`); }
   say();
   say(`  Your code:  ${shown}  (the WorkTrust page shows the same; approve only if it matches)`);
@@ -403,8 +408,21 @@ async function freshKey() {
  * the key from the key file, answers on stdout. It names the app that started it (from `initialize`),
  * so WorkTrust still sees Claude Code or Cursor, not the bridge.
  */
+/**
+ * A SWEEP WHEN AN AI APP OPENS THE DOOR (0.6.11, owner 2026-10-06). Cursor and VS Code run no hook WorkTrust can give
+ * them, so the session hook never woke for a person who works there all day; both do start this bridge whenever they
+ * open. So the bridge starts the sweep once, detached and silent (stdout stays the MCP channel), at most once an hour.
+ */
+function sweepAtMostHourly() {
+  const stamp = join(HOME_DIR, "bridge-swept-at");
+  try { if (Date.now() - Number(readFileSync(stamp, "utf8")) < 3_600_000) return; } catch { /* never swept here */ }
+  try { mkdirSync(HOME_DIR, { recursive: true }); writeFileSync(stamp, String(Date.now())); } catch { return; }
+  try { spawn(process.execPath, [fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next start sweeps */ }
+}
+
 async function bridge() {
   let key = await freshKey();
+  if (key) sweepAtMostHourly();
   const answer = (id, message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message } })}\n`);
   let session = null;
   let agent = "worktrust-bridge";

@@ -8,7 +8,7 @@
  * like transcript-readers.mjs; without it, or without node:sqlite, these clients are not read and nothing else changes.
  */
 import { createRequire } from "node:module";
-import { readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as zlib from "node:zlib"; // zstd since Node 22.15; older Node reads OpenClaw's uncompressed rows only
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -288,6 +288,144 @@ export function openclawLines(pseudo) {
 }
 // ── end openclaw session reader ──
 
+// ── cursor session reader ──
+/**
+ * CURSOR, READ FROM ITS OWN DATABASE (2026-10-06, the owner: "a person who works in Cursor all day has no measured
+ * hours"). Cursor keeps every chat ("composer") in one SQLite file, `User/globalStorage/state.vscdb` (~/Library/Application
+ * Support/Cursor on macOS, %APPDATA%\Cursor on Windows, ~/.config/Cursor on Linux), table cursorDiskKV: `composerData:<id>`
+ * per chat and `bubbleId:<id>:<bubble>` per message. Each message is read through json_extract INSIDE SQLite, its type
+ * (1 the person, 2 the model), its clock and its token counts, so no text ever leaves the database. A model message that
+ * carries a tool call is the loop's own step. The folder a chat belongs to is read from each workspace's own state
+ * (`composer.composerData`); a chat in no workspace has none. Needs node:sqlite (Node 22.5+).
+ */
+const userDirs = (app) => {
+  const base = platform() === "win32" && process.env.APPDATA ? process.env.APPDATA : platform() === "darwin" ? join(homedir(), "Library", "Application Support") : join(homedir(), ".config");
+  return [join(base, app, "User")];
+};
+const folderOf = (uri) => { try { return typeof uri === "string" && uri.startsWith("file://") ? decodeURIComponent(new URL(uri).pathname).replace(/^\/([A-Za-z]:)/, "$1") : null; } catch { return null; } };
+export function cursorHomes(given) { return given ? [given.replace(/^~(?=\/|$)/, homedir())] : userDirs("Cursor"); }
+/** Which folder each composer belongs to, from every workspace's own state. */
+function cursorFolders(home) {
+  const folders = new Map();
+  let dirs = []; try { dirs = readdirSync(join(home, "workspaceStorage")); } catch { return folders; }
+  for (const dir of dirs) {
+    let folder = null; try { folder = folderOf(JSON.parse(readFileSync(join(home, "workspaceStorage", dir, "workspace.json"), "utf8")).folder); } catch { continue; }
+    if (!folder) continue;
+    const db = openDatabase(join(home, "workspaceStorage", dir, "state.vscdb"));
+    if (!db) continue;
+    try {
+      const row = db.prepare("select json_extract(value, '$.allComposers') as ids from ItemTable where key = 'composer.composerData'").get();
+      for (const one of JSON.parse(row?.ids ?? "[]")) if (one?.composerId) folders.set(String(one.composerId), folder);
+    } catch { /* an older schema */ } finally { db.close(); }
+  }
+  return folders;
+}
+export function* cursorSessions(homes) {
+  for (const home of homes) {
+    const file = join(home, "globalStorage", "state.vscdb");
+    try { if (!statSync(file).isFile()) continue; } catch { continue; }
+    const folders = cursorFolders(home);
+    const db = openDatabase(file);
+    if (!db) continue;
+    try {
+      const rows = db.prepare("select substr(key, 14) as id, json_extract(value, '$.lastUpdatedAt') as last from cursorDiskKV where key like 'composerData:%'").all();
+      for (const row of rows) {
+        if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(String(row.id))) continue;
+        yield { sessionId: String(row.id), file: `cursor:${file}#${row.id}`, cwd: folders.get(String(row.id)) ?? null, writtenAt: Number(row.last) || 0 };
+      }
+    } catch { /* an older or foreign schema: not read */ } finally { db.close(); }
+  }
+}
+export function cursorLines(pseudo) {
+  const { file, id } = splitSession(pseudo);
+  const db = openDatabase(file);
+  if (!db) return null;
+  try {
+    const chat = db.prepare("select json_extract(value, '$.modelConfig.modelName') as model from cursorDiskKV where key = ?").get(`composerData:${id}`);
+    const bubbles = db.prepare(`select json_extract(value, '$.type') as type, json_extract(value, '$.createdAt') as at,
+        json_extract(value, '$.tokenCount.inputTokens') as input, json_extract(value, '$.tokenCount.outputTokens') as output,
+        json_extract(value, '$.toolFormerData') is not null as tool
+      from cursorDiskKV where key > ? and key < ? and json_extract(value, '$.createdAt') is not null`).all(`bubbleId:${id}:`, `bubbleId:${id};`);
+    const model = cleanModel(chat?.model);
+    const lines = [];
+    for (const bubble of bubbles.sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
+      const timestamp = new Date(bubble.at).toISOString();
+      if (Number(bubble.type) === 1) lines.push({ type: "user", timestamp, message: { content: [{ type: "text" }] } });
+      else if (Number(bubble.type) === 2) {
+        const usage = Number(bubble.input) || Number(bubble.output) ? { usage: { input_tokens: Number(bubble.input) || 0, output_tokens: Number(bubble.output) || 0 } } : {};
+        lines.push({ type: "assistant", timestamp, message: { model, ...usage, content: bubble.tool ? [{ type: "tool_use", name: "tool", input: {} }] : [] } });
+      }
+    }
+    return lines;
+  } catch { return null; } finally { db.close(); }
+}
+// ── end cursor session reader ──
+
+// ── copilot session reader ──
+/**
+ * GITHUB COPILOT IN VS CODE (2026-10-06). VS Code keeps each Copilot chat as a file: `chatSessions/<id>.jsonl` under
+ * every workspace's storage (`User/workspaceStorage/<hash>/`, its folder in `workspace.json`) and, for a window with no
+ * folder, under `User/globalStorage/emptyWindowChatSessions/`. A .jsonl file is a log of edits (kind 0 the whole
+ * session, 1 a value set at a path, 2 items appended at a path); an older .json file is the session whole. Each
+ * request is read for its clocks and counts only: when it was asked (`timestamp`, the person's turn) and when the
+ * model finished (`modelState.completedAt`), the model it resolved to and the prompt and output tokens. The messages,
+ * the responses and the tool calls' text are parsed with the file and never kept. Agent mode runs a request's tools
+ * between those two clocks without stamping each step, so under the same rule as every other client that span counts
+ * up to the idle cap, as one gap.
+ */
+export function copilotHomes(given) { return given ? [given.replace(/^~(?=\/|$)/, homedir())] : [...userDirs("Code"), ...userDirs("Code - Insiders")]; }
+export function* copilotSessions(homes) {
+  for (const home of homes) {
+    const places = [];
+    try { for (const dir of readdirSync(join(home, "workspaceStorage"))) places.push({ dir: join(home, "workspaceStorage", dir, "chatSessions"), workspace: join(home, "workspaceStorage", dir, "workspace.json") }); } catch { /* none */ }
+    places.push({ dir: join(home, "globalStorage", "emptyWindowChatSessions"), workspace: null });
+    for (const place of places) {
+      let names = []; try { names = readdirSync(place.dir); } catch { continue; }
+      let cwd = null; if (place.workspace) { try { cwd = folderOf(JSON.parse(readFileSync(place.workspace, "utf8")).folder); } catch { /* none */ } }
+      for (const name of names) {
+        const id = name.replace(/\.jsonl?$/, "");
+        if (!/\.jsonl?$/.test(name) || !/^[A-Za-z0-9_.:-]{1,120}$/.test(id)) continue;
+        let writtenAt = 0; try { writtenAt = statSync(join(place.dir, name)).mtimeMs; } catch { continue; }
+        yield { sessionId: id, file: `copilot:${join(place.dir, name)}#${id}`, cwd, writtenAt };
+      }
+    }
+  }
+}
+/** A session file back into the session: the whole object, or the edit log replayed. */
+function copilotSession(text, jsonl) {
+  if (!jsonl) return JSON.parse(text);
+  let session = null;
+  for (const raw of text.split("\n")) {
+    if (!raw.trim()) continue;
+    let edit; try { edit = JSON.parse(raw); } catch { continue; }
+    if (edit.kind === 0) { session = edit.v; continue; }
+    if (!session || !Array.isArray(edit.k) || edit.k.length === 0) continue;
+    const parent = edit.k.slice(0, -1).reduce((at, key) => (at == null ? at : at[key]), session);
+    const key = edit.k.at(-1);
+    if (parent == null || typeof parent !== "object") continue;
+    if (edit.kind === 1) parent[key] = edit.v;
+    else if (edit.kind === 2) { if (!Array.isArray(parent[key])) parent[key] = []; parent[key].push(...(Array.isArray(edit.v) ? edit.v : [edit.v])); }
+  }
+  return session;
+}
+export function copilotLines(pseudo) {
+  const { file } = splitSession(pseudo);
+  let session; try { session = copilotSession(readFileSync(file, "utf8"), file.endsWith(".jsonl")); } catch { return null; }
+  const lines = [];
+  for (const request of Array.isArray(session?.requests) ? session.requests : []) {
+    const asked = Number(request?.timestamp);
+    if (!Number.isFinite(asked) || asked <= 0) continue;
+    lines.push({ type: "user", timestamp: new Date(asked).toISOString(), message: { content: [{ type: "text" }] } });
+    const done = Number(request?.modelState?.completedAt) || (Number(request?.result?.timings?.totalElapsed) ? asked + Number(request.result.timings.totalElapsed) : 0);
+    if (!done || done < asked) continue;
+    const meta = request?.result?.metadata ?? {};
+    const usage = Number(meta.promptTokens) || Number(meta.outputTokens) ? { usage: { input_tokens: Number(meta.promptTokens) || 0, output_tokens: Number(meta.outputTokens) || 0 } } : {};
+    lines.push({ type: "assistant", timestamp: new Date(done).toISOString(), message: { model: cleanModel(String(meta.resolvedModel ?? request?.modelId ?? "").replace(/^copilot\//, "")), ...usage, content: [] } });
+  }
+  return lines;
+}
+// ── end copilot session reader ──
+
 // ── database clients ──
 /** The clients whose sessions live in a database, one registry: the hook and the counter ask it, not each client. */
 const DATABASE_CLIENTS = {
@@ -295,6 +433,8 @@ const DATABASE_CLIENTS = {
   goose: { homes: gooseHomes, sessions: gooseSessions, lines: gooseLines },
   opencode: { homes: opencodeHomes, sessions: opencodeSessions, lines: opencodeLines },
   openclaw: { homes: openclawHomes, sessions: openclawSessions, lines: openclawLines },
+  cursor: { homes: cursorHomes, sessions: cursorSessions, lines: cursorLines },
+  copilot: { homes: copilotHomes, sessions: copilotSessions, lines: copilotLines },
 };
 export const DATABASE_SESSION = new RegExp(`^(${Object.keys(DATABASE_CLIENTS).join("|")}):.+#[A-Za-z0-9_.:-]{1,120}$`);
 /** Every attended session of every database client; `given` names a client's own home (a test), `onlyGiven` reads no other. */

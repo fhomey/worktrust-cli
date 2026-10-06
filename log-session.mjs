@@ -202,7 +202,7 @@ const excluded = (path) => excludes.some((text) => text && path.includes(text));
  */
 const { CODEX_ROLLOUT = /(?!)/, codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
-const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw"]; // the registry's keys, the name each line carries
+const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs"];
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {

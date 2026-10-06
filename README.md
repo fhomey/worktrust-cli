@@ -62,6 +62,12 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
    same way as Hermes: clocks, roles, models and token counts, never a message. OpenClaw's Talk
    sessions are sent as voice, its chat-app sessions as remote; subagents and scheduled runs are
    not counted.
+9. **Cursor and GitHub Copilot in VS Code, read in place.** Cursor's chats are read from its own database
+   (`User/globalStorage/state.vscdb`), each message's type, clock, model and token counts through SQLite's own
+   `json_extract`, never the text. Copilot's are read from VS Code's `chatSessions` files: each request's two clocks
+   (asked, answered), its model and its token counts; the messages and responses are parsed with the file and never
+   kept or sent. Neither app runs a hook WorkTrust can give it, so the WorkTrust door, which both start when they
+   open, starts the session hook in the background, at most once an hour.
 
 ```
 npx worktrust history       send this computer's earlier sessions later (asks first)
@@ -94,7 +100,7 @@ which would delete every password on the computer, and many people rightly keep 
 
 | | |
 |---|---|
-| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files and the session databases of Hermes, Goose, OpenCode and OpenClaw on this computer to measure durations and token counts. |
+| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw), and the chats Cursor and Copilot keep (clocks, models and token counts only). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files and the session databases of Hermes, Goose, OpenCode and OpenClaw on this computer to measure durations and token counts. |
 | **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`, Hermes's and Goose's `config.yaml`, OpenCode's `opencode.json`, OpenClaw through `openclaw mcp set`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
 | **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. WorkTrust also records the network address the request arrives from, as a security record kept 90 days and seen only by WorkTrust staff (to answer a theft or fraud report). |
 | **Sends, afterwards** | Durations, token counts, model names, one layer keyword (frontend, backend …), counts of how you work. |

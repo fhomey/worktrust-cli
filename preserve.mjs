@@ -274,12 +274,12 @@ function archive(dir) {
   // A WHOLE ANSWER OR NOTHING: the hook ends with its own count; one line missing or cut is a read to refuse, never part of an archive.
   const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();
   if (!Number.isInteger(end) || end !== rows.length - 1) { say(`  The session hook's answer came back incomplete (${rows.length - 1} of ${end ?? "an unknown number of"} lines), so nothing was added. Run it again.`); process.exit(1); }
-  const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [];
+  const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [], measured = new Set();
   let waiting = 0;
   for (const text of rows.slice(0, -1)) {
     let entry; try { entry = JSON.parse(text); } catch { continue; }
     const line = archiveLine(entry);
-    if (!line || known.has(line.stretch_ref)) continue;
+    if (line && line.day < today()) measured.add(line.stretch_ref); if (!line || known.has(line.stretch_ref)) continue; // a file present twice is one stretch
     if (line.day >= today()) { waiting += 1; continue; }
     known.add(line.stretch_ref);
     fresh.push(line);
@@ -305,7 +305,7 @@ function archive(dir) {
   }
   if (fresh.length > 0 || !existing.manifest) writeFileSync(join(dir, "manifest.json"), `${JSON.stringify({ format: "worktrust-ai-evidence/1", collector_version: COLLECTOR, created: existing.manifest?.created ?? new Date().toISOString(), updated: new Date().toISOString(), clients: [...new Set(all.map((line) => line.client))].sort(), ...IDS, count: all.length, head: prev }, null, 1)}\n`);
   say();
-  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${all.length}, the session hook measures ${rows.length - 1 - waiting} finished ones here now${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
+  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${all.length}, the session hook measures ${measured.size} finished ones here now${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
   if (waiting > 0) say(`    ${waiting} of today wait for tomorrow's run: a day is archived once it is over.`);
   say("    Metadata only: clocks, counts, model names, a hash of each project's name. Nothing was sent.");
 }

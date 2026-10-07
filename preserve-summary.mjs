@@ -1,8 +1,8 @@
 /**
  * --summary: what a person or a team reads from the archive, counted locally after the chain checks out. Per month the
  * hours, the tokens per model and the share of input served from the cache (where the tokens go, and so where they
- * can be saved); and the PARALLEL WORK: per project and day the sessions' summed time against the wall-clock time they
- * covered together, and the most open at once. A stretch without a project or a measured token stays out of that
+ * can be saved); and the PARALLEL WORK: per project and day the sessions' open spans added up against the wall-clock
+ * time they covered together (spans on both sides, so the sum is never below the clock), and the most open at once. A stretch without a project or a measured token stays out of that
  * figure; nothing is estimated.
  *
  * Pure: the archive's verified lines in, the lines to print out. No file, no clock, no network.
@@ -31,7 +31,7 @@ export function summaryLines(lines) {
       const edges = spans.flatMap(([from, to]) => [[from, 1], [to, -1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
       let open = 0, top = 0, covered = 0, since = 0;
       for (const [at, step] of edges) { if (open > 0) covered += at - since; open += step; since = at; top = Math.max(top, open); }
-      if (top > 1) { parallelDays += 1; peak = Math.max(peak, top); summed += spans.reduce((sum, span) => sum + span[2], 0); wall += covered / 1000; }
+      if (top > 1) { parallelDays += 1; peak = Math.max(peak, top); summed += spans.reduce((sum, [from, to]) => sum + (to - from), 0) / 1000; wall += covered / 1000; }
     }
     if (parallelDays > 0) out.push(`    parallel sessions in one project on ${parallelDays} day${parallelDays === 1 ? "" : "s"}: up to ${peak} at once, ${hours(summed)} h of session time in ${hours(wall)} h of wall-clock time`);
   }

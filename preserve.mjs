@@ -168,7 +168,7 @@ async function apply(list, agreed = false) {
 }
 
 /** THE ALLOWLIST: what a line may carry, each value checked for its type. A key not named here never reaches the archive. */
-const COUNTS = ["seconds", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak"];
+const COUNTS = ["seconds", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak", "interrupts", "steers"];
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 /** The hook's own words for a stretch (work area, kind, how it was steered, the measuring bases), kept as the hook sends them. */
 const WORDS = ["layer", "kind", "steered_from", "duration_basis", "token_basis", "turn_basis"];
@@ -195,6 +195,8 @@ function archiveLine(entry) {
   for (const key of WORDS) if (typeof entry[key] === "string" && WORD.test(entry[key])) line[key] = entry[key];
   if (Array.isArray(entry.layers) && entry.layers.length > 1 && entry.layers.every((word) => typeof word === "string" && WORD.test(word))) line.layers = entry.layers.slice(0, 8);
   if (typeof entry.exchanges === "number" && Number.isInteger(entry.exchanges) && entry.exchanges > 0) line.exchanges = entry.exchanges;
+  // The computer's offset from UTC when the stretch began (0.6.18), so a working day can be read in local time.
+  if (typeof entry.utc_offset === "string" && /^[+-]\d{2}:\d{2}$/.test(entry.utc_offset)) line.utc_offset = entry.utc_offset;
   // Commit hashes the stretch made, never a message: what ties AI time to delivered work in the repository.
   if (Array.isArray(entry.commits) && entry.commits.length > 0 && entry.commits.every((sha) => typeof sha === "string" && /^[0-9a-f]{7,40}$/.test(sha))) line.commits = entry.commits.slice(0, 50);
   // The project as a one-way hash of its name (owner/name, else the folder's own name): which days belong together, never which project.
@@ -244,6 +246,8 @@ function check(dir) {
   }
   const manifest = readJson(join(dir, "manifest.json")).value;
   if (rows.length > 0 && (!manifest || manifest.count !== lines.length || manifest.head !== lines.at(-1).hash)) return broken("manifest.json", "its count or head does not match the lines (lines were removed or added outside preserve)");
+  // THE MANIFEST'S SEAL (0.6.18, audit C9): a signed count and head, so a cut tail with a manifest edited to match is caught.
+  if (manifest && typeof manifest.signature === "string" && !signedBy(manifest)) return broken("manifest.json", "its signature does not verify with the key named in it (the count or the last line was changed)");
   const days = new Map();
   for (const line of lines) days.set(line.day, [...(days.get(line.day) ?? []), line]);
   const mine = deviceKey()?.publicX ?? null;
@@ -255,15 +259,19 @@ function check(dir) {
     if (!proof || proof.date !== day) return broken(where, "missing or unreadable");
     if (proof.count !== ofDay.length || proof.root !== rootOf(ofDay.map((line) => line.hash))) return broken(where, "the day's root does not match its lines");
     if (proof.signature === null) continue;
-    const { signature, ...body } = proof;
-    let valid = false;
-    try { valid = verify(null, Buffer.from(canonical(body)), createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: body.public_key }, format: "jwk" }), Buffer.from(signature, "base64url")); } catch { valid = false; }
-    if (!valid) return broken(where, "the signature does not verify with the key named in it");
+    if (!signedBy(proof)) return broken(where, "the signature does not verify with the key named in it");
     signed += 1;
-    if (body.public_key === mine) ours += 1;
+    if (proof.public_key === mine) ours += 1;
   }
-  return { lines, days, signed, ours, manifest };
+  return { lines, days, signed, ours, manifest, proofs: new Map([...days.keys()].map((day) => [day, readJson(join(dir, "proofs", `${day}.json`)).value])) };
 }
+/** Whether a signed body (a day's proof, the manifest) verifies under the key it names. */
+function signedBy(document) {
+  const { signature, ...body } = document;
+  try { return verify(null, Buffer.from(canonical(body)), createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: body.public_key }, format: "jwk" }), Buffer.from(signature, "base64url")); } catch { return false; }
+}
+/** Signed with this computer's key, or null: the body as it is signed. */
+const sealed = (body, key) => ({ ...body, signature: key ? sign(null, Buffer.from(canonical(body)), key.privateKey).toString("base64url") : null });
 
 function archive(dir) {
   IDS = computerIds();
@@ -297,13 +305,19 @@ function archive(dir) {
     prev = hashed.hash;
   }
   // A day that gained lines gets its root again over all of its lines; the lines themselves are never rewritten.
+  // THIS KEY SIGNS ONLY ITS OWN LINES (0.6.18, audit S7): a day is signed when every earlier line of it was already under
+  // this key's signature (or there were none); a day that came into the folder from elsewhere keeps an unsigned root.
   const key = deviceKey();
+  const ours = (document) => !document || (key && typeof document.signature === "string" && document.public_key === key.publicX);
   mkdirSync(join(dir, "proofs"), { recursive: true });
   for (const day of new Set(fresh.map((line) => line.day))) {
-    const body = proofBody(day, all.filter((line) => line.day === day), key);
-    writeFileSync(join(dir, "proofs", `${day}.json`), `${JSON.stringify({ ...body, signature: key ? sign(null, Buffer.from(canonical(body)), key.privateKey).toString("base64url") : null }, null, 1)}\n`);
+    const own = !existing.days?.has(day) || ours(existing.proofs?.get(day));
+    const body = proofBody(day, all.filter((line) => line.day === day), own ? key : null);
+    writeFileSync(join(dir, "proofs", `${day}.json`), `${JSON.stringify(sealed(body, own ? key : null), null, 1)}\n`);
   }
-  if (fresh.length > 0 || !existing.manifest) writeFileSync(join(dir, "manifest.json"), `${JSON.stringify({ format: "worktrust-ai-evidence/1", collector_version: COLLECTOR, created: existing.manifest?.created ?? new Date().toISOString(), updated: new Date().toISOString(), clients: [...new Set(all.map((line) => line.client))].sort(), ...IDS, count: all.length, head: prev }, null, 1)}\n`);
+  // The manifest is sealed the same way: a new archive, or one whose manifest this key already signed.
+  const manifestKey = !existing.manifest || ours(existing.manifest) ? key : null;
+  if (fresh.length > 0 || !existing.manifest) writeFileSync(join(dir, "manifest.json"), `${JSON.stringify(sealed({ format: "worktrust-ai-evidence/1", collector_version: COLLECTOR, created: existing.manifest?.created ?? new Date().toISOString(), updated: new Date().toISOString(), clients: [...new Set(all.map((line) => line.client))].sort(), ...IDS, count: all.length, head: prev, ...(manifestKey ? { public_key: manifestKey.publicX } : {}) }, manifestKey), null, 1)}\n`);
   say();
   say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${all.length}, the session hook measures ${measured.size} finished ones here now${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
   if (waiting > 0) say(`    ${waiting} of today wait for tomorrow's run: a day is archived once it is over.`);
@@ -314,8 +328,9 @@ function verifyArchive(dir) {
   const result = check(dir);
   if (result.broken) { say(`  BROKEN  ${result.broken}`); process.exit(1); }
   if (result.lines.length === 0) { say(`  Nothing to verify in ${dir}.`); return; }
-  const signedBy = result.signed === 0 ? "no day signed" : result.ours === result.signed ? `${result.signed} signed by this computer's key` : `${result.signed} signed (${result.ours} by this computer's key, ${result.signed - result.ours} by another key named in them)`;
-  say(`  OK  ${result.lines.length} stretches · ${result.days.size} days · the chain is whole · every day's root matches · ${signedBy}`);
+  const daySeal = result.signed === 0 ? "no day signed" : result.ours === result.signed ? `${result.signed} signed by this computer's key` : `${result.signed} signed (${result.ours} by this computer's key, ${result.signed - result.ours} by another key named in them)`;
+  const seal = typeof result.manifest?.signature !== "string" ? "manifest unsigned" : result.manifest.public_key === deviceKey()?.publicX ? "manifest signed by this computer's key" : "manifest signed by another key named in it";
+  say(`  OK  ${result.lines.length} stretches · ${result.days.size} days · the chain is whole · every day's root matches · ${daySeal} · ${seal}`);
 }
 
 /** --summary: what a person or a team reads from the archive, counted locally (preserve-summary.mjs) once the chain checks out. */

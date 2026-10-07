@@ -342,22 +342,45 @@ function stretchesOf(file, since) {
   }
   if (messages.length === 0) return [];
   messages.sort((a, b) => a.at - b.at);
-  const byDay = new Map();
-  for (const message of messages) {
-    const day = new Date(message.at).toISOString().slice(0, 10);
-    if (!byDay.has(day)) byDay.set(day, []);
-    byDay.get(day).push(message);
-  }
+  const byDay = byDayOf(messages);
   const agents = agentsByDay(file, since);
   return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null }; }).filter(Boolean);
 }
+
+/**
+ * DAYS SPLIT ON THE CLOCK, NOTHING LOST AT MIDNIGHT (0.6.18, audit C14). A stretch is one session's UTC day, and the gap
+ * between a day's last message and the next day's first belonged to neither, so a run through the night lost one gap
+ * per midnight. A day whose first message follows the last one within the tool cap now opens with a BRIDGE: the message
+ * before it, carrying no tokens, no model and no turn, so the gap that crosses midnight is counted once, on the day it
+ * ends, under the same caps as any other.
+ * Messages must arrive sorted.
+ */
+function byDayOf(messages) {
+  const byDay = new Map();
+  let prev = null;
+  for (const message of messages) {
+    const day = new Date(message.at).toISOString().slice(0, 10);
+    // Only a gap the work could have run through (within the tool cap): a session resumed the next morning opens its day as it always did.
+    if (!byDay.has(day)) byDay.set(day, prev && message.at - prev.at <= TOOL_CAP * 1000 ? [{ ...prev, usage: null, model: null, cumulative: false, bridge: true }] : []);
+    byDay.get(day).push(message);
+    prev = message;
+  }
+  return byDay;
+}
+/** The first message a day really holds (a bridge is the day before's). */
+const firstOf = (messages) => (messages.find((message) => !message.bridge) ?? messages[0]).at;
+/** The computer's offset from UTC at a moment, as +02:00: what the owner's mirror needs to read a working day in local time. */
+const offsetAt = (ms) => { const minutes = -new Date(ms).getTimezoneOffset(), abs = Math.abs(minutes); return `${minutes < 0 ? "-" : "+"}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`; };
+/** Claude Code's own line when the person stops the agent mid-answer (Esc), read for its marker only. */
+const INTERRUPTED = /^\[Request interrupted by user/;
+const textOf = (content) => (typeof content === "string" ? content : Array.isArray(content) ? content.map((block) => (block && typeof block.text === "string" ? block.text : "")).join("") : "");
 
 /** One transcript line as the measure reads it: the clock, the role, what KIND of message it is (for the layers), its counts. */
 const messageOf = (line, at) => {
   const content = line.message?.content ?? null;
   const blocks = Array.isArray(content) ? content : [];
   return {
-    at, type: line.type, usage: line.message?.usage ?? null, model: line.message?.model ?? null, meta: line.isMeta === true, content,
+    at, type: line.type, usage: line.message?.usage ?? null, model: line.message?.model ?? null, messageId: typeof line.message?.id === "string" ? line.message.id : null, meta: line.isMeta === true, content,
     // A tool's answer comes back on the user role; a line a reader marks `agentic` is an agent run (Copilot's asked → completed).
     kind: line.type === "assistant" ? "assistant" : blocks.some((block) => block && block.type === "tool_result") ? "tool_result" : "user",
     toolUse: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use"),
@@ -456,12 +479,22 @@ function measure(cwd, messages) {
   const models = new Map();
   let exchanges = 0;
   for (const message of messages) {
-    if (message.type === "user" && !message.meta && isHumanTurn(message.content)) exchanges += 1;
+    if (message.type === "user" && !message.meta && !message.bridge && isHumanTurn(message.content)) exchanges += 1;
     if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);
   }
   const model = [...models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
   const tokens = tokensOf(messages);
-  return { cwd, seconds: measured, layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, model, from: messages[0].at, to: messages[messages.length - 1].at };
+  // HOW THE PERSON STEERED (owner, 2026-10-08): how often they stopped the agent (Claude Code's interruption line), and how
+  // often their next turn arrived while the agent was still mid-task (right after a tool call or its result). Counts only.
+  let interrupts = 0, steers = 0;
+  for (let i = 1; i < messages.length; i += 1) {
+    const message = messages[i], prev = messages[i - 1];
+    if (message.bridge || message.type !== "user" || message.meta || message.kind === "tool_result") continue;
+    if (INTERRUPTED.test(textOf(message.content).trim())) interrupts += 1;
+    else if (isHumanTurn(message.content) && (prev.kind === "tool_result" || prev.toolUse)) steers += 1;
+  }
+  const from = firstOf(messages);
+  return { cwd, seconds: measured, layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, interrupts, steers, model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
 }
 
 /**
@@ -508,9 +541,14 @@ function usageShapeKnown(usage) {
 }
 function tokensOf(messages) {
   let tokensIn = 0, tokensOut = 0, cacheRead = 0, cacheWrite = 0, counted = 0, shapeKnown = true;
+  // ONE ANSWER, ONE USAGE (0.6.18): Claude Code writes an answer as a line per content block (thinking, text, each tool
+  // call), every one repeating the answer's usage; summed per line, a real session read 2.6 times its output tokens. An
+  // answer with an id is counted once; a line without one (Codex's token events) is its own.
+  const seen = new Set();
   for (const message of messages) {
     const usage = message.usage;
     if (!usage) continue;
+    if (message.messageId) { if (seen.has(message.messageId)) continue; seen.add(message.messageId); }
     if (!usageShapeKnown(usage)) { shapeKnown = false; break; }
     counted += 1;
     tokensIn += (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
@@ -565,6 +603,10 @@ function payloadFor(stretch) {
     // THE LAYERS (2026-10-06), only on a measured stretch, each bounded by a day: what the seconds were. `seconds` above is untouched.
     ...(stretch.seconds !== null && stretch.layers ? { model_seconds: Math.min(DAY_SECONDS, stretch.layers.model), tool_seconds: Math.min(DAY_SECONDS, stretch.layers.tool), human_seconds: Math.min(DAY_SECONDS, stretch.layers.human), idle_seconds: Math.min(DAY_SECONDS, stretch.layers.idle) } : {}),
     // THE SUBAGENTS, as agent metadata beside the day: runs, their own seconds, the peak open at once. Never in `seconds`.
+    // WHEN AND HOW (0.6.18): the stretch's first moment and the computer's UTC offset then; the person's interruptions and mid-task turns, counts only.
+    started_at: new Date(stretch.from).toISOString(), utc_offset: stretch.offset,
+    ...(stretch.interrupts > 0 ? { interrupts: Math.min(10000, stretch.interrupts) } : {}),
+    ...(stretch.steers > 0 ? { steers: Math.min(10000, stretch.steers) } : {}),
     ...(stretch.agents && stretch.agents.runs > 0 ? { agent_runs: Math.min(AGENT_RUNS_MAX, stretch.agents.runs), agent_seconds: Math.min(AGENT_SECONDS_MAX, stretch.agents.seconds), agent_peak: Math.min(AGENT_RUNS_MAX, stretch.agents.peak) } : {}),
     at: new Date(stretch.to).toISOString(),
   };
@@ -643,23 +685,22 @@ function historyEntries(floor = null, all = false) {
     const lines = parsedLines(file);
     if (!lines) continue;
     let cwd = null, steered = null;
-    const byDay = new Map();
+    const read = [];
     for (const line of lines) {
       if (typeof line.cwd === "string") cwd = line.cwd;
       if (typeof line.steered === "string") steered = line.steered;
       if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
       const at = Date.parse(line.timestamp);
       if (!Number.isFinite(at)) continue;
-      const day = new Date(at).toISOString().slice(0, 10);
-      if (!byDay.has(day)) byDay.set(day, []);
-      byDay.get(day).push(messageOf(line, at));
+      read.push(messageOf(line, at));
     }
+    read.sort((a, b) => a.at - b.at);
+    const byDay = byDayOf(read);
     const agents = agentsByDay(file, null);
     for (const [day, messages] of byDay) {
       if (messages.length === 0) continue;
-      messages.sort((a, b) => a.at - b.at);
       // Under-reporting is the safe side (THE FLOORS): a day that began before the account changed is not offered at all.
-      if (floor !== null && messages[0].at < floor) continue;
+      if (floor !== null && firstOf(messages) < floor) continue;
       const last = messages[messages.length - 1].at;
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
       if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
@@ -668,7 +709,7 @@ function historyEntries(floor = null, all = false) {
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
       if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));
-      entryFile.set(entry, { file, from: messages[0].at, folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null });
+      entryFile.set(entry, { file, from: firstOf(messages), folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null });
       entries.push(entry);
     }
   }

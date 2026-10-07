@@ -71,7 +71,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.6.17";
+const CLI_VERSION = "0.6.18";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -670,7 +670,8 @@ async function offerRebuild(previousVersion, paths, key) {
   if (!previousVersion || previousVersion === CLI_VERSION) return;
   say();
   say(`  This computer's earlier lines in WorkTrust were measured by worktrust ${previousVersion}. Version ${CLI_VERSION} measures`);
-  say("  differently (what the seconds were, your own turns, tokens with the cache, more AI apps). You can re-measure the");
+  say("  differently (each answer's tokens counted once, nothing lost at midnight, when each stretch began, how you steered");
+  say("  the agent, what the seconds were, more AI apps). You can re-measure the");
   say("  sessions still on this computer and have WorkTrust replace this computer's earlier lines, day by day, never counting");
   say("  a day twice. Later: npx worktrust@latest history --rebuild");
   if (!(await ask("Show the plan and rebuild now?", false))) { say("  Not now."); return; }

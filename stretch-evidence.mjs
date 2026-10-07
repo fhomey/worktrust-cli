@@ -142,8 +142,37 @@ function routingOf(messages) {
   return models.size > 0 ? { models: models.size, switches } : null;
 }
 
+/**
+ * STEERING THAT WORKED (0.7.5; framework L4: "effective steering, not the raw number of interventions"). A moment the
+ * person stepped in while the agent was working: they stopped it, or their turn arrived right after a tool call or its
+ * result. It CHANGED COURSE when the agent's next action differed from its last one before (by kind, or by input
+ * digest), and it was EFFECTIVE when, after it, a check passed in the same stretch. Null when nobody stepped in.
+ */
+function steeringOf(messages, { isHumanTurn, INTERRUPTED, textOf }) {
+  const moments = [];
+  let lastCall = null, prev = null;
+  const passedAfter = new Map(), results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result.failed);
+  for (const message of messages) {
+    if (message.bridge) { prev = message; continue; }
+    const person = message.type === "user" && !message.meta && message.kind !== "tool_result";
+    const stopped = person && INTERRUPTED.test(textOf(message.content).trim());
+    const midTask = person && !stopped && isHumanTurn(message.content) && prev && (prev.kind === "tool_result" || prev.toolUse);
+    if (stopped || midTask) moments.push({ before: lastCall, after: null, effective: false });
+    for (const call of message.calls ?? []) {
+      for (const moment of moments) if (moment.after === null) moment.after = call;
+      if (CHECK_KINDS.some((kind) => call.kinds.includes(kind)) && results.get(call.id) === false) for (const moment of moments) if (moment.after) moment.effective = true;
+      lastCall = call;
+    }
+    prev = message;
+  }
+  if (moments.length === 0) return null;
+  const changed = moments.filter((moment) => moment.after && (!moment.before || moment.after.family !== moment.before.family || moment.after.digest !== moment.before.digest));
+  return { moments: moments.length, changed_course: changed.length, effective: changed.filter((moment) => moment.effective).length };
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
-  const context = contextOf(messages, helpers), routing = routingOf(messages);
-  return { ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}) };
+  const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
+  return { ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}) };
 }

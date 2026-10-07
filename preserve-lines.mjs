@@ -75,6 +75,11 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
     if (entry.context.compactions > 0 || commands.length > 0) line.context = { compactions: entry.context.compactions, ...(commands.length ? { commands: Object.fromEntries(commands) } : {}) };
   }
   if (entry.routing && typeof entry.routing === "object" && whole(entry.routing.models) && whole(entry.routing.switches) && entry.routing.models > 0) line.routing = { models: entry.routing.models, switches: entry.routing.switches };
+  // STEERING (0.7.5): moments the person stepped in, how many changed the agent's course, how many led to a passing check.
+  if (entry.steering && typeof entry.steering === "object") {
+    const { moments, changed_course: changed, effective } = entry.steering;
+    if ([moments, changed, effective].every(whole) && moments > 0 && changed <= moments && effective <= changed) line.steering = { moments, changed_course: changed, effective };
+  }
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();

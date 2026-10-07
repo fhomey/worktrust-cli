@@ -171,8 +171,32 @@ function steeringOf(messages, { isHumanTurn, INTERRUPTED, textOf }) {
   return { moments: moments.length, changed_course: changed.length, effective: changed.filter((moment) => moment.effective).length };
 }
 
+/**
+ * TASK COMPLEXITY C1 TO C5 (0.7.6; framework §14 "Task complexity C1-C5"), by a VERSIONED rule, `complexity/1`, every
+ * point of it stated here and in the README so anyone can recount a class. Proposed, not calibrated: it weighs evidence,
+ * it is not a score of anyone.
+ *   layers touched          ≤1: 0 · 2: 1 · 3+: 2          distinct tools used     <3: 0 · 3–6: 1 · 7+: 2
+ *   subagents               none: 0 · ran: 1 · 3+ at once: 2
+ *   measured duration       <30 min: 0 · 30–120 min: 1 · >120 min: 2
+ *   a failure recovered     1                              kinds of check run      0: 0 · 1–2: 1 · 3+: 2
+ *   something delivered     1
+ *   points 0–1 → C1 · 2–3 → C2 · 4–6 → C3 · 7–9 → C4 · 10+ → C5
+ */
+export const COMPLEXITY_RULE = "complexity/1";
+export function complexityOf(derived, { layers = 0, agentRuns = 0, agentPeak = 0, seconds = null } = {}) {
+  const step = (value, low, high) => (value >= high ? 2 : value >= low ? 1 : 0);
+  const points = step(layers, 2, 3) + step(derived.tools ?? 0, 3, 7) + (agentPeak >= 3 ? 2 : agentRuns > 0 ? 1 : 0)
+    + (seconds === null ? 0 : seconds > 7200 ? 2 : seconds >= 1800 ? 1 : 0) + ((derived.recovery?.recovered ?? 0) > 0 ? 1 : 0)
+    + step(Object.keys(derived.verification ?? {}).length, 1, 3) + (derived.delivery ? 1 : 0);
+  const tier = points >= 10 ? 5 : points >= 7 ? 4 : points >= 4 ? 3 : points >= 2 ? 2 : 1;
+  return { class: `C${tier}`, points, rule: COMPLEXITY_RULE };
+}
+/** How many different tools the stretch's agent used (framework L11: tool breadth); null without a tool call. */
+const toolsOf = (messages) => { const names = new Set(); for (const message of messages) for (const call of message.calls ?? []) names.add(call.family.split("|")[0]); return names.size > 0 ? names.size : null; };
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  return { ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}) };
+  const tools = toolsOf(messages);
+  return { ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
 }

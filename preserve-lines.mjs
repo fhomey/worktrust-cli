@@ -80,6 +80,9 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
     const { moments, changed_course: changed, effective } = entry.steering;
     if ([moments, changed, effective].every(whole) && moments > 0 && changed <= moments && effective <= changed) line.steering = { moments, changed_course: changed, effective };
   }
+  // TOOL BREADTH AND COMPLEXITY (0.7.6): distinct tools; a class C1–C5 with its points and the rule's version.
+  if (whole(entry.tools) && entry.tools > 0) line.tools = entry.tools;
+  if (entry.complexity && /^C[1-5]$/.test(entry.complexity.class ?? "") && whole(entry.complexity.points) && /^complexity\/\d+$/.test(entry.complexity.rule ?? "")) line.complexity = { class: entry.complexity.class, points: entry.complexity.points, rule: entry.complexity.rule };
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();

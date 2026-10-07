@@ -160,6 +160,7 @@ nothing it does not:
 | `device_id`, `profile_id` | which computer and which user profile on it, as one-way hashes (the machine's own id never appears) |
 | `signals`, `analyzer_version` | the behaviour signals of that stretch as keys and counts from the local counter's rubric (framing, steering, verification, recovery), and the rubric's version; derived on this computer from your own turns, never a word of them (0.7.0) |
 | `verification`, `delivery` | per kind of check run in the stretch (test, typecheck, lint, build, the project's gate, CI) how many ran and how many failed; per delivery step (commit, PR, push, deploy) how many succeeded, and whether a check had passed before the first; named from each command on this computer, never the command itself (0.7.1) |
+| `recovery` | of the tool calls that failed in the stretch, how many a later call of the same kind recovered, the middle time that took, how many were retried unchanged and how many with a different approach; inputs compared on this computer by digest, never kept (0.7.2) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

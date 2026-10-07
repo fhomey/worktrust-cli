@@ -58,6 +58,11 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
     const kept = Object.entries(entry.delivery).filter(([kind, count]) => DELIVERY_KINDS.includes(kind) && whole(count) && count > 0).sort();
     if (kept.length > 0) line.delivery = { ...Object.fromEntries(kept), verified_first: entry.delivery.verified_first === true };
   }
+  // RECOVERY (0.7.2): failures, recoveries, blind retries, changed strategies and the middle time to recover, whole numbers.
+  if (entry.recovery && typeof entry.recovery === "object") {
+    const { failures, recovered, blind_retries: blind, strategy_changed: changed, median_seconds: median } = entry.recovery;
+    if ([failures, recovered, blind, changed].every(whole) && failures > 0 && recovered <= failures && blind + changed <= failures && (median === undefined || whole(median))) line.recovery = { failures, recovered, blind_retries: blind, strategy_changed: changed, ...(median !== undefined ? { median_seconds: median } : {}) };
+  }
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();

@@ -415,7 +415,8 @@ const messageOf = (line, at) => {
     waitsForPerson: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use" && WAITS_FOR_PERSON.has(String(block.name))),
     agentic: line.agentic === true, cumulative: line.cumulative === true, // the session's running totals (Hermes, Goose without a ledger)
     // 0.7.1: each tool call's kinds (never its command) and each tool result's outcome, joined on the call's id in `measure`.
-    calls: line.type === "assistant" ? blocks.filter((block) => block && block.type === "tool_use" && typeof block.id === "string").map((block) => ({ id: block.id, kinds: callKindsOf(block) })).filter((call) => call.kinds.length > 0) : [],
+    // 0.7.2: and the call's FAMILY (the tool, and its check kinds) and a digest of its input, compared here and never kept.
+    calls: line.type === "assistant" ? blocks.filter((block) => block && block.type === "tool_use" && typeof block.id === "string").map((block) => { const kinds = callKindsOf(block); return { id: block.id, kinds, family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16) }; }) : [],
     results: blocks.filter((block) => block && block.type === "tool_result" && typeof block.tool_use_id === "string").map((block) => ({ id: block.tool_use_id, failed: block.is_error === true })),
   };
 };
@@ -511,7 +512,37 @@ function verificationOf(messages) {
     }
   }
   const any = (record) => Object.keys(record).length > 0;
-  return { ...(any(checks) ? { verification: checks } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}) };
+  const recovery = recoveryOf(messages);
+  return { ...(any(checks) ? { verification: checks } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}), ...(recovery ? { recovery } : {}) };
+}
+
+/**
+ * RECOVERY PER STRETCH (0.7.2; framework L9): of the tool calls that failed, how many were followed by a success of the
+ * same family (the same tool, the same kind of check) later in the stretch, the middle time that took, and what came
+ * next: the same input again (a blind retry) or a different one (a changed strategy). Inputs are compared by digest on
+ * this computer and never kept. Null when nothing failed.
+ */
+function recoveryOf(messages) {
+  const calls = [];
+  const byId = new Map();
+  for (const message of messages) {
+    for (const call of message.calls ?? []) { const entry = { ...call, at: message.at, failed: null }; calls.push(entry); byId.set(call.id, entry); }
+    for (const result of message.results ?? []) { const call = byId.get(result.id); if (call) call.failed = result.failed; }
+  }
+  const done = calls.filter((call) => call.failed !== null);
+  let failures = 0, recovered = 0, blind = 0, changed = 0;
+  const latencies = [];
+  done.forEach((call, index) => {
+    if (!call.failed) return;
+    failures += 1;
+    const later = done.slice(index + 1).filter((next) => next.family === call.family);
+    if (later.length > 0) { if (later[0].digest === call.digest) blind += 1; else changed += 1; }
+    const success = later.find((next) => !next.failed);
+    if (success) { recovered += 1; latencies.push(Math.max(0, Math.round((success.at - call.at) / 1000))); }
+  });
+  if (failures === 0) return null;
+  latencies.sort((a, b) => a - b);
+  return { failures, recovered, blind_retries: blind, strategy_changed: changed, ...(latencies.length ? { median_seconds: latencies[Math.floor((latencies.length - 1) / 2)] } : {}) };
 }
 
 /** One day's messages → the stretch, measured. Null when there is nothing honest to send. */

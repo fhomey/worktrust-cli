@@ -135,6 +135,33 @@ const DAY_SECONDS = 86400;
 const TOOL_CAP = 1800;
 /** Tools whose result waits for the person: the gap to it is the person's time. Names only; nothing of the call is read. */
 const WAITS_FOR_PERSON = new Set(["AskUserQuestion", "ExitPlanMode"]);
+/**
+ * WHAT A TOOL CALL WAS, AS A CATEGORY (0.7.1, verification per stretch; the capability roadmap's second tranche). A shell
+ * command is read HERE to name its kind: a check (test, typecheck, lint, build, CI, the project's own gate) or a step of
+ * delivery (commit, PR, push, deploy). The command itself never leaves this function; only the kind does, and only into
+ * the local archive. A chained command can be several kinds; its one outcome counts for each.
+ */
+const SHELL_TOOLS = new Set(["Bash", "bash", "shell", "run_command", "run_shell_command", "execute_command", "terminal"]);
+const CALL_KINDS = [
+  ["test", /(^|[\s/;&|])(vitest|jest|pytest|mocha|rspec|phpunit)\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\bgo test\b|\bcargo test\b|\bnode --test\b|\bplaywright test\b|scripts\/test-[\w-]+\.m?[jt]s\b/],
+  ["typecheck", /\btsc\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?typecheck\b|\bmypy\b|\bpyright\b/],
+  ["lint", /\beslint\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?lint\b|\bruff\b|\bflake8\b|\bclippy\b|\bbiome\s+(check|lint)\b/],
+  ["build", /\b(npm|pnpm|yarn|bun)\s+(run\s+)?build\b|\bnext build\b|\bvite build\b|\bcargo build\b|\bgo build\b/],
+  ["gate", /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(gate|verify|check)\b|scripts\/check-[\w-]+\.m?[jt]s\b/],
+  ["ci", /\bgh\s+(run\s+(watch|view)|pr\s+checks)\b/],
+  ["commit", /\bgit\s+commit\b/],
+  ["pr", /\bgh\s+pr\s+(create|merge)\b/],
+  ["push", /\bgit\s+push\b/],
+  ["deploy", /\b(vercel(\s+deploy)?\s+--prod|fly\s+deploy|netlify\s+deploy|wrangler\s+deploy)\b/],
+];
+const CHECK_KINDS = ["test", "typecheck", "lint", "build", "gate", "ci"];
+const DELIVERY_KINDS = ["commit", "pr", "push", "deploy"];
+const callKindsOf = (block) => {
+  const command = block && SHELL_TOOLS.has(String(block.name)) ? block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd : null;
+  return typeof command === "string" ? CALL_KINDS.filter(([, pattern]) => pattern.test(command)).map(([kind]) => kind) : [];
+};
+/** The derived record of a stretch, kept for the local archive only (see payloadFor). */
+const DERIVED = new WeakMap();
 const AGENT_RUNS_MAX = 10000, AGENT_SECONDS_MAX = 2592000;
 
 /**
@@ -387,6 +414,9 @@ const messageOf = (line, at) => {
     // A tool that waits for the PERSON (a question, a plan to approve): the gap to its result is the person's, not the tool's. The name is read, never the input.
     waitsForPerson: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use" && WAITS_FOR_PERSON.has(String(block.name))),
     agentic: line.agentic === true, cumulative: line.cumulative === true, // the session's running totals (Hermes, Goose without a ledger)
+    // 0.7.1: each tool call's kinds (never its command) and each tool result's outcome, joined on the call's id in `measure`.
+    calls: line.type === "assistant" ? blocks.filter((block) => block && block.type === "tool_use" && typeof block.id === "string").map((block) => ({ id: block.id, kinds: callKindsOf(block) })).filter((call) => call.kinds.length > 0) : [],
+    results: blocks.filter((block) => block && block.type === "tool_result" && typeof block.tool_use_id === "string").map((block) => ({ id: block.tool_use_id, failed: block.is_error === true })),
   };
 };
 
@@ -464,6 +494,26 @@ function isHumanTurn(content) {
   return types.has("text") || types.has("image");
 }
 
+/**
+ * VERIFICATION PER STRETCH (0.7.1; framework L7, L12): per kind of check, how many ran and how many failed; per step of
+ * delivery, how many succeeded; and whether a check had PASSED before the first delivery step. Null where the stretch
+ * ran neither, so "no check seen" is never written as "zero checks".
+ */
+function verificationOf(messages) {
+  const kinds = new Map();
+  for (const message of messages) for (const call of message.calls ?? []) kinds.set(call.id, call.kinds);
+  const checks = {}, delivered = {};
+  let deliveredAt = null, passedFirst = false;
+  for (const message of messages) for (const result of message.results ?? []) {
+    for (const kind of kinds.get(result.id) ?? []) {
+      if (CHECK_KINDS.includes(kind)) { const tally = (checks[kind] ??= [0, 0]); tally[0] += 1; if (result.failed) tally[1] += 1; else if (deliveredAt === null) passedFirst = true; }
+      else if (DELIVERY_KINDS.includes(kind) && !result.failed) { delivered[kind] = (delivered[kind] ?? 0) + 1; if (deliveredAt === null) deliveredAt = message.at; }
+    }
+  }
+  const any = (record) => Object.keys(record).length > 0;
+  return { ...(any(checks) ? { verification: checks } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}) };
+}
+
 /** One day's messages → the stretch, measured. Null when there is nothing honest to send. */
 function measure(cwd, messages) {
   // MEASURED, AND ONLY MEASURED: every second counted lies between two recorded timestamps, and a
@@ -494,7 +544,7 @@ function measure(cwd, messages) {
     else if (isHumanTurn(message.content) && (prev.kind === "tool_result" || prev.toolUse)) steers += 1;
   }
   const from = firstOf(messages);
-  return { cwd, seconds: measured, layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, interrupts, steers, model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
+  return { cwd, seconds: measured, derived: verificationOf(messages), layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, interrupts, steers, model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
 }
 
 /**
@@ -579,7 +629,7 @@ function payloadFor(stretch) {
   // The seventh kind, used as it is defined: a stretch that changed no artefact is knowing
   // something, not building something, and it earns neither an artefact's nor a validation's credit.
   const kind = touched.paths.length === 0 ? "researched" : touched.committed ? "changed" : "built";
-  return {
+  const payload = {
     title: layer ? `AI-assisted work · ${layer}` : "AI-assisted work",
     kind,
     ...(layer ? { layer } : {}),
@@ -610,6 +660,9 @@ function payloadFor(stretch) {
     ...(stretch.agents && stretch.agents.runs > 0 ? { agent_runs: Math.min(AGENT_RUNS_MAX, stretch.agents.runs), agent_seconds: Math.min(AGENT_SECONDS_MAX, stretch.agents.seconds), agent_peak: Math.min(AGENT_RUNS_MAX, stretch.agents.peak) } : {}),
     at: new Date(stretch.to).toISOString(),
   };
+  // WHAT STAYS ON THIS COMPUTER (0.7.1): the stretch's derived record rides beside the payload for the local archive, never in it.
+  if (stretch.derived) DERIVED.set(payload, stretch.derived);
+  return payload;
 }
 
 /**
@@ -901,7 +954,7 @@ const doorFor = (entry) => (String(entry?.id ?? "").startsWith("codex:") ? codex
 const entrySource = new WeakMap(); // an entry → "codex" or "antigravity" by the client that wrote it; the sends route and name by it
 const entryFile = new WeakMap(); // a history entry → its transcript (`--summary` counts sessions), first moment and folder name (`--archive-lines`)
 // THE LOCAL ARCHIVE (`npx worktrust preserve --archive`, 2026-10-06): every measured day, live window and floors aside, as JSON lines to preserve.mjs on this computer, which keeps metadata only; nothing is sent.
-if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
+if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
 
 if (flag("history")) {

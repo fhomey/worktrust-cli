@@ -31,6 +31,7 @@ import { dirname, join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { summaryLines } from "./preserve-summary.mjs";
+import { archiveLine, stretchSignals } from "./preserve-lines.mjs";
 
 const args = process.argv.slice(2).filter((arg) => arg !== "preserve");
 const has = (name) => args.includes(`--${name}`);
@@ -167,12 +168,6 @@ async function apply(list, agreed = false) {
   say("  Restart the apps whose settings changed. Nothing was sent anywhere.");
 }
 
-/** THE ALLOWLIST: what a line may carry, each value checked for its type. A key not named here never reaches the archive. */
-const COUNTS = ["seconds", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak", "interrupts", "steers"];
-const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
-/** The hook's own words for a stretch (work area, kind, how it was steered, the measuring bases), kept as the hook sends them. */
-const WORDS = ["layer", "kind", "steered_from", "duration_basis", "token_basis", "turn_basis"];
-const WORD = /^[a-z][A-Za-z]{1,31}$/;
 /** WHICH COMPUTER, WHICH PROFILE: the one-way hashes `worktrust connect` derives (worktrust.mjs `computerIds`), the same text, so they match. */
 function computerIds() {
   let machine = null;
@@ -187,44 +182,6 @@ function computerIds() {
   const hash = (text) => createHash("sha256").update(text).digest("base64url");
   return { device_id: hash(`worktrust-machine|${machine.toLowerCase()}`), profile_id: hash(`worktrust-profile|${machine.toLowerCase()}|${homedir()}`) };
 }
-/**
- * THE STRETCH'S BEHAVIOUR SIGNALS (0.7.0): the local counter's keys and counts per stretch, joined on `stretch_ref`,
- * with the rubric's version. Read on this computer by count-behaviour.mjs --stretch-signals, which sends nothing; a
- * counter that is missing, fails or answers cut leaves the archive without signals and says so, never half of them.
- */
-function stretchSignals() {
-  const counter = join(HERE, "count-behaviour.mjs");
-  if (!existsSync(counter)) return null;
-  const run = spawnSync(process.execPath, [counter, "--stretch-signals", "--months", "120"], { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "" } });
-  const rows = (run.stdout ?? "").split("\n").filter((text) => text.startsWith("{")).map((text) => { try { return JSON.parse(text); } catch { return null; } });
-  const end = rows.at(-1)?.stretch_signals_end;
-  if (run.status !== 0 || !Number.isInteger(end) || end !== rows.length - 1) { say("  The behaviour counter did not answer whole, so these lines carry no signals; the next run adds them to new lines."); return null; }
-  return new Map(rows.slice(0, -1).filter(Boolean).map((row) => [row.stretch_ref, row]));
-}
-const SIGNAL = /^[a-zA-Z][A-Za-z0-9._-]{1,63}$/;
-function archiveLine(entry, behaviour = null) {
-  if (typeof entry?.client !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(entry.client) || !ISO.test(entry.started_at ?? "") || !ISO.test(entry.at ?? "") || !/^[A-Za-z0-9_-]{16,128}$/.test(entry.stretch_ref ?? "")) return null;
-  const line = { client: entry.client, day: entry.started_at.slice(0, 10), started_at: entry.started_at, ended_at: entry.at };
-  for (const key of COUNTS) if (typeof entry[key] === "number" && Number.isFinite(entry[key]) && entry[key] >= 0) line[key] = entry[key];
-  if (typeof entry.model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/ -]{0,63}$/.test(entry.model)) line.model = entry.model;
-  for (const key of WORDS) if (typeof entry[key] === "string" && WORD.test(entry[key])) line[key] = entry[key];
-  if (Array.isArray(entry.layers) && entry.layers.length > 1 && entry.layers.every((word) => typeof word === "string" && WORD.test(word))) line.layers = entry.layers.slice(0, 8);
-  if (typeof entry.exchanges === "number" && Number.isInteger(entry.exchanges) && entry.exchanges > 0) line.exchanges = entry.exchanges;
-  // The computer's offset from UTC when the stretch began (0.6.18), so a working day can be read in local time.
-  if (typeof entry.utc_offset === "string" && /^[+-]\d{2}:\d{2}$/.test(entry.utc_offset)) line.utc_offset = entry.utc_offset;
-  // Commit hashes the stretch made, never a message: what ties AI time to delivered work in the repository.
-  if (Array.isArray(entry.commits) && entry.commits.length > 0 && entry.commits.every((sha) => typeof sha === "string" && /^[0-9a-f]{7,40}$/.test(sha))) line.commits = entry.commits.slice(0, 50);
-  // The project as a one-way hash of its name (owner/name, else the folder's own name): which days belong together, never which project.
-  const name = entry.repo ?? entry.folder;
-  if (typeof name === "string" && name) line.project = sha256(`worktrust-project|${name}`);
-  // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
-  if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
-    const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();
-    if (kept.length > 0) { line.signals = Object.fromEntries(kept); line.analyzer_version = behaviour.analyzer_version; }
-  }
-  return { ...line, stretch_ref: entry.stretch_ref, ...IDS, collector_version: COLLECTOR };
-}
-
 /** The device key, when this computer is coupled: its private half signs, its public half goes into the proof. */
 function deviceKey() {
   try {
@@ -302,12 +259,12 @@ function archive(dir) {
   // A WHOLE ANSWER OR NOTHING: the hook ends with its own count; one line missing or cut is a read to refuse, never part of an archive.
   const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();
   if (!Number.isInteger(end) || end !== rows.length - 1) { say(`  The session hook's answer came back incomplete (${rows.length - 1} of ${end ?? "an unknown number of"} lines), so nothing was added. Run it again.`); process.exit(1); }
-  const signals = stretchSignals();
+  const signals = stretchSignals(HERE, say);
   const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [], measured = new Set();
   let waiting = 0;
   for (const text of rows.slice(0, -1)) {
     let entry; try { entry = JSON.parse(text); } catch { continue; }
-    const line = archiveLine(entry, signals?.get(entry.stretch_ref) ?? null);
+    const line = archiveLine(entry, signals?.get(entry.stretch_ref) ?? null, { ids: IDS, collector: COLLECTOR });
     if (line && line.day < today()) measured.add(line.stretch_ref); if (!line || known.has(line.stretch_ref)) continue; // a file present twice is one stretch
     if (line.day >= today()) { waiting += 1; continue; }
     known.add(line.stretch_ref);

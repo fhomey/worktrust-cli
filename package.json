@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -16,6 +16,7 @@
     "config-edits.mjs",
     "preserve.mjs",
     "preserve-summary.mjs",
+    "preserve-lines.mjs",
     "README.md",
     "SECURITY.md",
     "LICENSE"

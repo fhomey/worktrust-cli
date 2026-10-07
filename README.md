@@ -159,6 +159,7 @@ nothing it does not:
 | `stretch_ref` | a hash of the session's id and the day, so a stretch is archived once |
 | `device_id`, `profile_id` | which computer and which user profile on it, as one-way hashes (the machine's own id never appears) |
 | `signals`, `analyzer_version` | the behaviour signals of that stretch as keys and counts from the local counter's rubric (framing, steering, verification, recovery), and the rubric's version; derived on this computer from your own turns, never a word of them (0.7.0) |
+| `verification`, `delivery` | per kind of check run in the stretch (test, typecheck, lint, build, the project's gate, CI) how many ran and how many failed; per delivery step (commit, PR, push, deploy) how many succeeded, and whether a check had passed before the first; named from each command on this computer, never the command itself (0.7.1) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

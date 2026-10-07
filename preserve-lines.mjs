@@ -68,6 +68,13 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
     const { chain_max: most, chain_median: middle, questions, plans } = entry.delegation;
     if ([most, middle, questions, plans].every(whole) && most > 0 && middle <= most) line.delegation = { chain_max: most, chain_median: middle, questions, plans };
   }
+  // CONTEXT AND ROUTING (0.7.4): compactions and the known context commands; how many models, how many switches.
+  const COMMANDS = ["compact", "clear", "resume", "context", "model", "memory"];
+  if (entry.context && typeof entry.context === "object" && whole(entry.context.compactions)) {
+    const commands = Object.entries(entry.context.commands ?? {}).filter(([name, count]) => COMMANDS.includes(name) && whole(count) && count > 0).sort();
+    if (entry.context.compactions > 0 || commands.length > 0) line.context = { compactions: entry.context.compactions, ...(commands.length ? { commands: Object.fromEntries(commands) } : {}) };
+  }
+  if (entry.routing && typeof entry.routing === "object" && whole(entry.routing.models) && whole(entry.routing.switches) && entry.routing.models > 0) line.routing = { models: entry.routing.models, switches: entry.routing.switches };
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();

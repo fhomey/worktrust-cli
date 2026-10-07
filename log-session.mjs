@@ -135,31 +135,6 @@ const DAY_SECONDS = 86400;
 const TOOL_CAP = 1800;
 /** Tools whose result waits for the person: the gap to it is the person's time. Names only; nothing of the call is read. */
 const WAITS_FOR_PERSON = new Set(["AskUserQuestion", "ExitPlanMode"]);
-/**
- * WHAT A TOOL CALL WAS, AS A CATEGORY (0.7.1, verification per stretch; the capability roadmap's second tranche). A shell
- * command is read HERE to name its kind: a check (test, typecheck, lint, build, CI, the project's own gate) or a step of
- * delivery (commit, PR, push, deploy). The command itself never leaves this function; only the kind does, and only into
- * the local archive. A chained command can be several kinds; its one outcome counts for each.
- */
-const SHELL_TOOLS = new Set(["Bash", "bash", "shell", "run_command", "run_shell_command", "execute_command", "terminal"]);
-const CALL_KINDS = [
-  ["test", /(^|[\s/;&|])(vitest|jest|pytest|mocha|rspec|phpunit)\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\bgo test\b|\bcargo test\b|\bnode --test\b|\bplaywright test\b|scripts\/test-[\w-]+\.m?[jt]s\b/],
-  ["typecheck", /\btsc\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?typecheck\b|\bmypy\b|\bpyright\b/],
-  ["lint", /\beslint\b|\b(npm|pnpm|yarn|bun)\s+(run\s+)?lint\b|\bruff\b|\bflake8\b|\bclippy\b|\bbiome\s+(check|lint)\b/],
-  ["build", /\b(npm|pnpm|yarn|bun)\s+(run\s+)?build\b|\bnext build\b|\bvite build\b|\bcargo build\b|\bgo build\b/],
-  ["gate", /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(gate|verify|check)\b|scripts\/check-[\w-]+\.m?[jt]s\b/],
-  ["ci", /\bgh\s+(run\s+(watch|view)|pr\s+checks)\b/],
-  ["commit", /\bgit\s+commit\b/],
-  ["pr", /\bgh\s+pr\s+(create|merge)\b/],
-  ["push", /\bgit\s+push\b/],
-  ["deploy", /\b(vercel(\s+deploy)?\s+--prod|fly\s+deploy|netlify\s+deploy|wrangler\s+deploy)\b/],
-];
-const CHECK_KINDS = ["test", "typecheck", "lint", "build", "gate", "ci"];
-const DELIVERY_KINDS = ["commit", "pr", "push", "deploy"];
-const callKindsOf = (block) => {
-  const command = block && SHELL_TOOLS.has(String(block.name)) ? block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd : null;
-  return typeof command === "string" ? CALL_KINDS.filter(([, pattern]) => pattern.test(command)).map(([kind]) => kind) : [];
-};
 /** The derived record of a stretch, kept for the local archive only (see payloadFor). */
 const DERIVED = new WeakMap();
 const AGENT_RUNS_MAX = 10000, AGENT_SECONDS_MAX = 2592000;
@@ -234,10 +209,13 @@ const excluded = (path) => excludes.some((text) => text && path.includes(text));
  * Without them this hook still reads Claude Code; the never-matching patterns keep every other client out.
  */
 const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
+// THE STRETCH'S DERIVED RECORD (0.7.4: split from this file): tool calls named by kind, verification, recovery, delegation,
+// context and routing, for the local archive only. A copy without the module still measures and sends exactly as before.
+const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
-const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs"];
+const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs"]; // 0.7.4: the derived record travels with the hook
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {
   let installed = true;
@@ -407,7 +385,10 @@ const messageOf = (line, at) => {
   const content = line.message?.content ?? null;
   const blocks = Array.isArray(content) ? content : [];
   return {
-    at, type: line.type, usage: line.message?.usage ?? null, model: line.message?.model ?? null, messageId: typeof line.message?.id === "string" ? line.message.id : null, meta: line.isMeta === true, content,
+    // A COMPACTION'S SUMMARY IS NOT THE PERSON (0.7.4): Claude Code writes it on the user role; the counter always left it
+    // out, the hook counted it as a turn and the gap before it as the person's time. It is the loop's own, like a meta line.
+    at, type: line.type, usage: line.message?.usage ?? null, model: line.message?.model ?? null, messageId: typeof line.message?.id === "string" ? line.message.id : null, meta: line.isMeta === true || line.isCompactSummary === true, content,
+    compacted: line.isCompactSummary === true,
     // A tool's answer comes back on the user role; a line a reader marks `agentic` is an agent run (Copilot's asked → completed).
     kind: line.type === "assistant" ? "assistant" : blocks.some((block) => block && block.type === "tool_result") ? "tool_result" : "user",
     toolUse: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use"),
@@ -416,7 +397,7 @@ const messageOf = (line, at) => {
     agentic: line.agentic === true, cumulative: line.cumulative === true, // the session's running totals (Hermes, Goose without a ledger)
     // 0.7.1: each tool call's kinds (never its command) and each tool result's outcome, joined on the call's id in `measure`.
     // 0.7.2: and the call's FAMILY (the tool, and its check kinds) and a digest of its input, compared here and never kept.
-    calls: line.type === "assistant" ? blocks.filter((block) => block && block.type === "tool_use" && typeof block.id === "string").map((block) => { const kinds = callKindsOf(block); return { id: block.id, kinds, family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16) }; }) : [],
+    calls: line.type === "assistant" ? blocks.filter((block) => block && block.type === "tool_use" && typeof block.id === "string").map(callOf) : [],
     results: blocks.filter((block) => block && block.type === "tool_result" && typeof block.tool_use_id === "string").map((block) => ({ id: block.tool_use_id, failed: block.is_error === true })),
   };
 };
@@ -495,82 +476,6 @@ function isHumanTurn(content) {
   return types.has("text") || types.has("image");
 }
 
-/**
- * VERIFICATION PER STRETCH (0.7.1; framework L7, L12): per kind of check, how many ran and how many failed; per step of
- * delivery, how many succeeded; and whether a check had PASSED before the first delivery step. Null where the stretch
- * ran neither, so "no check seen" is never written as "zero checks".
- */
-function verificationOf(messages) {
-  const kinds = new Map();
-  for (const message of messages) for (const call of message.calls ?? []) kinds.set(call.id, call.kinds);
-  const checks = {}, delivered = {};
-  let deliveredAt = null, passedFirst = false;
-  for (const message of messages) for (const result of message.results ?? []) {
-    for (const kind of kinds.get(result.id) ?? []) {
-      if (CHECK_KINDS.includes(kind)) { const tally = (checks[kind] ??= [0, 0]); tally[0] += 1; if (result.failed) tally[1] += 1; else if (deliveredAt === null) passedFirst = true; }
-      else if (DELIVERY_KINDS.includes(kind) && !result.failed) { delivered[kind] = (delivered[kind] ?? 0) + 1; if (deliveredAt === null) deliveredAt = message.at; }
-    }
-  }
-  const any = (record) => Object.keys(record).length > 0;
-  const recovery = recoveryOf(messages), delegation = delegationOf(messages);
-  return { ...(any(checks) ? { verification: checks } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}), ...(recovery ? { recovery } : {}), ...(delegation ? { delegation } : {}) };
-}
-
-/**
- * DELEGATION AND CHECKPOINTS PER STRETCH (0.7.3; framework L3, L5): how many tool actions the agent took on its own
- * between two moments the person stepped in (their own turn, or stopping it), as the longest and the middle chain; and
- * how often the agent stopped for the person on purpose: a question it asked them, a plan it asked them to approve.
- * Null when the stretch made no tool call.
- */
-function delegationOf(messages) {
-  const chains = [];
-  let chain = 0, calls = 0, questions = 0, plans = 0;
-  for (const message of messages) {
-    if (message.bridge) continue;
-    const stepIn = message.type === "user" && !message.meta && message.kind !== "tool_result" && (isHumanTurn(message.content) || INTERRUPTED.test(textOf(message.content).trim()));
-    if (stepIn) { if (chain > 0) chains.push(chain); chain = 0; continue; }
-    for (const call of message.calls ?? []) {
-      const tool = call.family.split("|")[0];
-      calls += 1; chain += 1;
-      if (tool === "AskUserQuestion") questions += 1;
-      if (tool === "ExitPlanMode") plans += 1;
-    }
-  }
-  if (chain > 0) chains.push(chain);
-  if (calls === 0) return null;
-  chains.sort((a, b) => a - b);
-  return { chain_max: chains.at(-1), chain_median: chains[Math.floor((chains.length - 1) / 2)], questions, plans };
-}
-
-/**
- * RECOVERY PER STRETCH (0.7.2; framework L9): of the tool calls that failed, how many were followed by a success of the
- * same family (the same tool, the same kind of check) later in the stretch, the middle time that took, and what came
- * next: the same input again (a blind retry) or a different one (a changed strategy). Inputs are compared by digest on
- * this computer and never kept. Null when nothing failed.
- */
-function recoveryOf(messages) {
-  const calls = [];
-  const byId = new Map();
-  for (const message of messages) {
-    for (const call of message.calls ?? []) { const entry = { ...call, at: message.at, failed: null }; calls.push(entry); byId.set(call.id, entry); }
-    for (const result of message.results ?? []) { const call = byId.get(result.id); if (call) call.failed = result.failed; }
-  }
-  const done = calls.filter((call) => call.failed !== null);
-  let failures = 0, recovered = 0, blind = 0, changed = 0;
-  const latencies = [];
-  done.forEach((call, index) => {
-    if (!call.failed) return;
-    failures += 1;
-    const later = done.slice(index + 1).filter((next) => next.family === call.family);
-    if (later.length > 0) { if (later[0].digest === call.digest) blind += 1; else changed += 1; }
-    const success = later.find((next) => !next.failed);
-    if (success) { recovered += 1; latencies.push(Math.max(0, Math.round((success.at - call.at) / 1000))); }
-  });
-  if (failures === 0) return null;
-  latencies.sort((a, b) => a - b);
-  return { failures, recovered, blind_retries: blind, strategy_changed: changed, ...(latencies.length ? { median_seconds: latencies[Math.floor((latencies.length - 1) / 2)] } : {}) };
-}
-
 /** One day's messages → the stretch, measured. Null when there is nothing honest to send. */
 function measure(cwd, messages) {
   // MEASURED, AND ONLY MEASURED: every second counted lies between two recorded timestamps, and a
@@ -601,7 +506,7 @@ function measure(cwd, messages) {
     else if (isHumanTurn(message.content) && (prev.kind === "tool_result" || prev.toolUse)) steers += 1;
   }
   const from = firstOf(messages);
-  return { cwd, seconds: measured, derived: verificationOf(messages), layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, interrupts, steers, model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
+  return { cwd, seconds: measured, derived: deriveStretch(messages, { isHumanTurn, INTERRUPTED, textOf }), layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, interrupts, steers, model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
 }
 
 /**

@@ -162,6 +162,7 @@ nothing it does not:
 | `verification`, `delivery` | per kind of check run in the stretch (test, typecheck, lint, build, the project's gate, CI) how many ran and how many failed; per delivery step (commit, PR, push, deploy) how many succeeded, and whether a check had passed before the first; named from each command on this computer, never the command itself (0.7.1) |
 | `recovery` | of the tool calls that failed in the stretch, how many a later call of the same kind recovered, the middle time that took, how many were retried unchanged and how many with a different approach; inputs compared on this computer by digest, never kept (0.7.2) |
 | `delegation` | the longest and the middle chain of actions the agent took on its own between your turns (or your stopping it), and how often it stopped to ask you a question or to have a plan approved (0.7.3) |
+| `context`, `routing` | how often the context was compacted and which context commands you used (compact, clear, resume, context, model, memory; never a command of your own), how many models answered and how often the model changed (0.7.4) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

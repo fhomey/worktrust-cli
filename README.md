@@ -79,6 +79,8 @@ yourself run a command that sends. See [Keep your history](#keep-your-history).
 
 ```
 npx worktrust@latest history       send this computer's earlier sessions later (asks first)
+npx worktrust@latest history --rebuild   re-measure them with the current rules; WorkTrust replaces this computer's
+                                   earlier lines day by day, never counting a day twice (shows the plan, asks first)
 npx worktrust codex         let Codex wake the session hook (asks first)
 npx worktrust antigravity   let Antigravity wake the session hook (asks first)
 npx worktrust@latest status        what is coupled here
@@ -178,6 +180,36 @@ and counts, exactly as the session hook reads it.
 - **The archive is yours** to keep, copy, back up or delete. The free kit on
   [worktrust.io/preserve](https://worktrust.io/preserve) is this package plus a guideline, for teams
   that want the same record without WorkTrust.
+
+## Rebuild the history
+
+A newer version of this command measures a session differently from an older one: what the seconds were (the model
+answering, tools running, your own turns, pauses), your own turns rather than every message, tokens with the cache,
+and more AI apps (Cursor, Copilot, Hermes, Goose, OpenCode, OpenClaw, Codex, Antigravity). Lines an earlier version
+sent stand as they were measured then, and sending the sessions again would count those days twice: an old line
+does not name its stretch, so WorkTrust cannot tell it from the one that arrives.
+
+`npx worktrust@latest history --rebuild` re-measures every session still on this computer with the current rules and
+sends them with one difference: WorkTrust **replaces** this computer's earlier lines, day by day.
+
+- **What it does.** It shows the plan first: per AI app, the days and the measured hours it would send, and the first
+  and last day. It asks once; Enter is No. `--dry-run` shows the plan and stops. Nothing is sent before a typed `y`.
+  For every day and AI app it carries, WorkTrust withdraws this computer's earlier lines (sent by this key or by an
+  earlier key of the same computer, live or as history), each with a correction row that says why, and then stores the
+  re-measured lines. A line that arrives unchanged is kept as it is. A day is counted once, and the same rebuild sent
+  twice changes nothing.
+- **What it never does.** A replaced line is withdrawn and kept, never deleted: it stays in your record and the record shows
+  each replacement; deleting your account still removes all of it. Never touched: another computer's lines, what a web
+  connector (Claude or ChatGPT on the web) brought in, an AI app the batch does not carry, a day it does not carry, a line
+  you made private, a line less than 48 hours old (the session hook's own window), and a line received in the last 12
+  hours (the batches of one run never replace each other). It sends what `history` sends and nothing more: durations,
+  token counts, model names, a layer keyword, counts; never text.
+- **Only from this computer's own key.** A connector (an AI signed in on the web) cannot ask for a rebuild; WorkTrust
+  refuses it at the door.
+- **Offered once by `update`.** When this computer's earlier lines were made by an earlier version (the copy in
+  `~/.worktrust` says which), `npx worktrust@latest update` says so in plain words and offers the rebuild; Enter is No,
+  and the same version updated again offers nothing. The command cannot read your record, so it is an offer, not a
+  finding.
 
 ## Where the key lives, and why it only works here
 

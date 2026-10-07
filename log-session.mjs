@@ -23,7 +23,8 @@
  *   node log-session.mjs --uninstall [--purge] take it out again (--purge also deletes the copies)
  *   node log-session.mjs --dry-run            show what the current transcripts would send
  *   node log-session.mjs --history [--dry-run] send the months already on this machine, as HISTORY
- *   node log-session.mjs --history --summary   one JSON line: sessions, hours, first and last month (sends nothing)
+ *   node log-session.mjs --history --rebuild   the same, re-measured: the door REPLACES this computer's earlier lines, day by day
+ *   node log-session.mjs --history --summary   one JSON line: sessions, hours, first and last month, per client (sends nothing)
  *   (as a hook)                                reads the hook's JSON on stdin, logs, exits
  *   (from Codex)                               notify = ["node", "~/.worktrust/log-session.mjs", "--codex-notify"]
  *                                              in ~/.codex/config.toml: Codex calls it at every turn's end and
@@ -61,11 +62,9 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomBytes, sign as cryptoSign } from "node:crypto";
 
 const args = process.argv.slice(2);
-const flag = (name) => args.includes(`--${name}`);
+const flag = (name) => args.includes(`--${name}`), value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; }, DRY = flag("dry-run");
 // Exit once stdout is written: to a pipe it is asynchronous and process.exit drops what is queued (0.6.13 cut --archive-lines).
 const exitFlushed = (code) => new Promise((resolve) => process.stdout.write("", resolve)).then(() => process.exit(code));
-const value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
-const DRY = flag("dry-run");
 
 /**
  * THE OTHER HALF OF A SESSION: HOW IT WAS ASKED.
@@ -136,8 +135,7 @@ const DAY_SECONDS = 86400;
 const TOOL_CAP = 1800;
 /** Tools whose result waits for the person: the gap to it is the person's time. Names only; nothing of the call is read. */
 const WAITS_FOR_PERSON = new Set(["AskUserQuestion", "ExitPlanMode"]);
-const AGENT_RUNS_MAX = 10000;
-const AGENT_SECONDS_MAX = 2592000;
+const AGENT_RUNS_MAX = 10000, AGENT_SECONDS_MAX = 2592000;
 
 /**
  * WHEN THE HOOK RUNS. SessionEnd alone was a bet that sessions end, and a session that stays open
@@ -151,8 +149,7 @@ const AGENT_SECONDS_MAX = 2592000;
 const HOOK_EVENTS = ["SessionEnd", "SessionStart", "PreCompact"];
 
 const STATE = join(homedir(), ".worktrust", "sessions.json");
-const readState = () => { try { return JSON.parse(readFileSync(STATE, "utf8")); } catch { return {}; } };
-const writeState = (state) => { mkdirSync(dirname(STATE), { recursive: true }); writeFileSync(STATE, JSON.stringify(state, null, 1)); };
+const readState = () => { try { return JSON.parse(readFileSync(STATE, "utf8")); } catch { return {}; } }, writeState = (state) => { mkdirSync(dirname(STATE), { recursive: true }); writeFileSync(STATE, JSON.stringify(state, null, 1)); };
 /**
  * THE FLOORS (owner, 2026-10-04: "history is never sent silently"). `__from` is the moment this
  * computer was coupled: the hook sends nothing measured before it, so a fresh coupling (or one after
@@ -580,7 +577,7 @@ function payloadFor(stretch) {
  * exactly what landed. `announce` because one caller is a person watching a terminal and the other
  * is a hook holding a session's exit open.
  */
-async function sendHistory(door, entries, announce = false) {
+async function sendHistory(door, entries, announce = false, rebuild = false) {
   let accepted = 0;
   // A Codex entry goes through Codex's own coupling where one exists (see codexDoor), the rest
   // through the door given: the record files a line under the coupling that sent it. Antigravity's
@@ -590,9 +587,10 @@ async function sendHistory(door, entries, announce = false) {
   if (group.length === 0 || !target) continue;
   for (let i = 0; i < group.length; i += 200) {
     const batch = group.slice(i, i + 200);
-    // History carries no shas: an imported line forms no session, and the join is the live route's.
-    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { entries: batch.map((entry) => { const { commits, ...rest } = entry; void commits; return rest; }) } } });
-    const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source), ...proofFor(target.url, body) }, body });
+    // History carries no shas: an imported line forms no session, and the join is the live route's. REBUILD (owner, 2026-10-07): `rebuild: true`
+    // tells the door to replace this computer's earlier lines on the days and for the client the batch carries, and every group names its client.
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), entries: batch.map((entry) => { const { commits, ...rest } = entry; void commits; return rest; }) } } });
+    const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild), ...proofFor(target.url, body) }, body });
     const text = await response.text();
     if (announce) console.log(`batch ${Math.floor(i / 200) + 1}: ${response.status} ${text.slice(0, 200).replace(/\\n/g, " ")}`);
     if (!response.ok) break;
@@ -616,7 +614,7 @@ const proofFor = (url, body) => {
  * on this computer, and the door names a coupling's clients by the user-agent it hears (mcp_identify's
  * agents_seen). An Antigravity line names Antigravity: the product name, nothing of the work.
  */
-const clientOf = (source) => (source === "antigravity" || DATABASE_CLIENTS.includes(source) ? { "user-agent": `${source}/hook (worktrust-hook)` } : {});
+const clientOf = (source, always = false) => (always || source === "antigravity" || DATABASE_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)` } : {});
 
 async function send(door, payload) {
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "log_work", arguments: payload } });
@@ -870,17 +868,18 @@ if (flag("history")) {
   const entries = historyEntries(historyFloor);
   const hours = entries.reduce((sum, entry) => sum + (entry.seconds ?? 0), 0) / 3600;
   const months = [...new Set(entries.map((entry) => entry.at.slice(0, 7)))].sort();
-  // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, hours, first and last month; nothing sent.
-  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null })); await exitFlushed(0); }
-  console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} measured hours · ${months.join(", ")}`);
+  // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, hours, first and last month; per client its days and hours (the rebuild's plan, 2026-10-07); nothing sent.
+  const clients = [...entries.reduce((map, entry) => { const client = entrySource.get(entry) ?? "claude", row = map.get(client) ?? { client, days: new Set(), seconds: 0 }; row.days.add(entry.at.slice(0, 10)); row.seconds += entry.seconds ?? 0; return map.set(client, row); }, new Map()).values()].map((row) => ({ client: row.client, days: row.days.size, hours: Math.round(row.seconds / 360) / 10, first: [...row.days].sort()[0], last: [...row.days].sort().at(-1) }));
+  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null, clients })); await exitFlushed(0); }
+  console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} measured hours · ${months.join(", ")}${flag("rebuild") ? " · rebuild: this computer's earlier lines for these days and clients are replaced at the door" : ""}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.
     if (entries[0]) console.log(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`);
-    console.log("\ndry run — nothing sent. Add --history without --dry-run to import them.");
+    console.log(`\ndry run — nothing sent. Add --history${flag("rebuild") ? " --rebuild" : ""} without --dry-run to ${flag("rebuild") ? "rebuild" : "import"} them.`);
     await exitFlushed(0);
   }
   // A batch the door refused is a failure the caller must see, not a quiet zero.
-  await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
+  await exitFlushed((await sendHistory(door, entries, true, flag("rebuild"))) === entries.length ? 0 : 1);
 }
 
 const input = hookInput();

@@ -512,8 +512,34 @@ function verificationOf(messages) {
     }
   }
   const any = (record) => Object.keys(record).length > 0;
-  const recovery = recoveryOf(messages);
-  return { ...(any(checks) ? { verification: checks } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}), ...(recovery ? { recovery } : {}) };
+  const recovery = recoveryOf(messages), delegation = delegationOf(messages);
+  return { ...(any(checks) ? { verification: checks } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}), ...(recovery ? { recovery } : {}), ...(delegation ? { delegation } : {}) };
+}
+
+/**
+ * DELEGATION AND CHECKPOINTS PER STRETCH (0.7.3; framework L3, L5): how many tool actions the agent took on its own
+ * between two moments the person stepped in (their own turn, or stopping it), as the longest and the middle chain; and
+ * how often the agent stopped for the person on purpose: a question it asked them, a plan it asked them to approve.
+ * Null when the stretch made no tool call.
+ */
+function delegationOf(messages) {
+  const chains = [];
+  let chain = 0, calls = 0, questions = 0, plans = 0;
+  for (const message of messages) {
+    if (message.bridge) continue;
+    const stepIn = message.type === "user" && !message.meta && message.kind !== "tool_result" && (isHumanTurn(message.content) || INTERRUPTED.test(textOf(message.content).trim()));
+    if (stepIn) { if (chain > 0) chains.push(chain); chain = 0; continue; }
+    for (const call of message.calls ?? []) {
+      const tool = call.family.split("|")[0];
+      calls += 1; chain += 1;
+      if (tool === "AskUserQuestion") questions += 1;
+      if (tool === "ExitPlanMode") plans += 1;
+    }
+  }
+  if (chain > 0) chains.push(chain);
+  if (calls === 0) return null;
+  chains.sort((a, b) => a - b);
+  return { chain_max: chains.at(-1), chain_median: chains[Math.floor((chains.length - 1) / 2)], questions, plans };
 }
 
 /**

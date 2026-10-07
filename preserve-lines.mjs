@@ -63,6 +63,11 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
     const { failures, recovered, blind_retries: blind, strategy_changed: changed, median_seconds: median } = entry.recovery;
     if ([failures, recovered, blind, changed].every(whole) && failures > 0 && recovered <= failures && blind + changed <= failures && (median === undefined || whole(median))) line.recovery = { failures, recovered, blind_retries: blind, strategy_changed: changed, ...(median !== undefined ? { median_seconds: median } : {}) };
   }
+  // DELEGATION (0.7.3): the longest and middle chain of the agent's own actions between the person's steps, questions, plans.
+  if (entry.delegation && typeof entry.delegation === "object") {
+    const { chain_max: most, chain_median: middle, questions, plans } = entry.delegation;
+    if ([most, middle, questions, plans].every(whole) && most > 0 && middle <= most) line.delegation = { chain_max: most, chain_median: middle, questions, plans };
+  }
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();

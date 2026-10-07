@@ -5,7 +5,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -91,3 +91,34 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
   return { ...line, stretch_ref: entry.stretch_ref, ...ids, collector_version: collector };
 }
 
+
+/**
+ * THE ARCHIVE AS HISTORY (0.8.0; framework §22: "preserve as evidence continuity"). The lines of an archive this
+ * computer wrote AND signed (a day whose proof carries this computer's key), as `import_history` entries, each marked
+ * `from_archive` so the record shows it came from the person's own archive after the AI app had deleted the session.
+ * The caller verifies the archive first, sends only stretches whose session is gone, and only to a door that knows the
+ * mark. Nothing here sends.
+ */
+const read = (file) => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return null; } };
+const readdir = (dir) => { try { return readdirSync(dir); } catch { return []; } };
+export function archiveEntries(dir, ownKey) {
+  const out = [];
+  for (const year of readdir(dir).filter((name) => /^\d{4}$/.test(name)).sort()) for (const month of readdir(join(dir, year)).filter((name) => /^\d{2}$/.test(name)).sort()) {
+    const file = join(dir, year, month, "stretches.jsonl");
+    if (!existsSync(file)) continue;
+    for (const text of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
+      let line; try { line = JSON.parse(text); } catch { continue; }
+      const proof = read(join(dir, "proofs", `${line.day}.json`));
+      if (!ownKey || !proof || typeof proof.signature !== "string" || proof.public_key !== ownKey) continue;
+      const entry = {
+        title: line.layer ? `AI-assisted work · ${line.layer}` : "AI-assisted work",
+        ...(line.kind ? { kind: line.kind } : {}), ...(line.layer ? { layer: line.layer } : {}), ...(line.layers ? { layers: line.layers } : {}),
+        ...(typeof line.seconds === "number" ? { seconds: line.seconds, duration_basis: line.duration_basis ?? "measured" } : {}),
+        ...Object.fromEntries(["tokens_in", "tokens_out", "token_basis", "tokens_cache_read", "tokens_cache_write", "exchanges", "turn_basis", "model", "steered_from", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak", "interrupts", "steers", "utc_offset"].filter((key) => line[key] !== undefined).map((key) => [key, line[key]])),
+        stretch_ref: line.stretch_ref, started_at: line.started_at, at: line.ended_at, from_archive: true,
+      };
+      out.push({ entry, client: line.client ?? "claude" });
+    }
+  }
+  return out;
+}

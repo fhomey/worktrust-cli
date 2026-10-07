@@ -12,6 +12,8 @@
  *   npx worktrust@latest history               send this computer's earlier sessions as history (asks first)
  *   npx worktrust@latest history --rebuild     re-measure them with the current rules; WorkTrust replaces this computer's
  *                                              earlier lines day by day, never counting a day twice (shows the plan, asks first)
+ *   npx worktrust@latest history --from-archive [dir]   send what your local archive holds of sessions your AI apps have
+ *                                              already deleted, marked as from your archive (shows the plan, asks first)
  *   npx worktrust@latest disconnect            show what comes out, ask, take it out again
  *   npx worktrust@latest status                what is coupled here
  *   npx worktrust@latest preserve              how long each AI app here keeps its sessions (--apply keeps them,
@@ -71,7 +73,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.7.6";
+const CLI_VERSION = "0.8.0";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -681,7 +683,25 @@ async function offerRebuild(previousVersion, paths, key) {
 async function history() {
   const key = await freshKey();
   if (!key) fail("this computer is not coupled through the key file. Run npx worktrust first.");
+  if (has("from-archive")) return offerArchive(await scripts(), key);
   await offerHistory(await scripts(), key.token, key.device ?? null, key.url, has("rebuild"));
+}
+
+/**
+ * THE ARCHIVE AS HISTORY (0.8.0): the plan first (how many signed stretches, how many of them gone from the AI apps
+ * here), then one question, Enter is No; the hook refuses by name whatever does not hold (no device key, an archive
+ * that does not verify, a door that does not know the mark).
+ */
+async function offerArchive(paths, key) {
+  const at = process.argv.indexOf("--from-archive"), named = process.argv[at + 1], dir = named && !named.startsWith("--") ? [named] : [];
+  const env = { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) };
+  const plan = await run(paths["log-session.mjs"], ["--history", "--from-archive", ...dir, "--dry-run"], key.token, true, env);
+  say();
+  for (const line of plan.out.trim().split("\n").filter((text) => !text.startsWith(" ") && !text.startsWith("{") && !text.startsWith("}") && text.trim())) say(`  ${line}`);
+  if (plan.code !== 0 || /Nothing to send/.test(plan.out) || has("dry-run")) return;
+  if (!(await ask("Send them as history, marked as from your archive?", false))) { say("  Not sent."); return; }
+  const sent = await run(paths["log-session.mjs"], ["--history", "--from-archive", ...dir], key.token, true, env);
+  say(sent.code === 0 ? "  ✓ Sent as history from your archive. It shows in WorkTrust as earlier work, marked as such, never as verified hours." : `  Not sent: ${sent.out.trim().split("\n").pop()}`);
 }
 
 /**
@@ -878,6 +898,8 @@ function help() {
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
   say("    --rebuild            re-measure them with the current rules; WorkTrust replaces this computer's earlier lines,");
   say("                         day by day, never counting a day twice (shows the plan per AI app, asks first; --dry-run: the plan only)");
+  say("    --from-archive [dir] send what your archive (preserve --archive) holds of sessions your AI apps already deleted,");
+  say("                         only days this computer signed, marked as from your archive (shows the plan, asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
   say("  worktrust preserve     keep your AI history: the report, then the settings and a local archive, each on your yes");

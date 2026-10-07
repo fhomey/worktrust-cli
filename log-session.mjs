@@ -54,12 +54,12 @@
  * CONFIDENTIAL PROJECTS never open: `~/.worktrust-counter.json` { "exclude": ["client-x"] } is
  * honoured here too, matched against the transcript's project directory, before a file is read.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, randomBytes, sign as cryptoSign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`), value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; }, DRY = flag("dry-run");
@@ -658,6 +658,19 @@ async function sendHistory(door, entries, announce = false, rebuild = false) {
   return accepted;
 }
 
+/** Whether the door's import_history takes `from_archive` (0.8.0): asked with tools/list, never assumed. */
+async function doorKnowsArchive(target) {
+  if (!target) return false;
+  try {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" });
+    const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...proofFor(target.url, body) }, body });
+    const text = await response.text();
+    const json = JSON.parse(text.trim().startsWith("{") ? text : text.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
+    const tool = json?.result?.tools?.find((one) => one.name === "import_history");
+    return Boolean(tool?.inputSchema?.properties?.entries?.items?.properties?.from_archive);
+  } catch { return false; }
+}
+
 /** DEVICE PROOF (2026-10-03): through `worktrust hook` a bound computer hands over WORKTRUST_DEVICE_KEY; every call is then signed. */
 const proofFor = (url, body) => {
   const device = process.env.WORKTRUST_DEVICE_KEY;
@@ -919,6 +932,32 @@ const entryFile = new WeakMap(); // a history entry → its transcript (`--summa
 // THE LOCAL ARCHIVE (`npx worktrust preserve --archive`, 2026-10-06): every measured day, live window and floors aside, as JSON lines to preserve.mjs on this computer, which keeps metadata only; nothing is sent.
 if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
+
+/**
+ * HISTORY FROM THE ARCHIVE (0.8.0; framework §22). When an AI app has deleted its sessions, the stretches this computer
+ * archived (`preserve --archive`) can still be filed, marked `from_archive`. Five conditions, each refused by name: a
+ * device key (only lines this computer signed travel), an archive that verifies, a stretch whose session is gone from
+ * this computer (one still here goes through the ordinary history), a door that knows the mark, and the person asking.
+ */
+if (flag("history") && flag("from-archive")) {
+  const named = value("from-archive"), dir = named && !named.startsWith("--") ? named.replace(/^~(?=\/|$)/, homedir()) : join(homedir(), "AI-Evidence");
+  const say = (text) => console.log(text);
+  const pem = process.env.WORKTRUST_DEVICE_KEY;
+  let ownKey = null;
+  try { ownKey = pem ? createPublicKey(createPrivateKey(pem)).export({ format: "jwk" }).x : null; } catch { ownKey = null; }
+  if (!ownKey) { say("No device key on this computer: only lines this computer signed can be sent from its archive. Nothing was sent."); await exitFlushed(1); }
+  const verified = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "preserve.mjs"), "--verify", dir], { encoding: "utf8" });
+  if (verified.status !== 0) { say(`The archive in ${dir} does not verify, so nothing was sent: ${(verified.stdout || verified.stderr || "").trim().split("\n").pop()}`); await exitFlushed(1); }
+  const { archiveEntries = null } = (await import("./preserve-lines.mjs").catch(() => null)) ?? {};
+  if (!archiveEntries) { say("preserve-lines.mjs is not beside this file. Nothing was sent."); await exitFlushed(1); }
+  const present = new Set(historyEntries(null, true).map((entry) => entry.stretch_ref));
+  const signed = archiveEntries(dir, ownKey), gone = signed.filter(({ entry }) => !present.has(entry.stretch_ref));
+  const entries = gone.map(({ entry, client }) => { if (client !== "claude") entrySource.set(entry, client); return entry; });
+  say(`${signed.length} stretches in the archive signed by this computer · ${entries.length} of them no longer in any AI app here`);
+  if (DRY || entries.length === 0) { if (entries[0]) say(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`); say(entries.length === 0 ? "Nothing to send." : "\ndry run — nothing sent."); await exitFlushed(0); }
+  if (!(await doorKnowsArchive(door))) { say("WorkTrust does not accept history from an archive yet (the door does not know the mark). Nothing was sent."); await exitFlushed(1); }
+  await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
+}
 
 if (flag("history")) {
   const historyFloor = floorOf(readState(), "__historyFloor");

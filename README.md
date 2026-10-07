@@ -81,6 +81,8 @@ yourself run a command that sends. See [Keep your history](#keep-your-history).
 npx worktrust@latest history       send this computer's earlier sessions later (asks first)
 npx worktrust@latest history --rebuild   re-measure them with the current rules; WorkTrust replaces this computer's
                                    earlier lines day by day, never counting a day twice (shows the plan, asks first)
+npx worktrust@latest history --from-archive [dir]   send what your local archive holds of sessions your AI apps
+                                   already deleted, marked as from your archive (shows the plan, asks first)
 npx worktrust codex         let Codex wake the session hook (asks first)
 npx worktrust antigravity   let Antigravity wake the session hook (asks first)
 npx worktrust@latest status        what is coupled here
@@ -197,6 +199,13 @@ answering, tools running, your own turns, pauses), your own turns rather than ev
 and more AI apps (Cursor, Copilot, Hermes, Goose, OpenCode, OpenClaw, Codex, Antigravity). Lines an earlier version
 sent stand as they were measured then, and sending the sessions again would count those days twice: an old line
 does not name its stretch, so WorkTrust cannot tell it from the one that arrives.
+
+`npx worktrust@latest history --from-archive` (0.8.0) is for the sessions an AI app has already deleted (Claude
+Code's default is 30 days). It sends what your local archive (`preserve --archive`) holds of them, and only that: days
+this computer signed with its own key, of sessions no longer on the computer, each line marked as coming from your
+archive. It refuses, and sends nothing, when the computer has no device key, when the archive does not verify, or when
+WorkTrust does not yet accept the mark. It shows the plan first and asks once; Enter is No. Such lines are history,
+like any import: never verified hours.
 
 `npx worktrust@latest history --rebuild` re-measures every session still on this computer with the current rules and
 sends them with one difference: WorkTrust **replaces** this computer's earlier lines, day by day.

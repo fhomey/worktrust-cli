@@ -187,7 +187,22 @@ function computerIds() {
   const hash = (text) => createHash("sha256").update(text).digest("base64url");
   return { device_id: hash(`worktrust-machine|${machine.toLowerCase()}`), profile_id: hash(`worktrust-profile|${machine.toLowerCase()}|${homedir()}`) };
 }
-function archiveLine(entry) {
+/**
+ * THE STRETCH'S BEHAVIOUR SIGNALS (0.7.0): the local counter's keys and counts per stretch, joined on `stretch_ref`,
+ * with the rubric's version. Read on this computer by count-behaviour.mjs --stretch-signals, which sends nothing; a
+ * counter that is missing, fails or answers cut leaves the archive without signals and says so, never half of them.
+ */
+function stretchSignals() {
+  const counter = join(HERE, "count-behaviour.mjs");
+  if (!existsSync(counter)) return null;
+  const run = spawnSync(process.execPath, [counter, "--stretch-signals", "--months", "120"], { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "" } });
+  const rows = (run.stdout ?? "").split("\n").filter((text) => text.startsWith("{")).map((text) => { try { return JSON.parse(text); } catch { return null; } });
+  const end = rows.at(-1)?.stretch_signals_end;
+  if (run.status !== 0 || !Number.isInteger(end) || end !== rows.length - 1) { say("  The behaviour counter did not answer whole, so these lines carry no signals; the next run adds them to new lines."); return null; }
+  return new Map(rows.slice(0, -1).filter(Boolean).map((row) => [row.stretch_ref, row]));
+}
+const SIGNAL = /^[a-zA-Z][A-Za-z0-9._-]{1,63}$/;
+function archiveLine(entry, behaviour = null) {
   if (typeof entry?.client !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(entry.client) || !ISO.test(entry.started_at ?? "") || !ISO.test(entry.at ?? "") || !/^[A-Za-z0-9_-]{16,128}$/.test(entry.stretch_ref ?? "")) return null;
   const line = { client: entry.client, day: entry.started_at.slice(0, 10), started_at: entry.started_at, ended_at: entry.at };
   for (const key of COUNTS) if (typeof entry[key] === "number" && Number.isFinite(entry[key]) && entry[key] >= 0) line[key] = entry[key];
@@ -202,6 +217,11 @@ function archiveLine(entry) {
   // The project as a one-way hash of its name (owner/name, else the folder's own name): which days belong together, never which project.
   const name = entry.repo ?? entry.folder;
   if (typeof name === "string" && name) line.project = sha256(`worktrust-project|${name}`);
+  // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
+  if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
+    const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();
+    if (kept.length > 0) { line.signals = Object.fromEntries(kept); line.analyzer_version = behaviour.analyzer_version; }
+  }
   return { ...line, stretch_ref: entry.stretch_ref, ...IDS, collector_version: COLLECTOR };
 }
 
@@ -282,11 +302,12 @@ function archive(dir) {
   // A WHOLE ANSWER OR NOTHING: the hook ends with its own count; one line missing or cut is a read to refuse, never part of an archive.
   const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();
   if (!Number.isInteger(end) || end !== rows.length - 1) { say(`  The session hook's answer came back incomplete (${rows.length - 1} of ${end ?? "an unknown number of"} lines), so nothing was added. Run it again.`); process.exit(1); }
+  const signals = stretchSignals();
   const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [], measured = new Set();
   let waiting = 0;
   for (const text of rows.slice(0, -1)) {
     let entry; try { entry = JSON.parse(text); } catch { continue; }
-    const line = archiveLine(entry);
+    const line = archiveLine(entry, signals?.get(entry.stretch_ref) ?? null);
     if (line && line.day < today()) measured.add(line.stretch_ref); if (!line || known.has(line.stretch_ref)) continue; // a file present twice is one stretch
     if (line.day >= today()) { waiting += 1; continue; }
     known.add(line.stretch_ref);

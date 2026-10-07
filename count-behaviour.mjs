@@ -788,12 +788,29 @@ export const isoWeek = (day) => {
   return `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 };
 const byWeek = new Map(); // "month|week" → Map(signal → count)
+/**
+ * THE WORK STRETCH (0.7.0, the owner's capability framework v4 §13: "work_stretch_id, the stable unit joining AI
+ * activity, verification, failures and delivery"). The same observation is tallied a third time, per stretch: one
+ * session's UTC day, named by the hash the session hook files the stretch under (`stretch_ref` in log-session.mjs), so a
+ * signal and the stretch's clocks, tokens and commits meet on one key. Only sessions read from a file carry it (Claude
+ * Code, Codex, Antigravity); the session's id is hashed with the day and never leaves the computer. Read by `preserve`
+ * through --stretch-signals; nothing of it is sent yet.
+ */
+const byStretch = new Map(); // stretch_ref → { day, signals: { signal: count } }
+let currentStretchBase = null; // the session's own id, as the session hook hashes it — local only
+const stretchBaseOf = (session) => !session.path ? null : /(^|[\\/])brain[\\/][^\\/]+[\\/]\.system_generated[\\/]logs[\\/]transcript\.jsonl$/.test(session.path) ? String(session.path).split(/[\\/]/).at(-4) : String(session.path).split(/[\\/]/).pop().replace(/\.jsonl?$/, "");
+const stretchRefOf = (base, day) => createHash("sha256").update(`worktrust-stretch|${base}|${day}`).digest("base64url");
 const bump = (month, signal, n = 1) => {
   {
     const key = `${month}|${currentDay && currentDay.startsWith(month) ? isoWeek(currentDay) : "U"}`;
     const week = byWeek.get(key) ?? new Map();
     week.set(signal, (week.get(signal) ?? 0) + n);
     byWeek.set(key, week);
+  }
+  if (currentStretchBase && currentDay) {
+    const ref = stretchRefOf(currentStretchBase, currentDay), entry = byStretch.get(ref) ?? { day: currentDay, signals: {} };
+    entry.signals[signal] = (entry.signals[signal] ?? 0) + n;
+    byStretch.set(ref, entry);
   }
   if (currentUnit) {
     const bag = unitsByMonth.get(month) ?? new Map();
@@ -827,10 +844,10 @@ const seenLines = new Set(); // v0.10: line identities already counted (a uuid o
 const manifest = [];
 for(const session of sessions())manifest.push(sessionDigest(session));
 exportConversations = 0; copilotSessionCount = 0; codexRolloutCount = 0; antigravityCount = 0; skippedDirs.length = 0; countedDirs.length = 0; skippedConversations.length = 0;
-const checkpoint = flag("no-checkpoint") || LABEL_OUT ? null : checkpointStore(
+const checkpoint = flag("no-checkpoint") || flag("stretch-signals") || LABEL_OUT ? null : checkpointStore(
   value("checkpoint") ?? join(homedir(), ".worktrust", "counter-checkpoint.json"),
   fingerprint({code:readFileSync(new URL(import.meta.url)),version:ANALYZER_VERSION,months:MONTHS_BACK,thisMonth,exclude:EXCLUDE,leaveOut:LEAVE_OUT,exports:EXPORTS}),manifest);
-const checkpointMaps = {byMonth,byWeek,unitsByMonth,contextNames,contextBasenames,byMonthContext,monthToolNames,modelFirstSeen,monthMcpServers,rolePatterns,contextCwds,projectFirstSeen,sessionsByMonth};
+const checkpointMaps = {byMonth,byWeek,byStretch,unitsByMonth,contextNames,contextBasenames,byMonthContext,monthToolNames,modelFirstSeen,monthMcpServers,rolePatterns,contextCwds,projectFirstSeen,sessionsByMonth};
 const checkpointSets = {openingHashes,toolFirstSeen,seenLines};
 if (checkpoint?.saved) {
   for(const [key,map] of Object.entries(checkpointMaps)) for(const [k,v] of checkpoint.saved.state.maps[key] ?? []) map.set(k,v);
@@ -849,6 +866,7 @@ for (const session of sessions()) {
   if(sessionIndex++<resumeAt)continue;
   const streamHash = session.path ? createHash("sha256").update(`file:${session.path}\n`) : null;
   const file = session.key;
+  currentStretchBase = stretchBaseOf(session);
   files += 1;
   // One file is one session: order preserved, so the STRUCTURAL half reads the shape.
   let sessionMonth = null;
@@ -1152,7 +1170,7 @@ for (const session of sessions()) {
     checkpoint?.close();process.exit(0);
   }
 }
-currentUnit = null; currentDay = null; // month-level aggregates carry no unit and no day
+currentUnit = null; currentDay = null; currentStretchBase = null; // month-level aggregates carry no unit, no day and no stretch
 for (const [month, set] of monthToolNames) bump(month, "toolBreadth", set.size);
 for (const [month, set] of monthMcpServers) if (set.size > 0) bump(month, "mcpServersDistinct", set.size);
 for (const [month, byPattern] of rolePatterns) for (const sessions of byPattern.values()) if (sessions.size >= RECURRENCE_FLOOR) bump(month, "recurringPatternCandidate");
@@ -1188,6 +1206,14 @@ for (let i = 0; i < sessionSpans.length; i += 1) {
   const a = sessionSpans[i];
   if (a.end <= a.start) continue;
   if (overlapping.has(i)) { currentUnit = a.unit; currentDay = a.day ?? null; currentContext = a.context ?? null; bump(a.month, "parallelSessions"); currentUnit = null; currentDay = null; currentContext = null; }
+}
+
+// THE STRETCHES, FOR PRESERVE (0.7.0): one JSON line per stretch that carries a signal, the analyzer's version on each,
+// and a closing count so the reader can tell a whole answer from a cut one. Counts and keys only; nothing is sent.
+if (flag("stretch-signals")) {
+  const rows = [...byStretch.entries()].sort(([, a], [, b]) => a.day.localeCompare(b.day)).map(([stretch_ref, entry]) => JSON.stringify({ stretch_ref, day: entry.day, analyzer_version: ANALYZER_VERSION, signals: Object.fromEntries(Object.entries(entry.signals).sort().map(([signal, count]) => [signal, Math.min(COUNT_CEILING, count)])) }));
+  await new Promise((resolve) => process.stdout.write(`${[...rows, JSON.stringify({ stretch_signals_end: rows.length })].join("\n")}\n`, resolve));
+  process.exit(0);
 }
 
 const months = [...byMonth.keys()].sort();

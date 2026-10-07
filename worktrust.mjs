@@ -69,7 +69,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.6.15";
+const CLI_VERSION = "0.6.16";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -81,6 +81,8 @@ const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
 const say = (line = "") => process.stdout.write(`${line}\n`);
+// A reader that closed the pipe (`worktrust status | head`) wants no more: stop quietly, never an EPIPE stack (0.6.16, audit L4).
+process.stdout.on("error", (error) => { if (error?.code === "EPIPE") process.exit(0); throw error; });
 const fail = (line) => { process.stderr.write(`worktrust: ${line}\n`); process.exit(1); };
 const OS = { darwin: "macos", win32: "windows", linux: "linux" }[platform()] ?? "other";
 const OS_NAME = { macos: "macOS", windows: "Windows", linux: "Linux", other: "this system" }[OS];
@@ -576,7 +578,8 @@ async function connect() {
   say(`    + ${join(HOME_DIR, "log-session.mjs")} and ${join(HOME_DIR, "count-behaviour.mjs")}${BUNDLED ? " (from this package, not updated from the network)" : ""}`);
   say(`    + ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd and PreCompact run it`);
   say();
-  say("  Sent to WorkTrust afterwards: durations, token counts, model names, a layer keyword, counts.");
+  say("  Sent to WorkTrust afterwards: durations, token counts, model names, a layer keyword, counts,");
+  say("  and, to match the work to GitHub, the repository's owner/name and the commit hashes.");
   say("  Never sent: prompts, answers, code, file paths, commit messages.");
   say();
   if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
@@ -634,8 +637,8 @@ async function offerHistory(paths, token, devicePem, url = MCP) {
   let found = null;
   try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: nothing to offer */ }
   say();
-  if (!found?.sessions) { say("  No earlier Claude Code, Codex or Antigravity sessions on this computer to send."); return; }
-  say(`  This computer holds ${found.sessions} earlier Claude Code / Codex / Antigravity sessions · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
+  if (!found?.sessions) { say("  Your AI apps hold no earlier sessions on this computer to send."); return; }
+  say(`  This computer holds ${found.sessions} earlier sessions of your AI apps · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
   if (!has("history") && !(await ask("Send these as history (hours and tokens per day; never text)?", false))) { say("  Not sent. Send them later with: npx worktrust@latest history"); return; }
   const sent = await run(paths["log-session.mjs"], ["--history"], token, true, env);

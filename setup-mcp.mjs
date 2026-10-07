@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { spawnSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
-import { placeUnder, takeOut } from "./config-edits.mjs";
+import { isWorkTrustDoor, placeUnder, takeOut } from "./config-edits.mjs";
 
 const args = process.argv.slice(2);
 const value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -39,7 +39,7 @@ function fromClaude() {
   try {
     const config = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8"));
     const found = [];
-    const walk = (node) => { if (!node || typeof node !== "object") return; if (typeof node.url === "string" && node.url.includes("/api/mcp")) { const auth = node.headers?.Authorization ?? node.headers?.authorization ?? ""; if (auth.startsWith("Bearer ")) found.push({ url: node.url, token: auth.slice(7) }); } for (const child of Object.values(node)) walk(child); };
+    const walk = (node) => { if (!node || typeof node !== "object") return; if (typeof node.url === "string" && isWorkTrustDoor(node.url)) { const auth = node.headers?.Authorization ?? node.headers?.authorization ?? ""; if (auth.startsWith("Bearer ")) found.push({ url: node.url, token: auth.slice(7) }); } for (const child of Object.values(node)) walk(child); };
     walk(config); return found[0] ?? null;
   } catch { return null; }
 }
@@ -54,7 +54,7 @@ const discovered = fromClaude();
 function directClaudeEntries() {
   try {
     const config = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8"));
-    const door = (server) => typeof server?.url === "string" && /\/api\/mcp\b/.test(server.url) && /worktrust/i.test(new URL(server.url).host);
+    const door = (server) => typeof server?.url === "string" && isWorkTrustDoor(server.url);
     const entries = Object.entries(config.mcpServers ?? {}).filter(([, server]) => door(server)).map(([name]) => ({ name, scope: "user", dir: null }));
     for (const [dir, project] of Object.entries(config.projects ?? {})) for (const [name, server] of Object.entries(project?.mcpServers ?? {})) if (door(server)) entries.push({ name, scope: "local", dir });
     const bridged = Object.values(config.mcpServers ?? {}).some((server) => Array.isArray(server?.args) && server.args.includes(BRIDGE));

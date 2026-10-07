@@ -38,7 +38,10 @@ import { fileURLToPath } from "node:url";
  * The running total in event_msg/token_count is never read: it is a counter, not a record.
  * Text is read here for the rubric and the layer and travels nowhere, as with every transcript.
  */
-export const CODEX_ROLLOUT = /(^|\/)rollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f-]{36}\.jsonl$/;
+// Either separator (0.6.16, audit H4): on Windows a path reads C:\Users\…\rollout-….jsonl, and a pattern of `/` alone matched none.
+export const CODEX_ROLLOUT = /(^|[\\/])rollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f-]{36}\.jsonl$/;
+/** A rollout's thread id: its file's name without .jsonl, split on either separator. */
+export const codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, "");
 export const CODEX_HARNESS_TURN = /^\s*<[a-z][a-z_]*[\s>]/i;
 export const codexToolName = (name) => (name === "exec" || name === "shell" || name === "container.exec" || name === "local_shell" ? "Bash" : name === "apply_patch" ? "Edit" : name === "spawn_agent" ? "Agent" : String(name ?? "tool"));
 export const codexToolInput = (name, raw) => {
@@ -134,7 +137,9 @@ export function codexCwd(file) {
  * `thinking` is never read. No usage block is made up: such a stretch is sent without tokens.
  * A step written twice (RUNNING, then DONE) is read once, on its step_index.
  */
-export const ANTIGRAVITY_TRANSCRIPT = /(^|\/)brain\/[^/]+\/\.system_generated\/logs\/transcript\.jsonl$/;
+export const ANTIGRAVITY_TRANSCRIPT = /(^|[\\/])brain[\\/][^\\/]+[\\/]\.system_generated[\\/]logs[\\/]transcript\.jsonl$/; // either separator (0.6.16, H4)
+/** A transcript's conversation id: the folder under brain/, split on either separator. */
+export const antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4);
 const ANTIGRAVITY_SKIPPED = new Set(["CONVERSATION_HISTORY", "CHECKPOINT", "SYSTEM_MESSAGE", "EPHEMERAL_MESSAGE"]);
 /** A model name as a client names it, or null: the hook's modelName is the only one, and a name is all it may be. */
 export const cleanModel = (name) => (typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/ -]{0,63}$/.test(name.trim()) ? name.trim() : null);

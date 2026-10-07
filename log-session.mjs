@@ -38,8 +38,8 @@
  * `worktrust.mjs hook --antigravity-stop`. The readers live in transcript-readers.mjs beside this file.
  *
  * WHAT CANNOT LEAVE. The payload is built from a fixed allowlist of keys, all of them numbers,
- * dates or vocabulary from the door's own enums. No prompt, no answer, no file path, no commit
- * message, no branch, no project name. File paths ARE read locally to decide one layer keyword,
+ * dates or vocabulary from the door's own enums, and the repository as owner/name and commit hashes. No prompt, no
+ * answer, no file path, no commit message, no branch, no folder name. File paths ARE read locally to decide one layer keyword,
  * the way the connector reads them to decide an activity class, and only the keyword travels.
  *
  * WHAT IS MEASURED, AND WHAT IS THEREFORE NOT SENT. A stretch's seconds are the sum of the gaps
@@ -209,9 +209,10 @@ const excluded = (path) => excludes.some((text) => text && path.includes(text));
  * reader), the database clients in session-databases.mjs. The install copies both into ~/.worktrust with this hook.
  * Without them this hook still reads Claude Code; the never-matching patterns keep every other client out.
  */
-const { CODEX_ROLLOUT = /(?!)/, codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
+const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
+const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
 const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs"];
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {
@@ -236,7 +237,7 @@ function* codexRollouts() {
   for (const file of root ? codexRolloutFiles(root) : []) {
     const cwd = codexCwd(file);
     if (cwd && excluded(cwd)) continue;
-    yield { id: `codex:${file.split("/").at(-1).replace(/\.jsonl$/, "")}`, file };
+    yield { id: `codex:${codexIdOf(file)}`, file };
   }
   yield* antigravityConversations();
   yield* databaseConversations();
@@ -261,7 +262,7 @@ const parsedLines = (file) => {
   if (DATABASE_SESSION.test(file)) return databaseLines(file);
   let lines; try { lines = readFileSync(file, "utf8").split("\n"); } catch { return null; }
   if (CODEX_ROLLOUT.test(file)) return [...codexLines(lines)];
-  if (ANTIGRAVITY_TRANSCRIPT.test(file)) { const id = file.split("/").at(-4); return [...antigravityLines(lines, { id, ...antigravityContext(id) })]; }
+  if (ANTIGRAVITY_TRANSCRIPT.test(file)) { const id = antigravityIdOf(file); return [...antigravityLines(lines, { id, ...antigravityContext(id) })]; }
   const out = [];
   for (const raw of lines) { if (!raw.trim()) continue; try { out.push(JSON.parse(raw)); } catch { /* a torn line */ } }
   return out;
@@ -365,7 +366,7 @@ const messageOf = (line, at) => {
     toolUse: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use"),
     // A tool that waits for the PERSON (a question, a plan to approve): the gap to its result is the person's, not the tool's. The name is read, never the input.
     waitsForPerson: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use" && WAITS_FOR_PERSON.has(String(block.name))),
-    agentic: line.agentic === true,
+    agentic: line.agentic === true, cumulative: line.cumulative === true, // the session's running totals (Hermes, Goose without a ledger)
   };
 };
 
@@ -463,7 +464,7 @@ function measure(cwd, messages) {
   }
   const model = [...models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
   const tokens = tokensOf(messages);
-  return { cwd, seconds: measured, layers: measured !== null ? timeLayers(messages) : null, ...tokens, exchanges, model, from: messages[0].at, to: messages[messages.length - 1].at };
+  return { cwd, seconds: measured, layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, model, from: messages[0].at, to: messages[messages.length - 1].at };
 }
 
 /**
@@ -523,10 +524,15 @@ function tokensOf(messages) {
   if (!shapeKnown) return { tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, shapeKnown: false };
   return { tokensIn, tokensOut, cacheRead, cacheWrite, shapeKnown: counted > 0 };
 }
+// A SESSION'S TOTALS ARE SENT ONCE (0.6.16, audit H2). Hermes, and Goose without its ledger, keep tokens per SESSION on its last answer, so a resumed
+// session sent its whole total again. Such a stretch sends what the total grew by since the one reported (kept beside the watermark), never a negative.
+const TOTALS = ["tokensIn", "tokensOut", "cacheRead", "cacheWrite"];
+const grownBy = (stretch, reported) => { if (!stretch.cumulative || !stretch.shapeKnown) return reported; const total = Object.fromEntries(TOTALS.map((key) => [key, Math.max(stretch[key], reported?.[key] ?? 0)]));
+  for (const key of TOTALS) stretch[key] = Math.max(0, stretch[key] - (reported?.[key] ?? 0)); return total; }; // the total to keep; a fresh session sends its total, as before
 
-// WHICH STRETCH, HOW STEERED (0.6.10): a hash of the session id (the file name) and the day, the same on any computer, so a
-// restored backup is never counted twice; `remote` only when the session runs over SSH, otherwise nothing is said.
-const stretchRef = (file, day) => createHash("sha256").update(`worktrust-stretch|${String(file).split(/[\\/]/).pop().replace(/\.jsonl?$/, "")}|${day}`).digest("base64url");
+// WHICH STRETCH, HOW STEERED (0.6.10): a hash of the session id (the file name; Antigravity's, always transcript.jsonl, its conversation's folder) and the day,
+// the same on any computer, so a restored backup is never counted twice; `remote` only when the session runs over SSH, otherwise nothing is said.
+const stretchRef = (file, day) => createHash("sha256").update(`worktrust-stretch|${ANTIGRAVITY_TRANSCRIPT.test(file) ? antigravityIdOf(file) : String(file).split(/[\\/]/).pop().replace(/\.jsonl?$/, "")}|${day}`).digest("base64url");
 const STEERED_HERE = process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY ? "remote" : null;
 
 /** The one payload shape this script can build. Every key is a number, a date or an enum value. */
@@ -668,7 +674,8 @@ function historyEntries(floor = null, all = false) {
       entries.push(entry);
     }
   }
-  return entries.sort((a, b) => a.at.localeCompare(b.at));
+  const seen = new Set(); // ONE SESSION FILE IN TWO PROJECT FOLDERS (a copied folder) IS ONE STRETCH (0.6.16, audit M6), as live and preserve count it
+  return entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at));
 }
 
 /** Every transcript this machine holds, excluded projects skipped before a file is opened. */
@@ -901,51 +908,44 @@ if (floorOf(state, "__from") === null) {
   if (!DRY) writeState(state);
 }
 const floor = floorOf(state, "__from");
-let sent = 0;
-let filed = 0;
-/** Measured days the live door will no longer take. They are not dropped; they are filed. */
-const late = [];
+let sent = 0, filed = 0;
+const late = []; // measured days the live door will no longer take: they are not dropped, they are filed
+const heldBack = new Map(); // per transcript with a late day: its state before that day, put back unless history took every late day
 for (const entry of work) {
   const mark = state[entry.id]?.through ? Date.parse(state[entry.id].through) : null;
   // Never before the coupling (THE FLOORS): a transcript with no watermark starts at `__from`, not at its first line.
   const since = mark !== null && floor !== null ? Math.max(mark, floor) : mark ?? floor;
-  // Nothing has been written since we last read this one — no need to open it at all. This is what
-  // keeps a sweep over every transcript on the machine to one `stat` each.
+  // Nothing written since we last read this one: it is not opened. This keeps a sweep over every transcript to one `stat` each.
   if (since !== null && entry.writtenAt && entry.writtenAt <= since) continue;
   const stretches = stretchesOf(entry.file, since);
   // THE WATERMARK ADVANCES OVER WHAT WAS ACCEPTED, AND STOPS AT THE FIRST REFUSAL. A door that is
   // down must never cost the person a day, so the loop breaks rather than skipping ahead.
-  let through = null;
+  let through = null, before, reported = state[entry.id]?.reported;
   for (const stretch of stretches) {
     // The day still being worked in is not finished. A fortnight-long session therefore reports
     // every day but today, on whichever run comes first — it no longer waits for its own end.
     if (Date.now() - stretch.to < IDLE_BEFORE_SWEEP) break;
+    const total = grownBy(stretch, reported);
     const payload = payloadFor(stretch);
-    const source = /^(codex|antigravity|hermes|goose|opencode|openclaw):/.exec(String(entry.id))?.[1];
+    const source = LIVE_SOURCE.exec(String(entry.id))?.[1];
     if (source) entrySource.set(payload, source);
-    if (DRY) { console.log(JSON.stringify({ ...payload, client: source ?? "claude", route: Date.now() - stretch.to > WINDOW_HOURS * 3600_000 ? "history" : "log_work" }, null, 1)); through = stretch.to; continue; }
-    // MEASURED TIME IS NEVER DROPPED. The live door takes work as it happens and refuses anything
-    // older than two days — which is right, and used to mean a machine that was closed for a
-    // fortnight lost the fortnight. The same measured numbers go through the history door instead:
-    // recorded, marked as history, standing as history stands. Late is not the same as untrue.
-    if (Date.now() - stretch.to > WINDOW_HOURS * 3600_000) { late.push(payload); through = stretch.to; continue; }
-    try {
-      await send(doorFor(entry), payload);
-      through = stretch.to;
-      sent += 1;
-    } catch (error) {
+    if (DRY) { console.log(JSON.stringify({ ...payload, client: source ?? "claude", route: Date.now() - stretch.to > WINDOW_HOURS * 3600_000 ? "history" : "log_work" }, null, 1)); through = stretch.to; reported = total; continue; }
+    // MEASURED TIME IS NEVER DROPPED. The live door refuses anything older than two days, which is right, and used to mean a machine closed
+    // for a fortnight lost the fortnight. The same numbers go through the history door instead, standing as history stands. Late is not untrue.
+    if (Date.now() - stretch.to > WINDOW_HOURS * 3600_000) { before ??= { mark: through === null ? state[entry.id] : { ...state[entry.id], through: new Date(through).toISOString() } }; late.push(payload); through = stretch.to; reported = total; continue; }
+    try { await send(doorFor(entry), payload); through = stretch.to; reported = total; sent += 1; } catch (error) {
       if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`);
       break;
     }
   }
-  if (through !== null) state[entry.id] = { through: new Date(through).toISOString() };
+  if (before && !heldBack.has(entry.id)) heldBack.set(entry.id, before.mark);
+  if (through !== null) state[entry.id] = { through: new Date(through).toISOString(), ...(reported ? { reported } : {}) };
 }
-// The history door, in one batch per two hundred, exactly as `--history` sends them. A resend
-// FILLS a line that was missing something rather than adding a twin, so a repeated run is safe.
+// The history door, in batches of two hundred as `--history` sends them. A resend FILLS a line that was missing something, never a twin.
 if (!DRY && late.length > 0) {
-  try { filed = await sendHistory(door, late); } catch (error) {
-    if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`);
-  }
+  try { filed = await sendHistory(door, late); } catch (error) { if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`); }
+  // A LATE DAY THE HISTORY DOOR REFUSED IS NOT PASSED: its transcript's mark goes back to before it, so the next run sends it again.
+  if (filed < late.length) for (const [id, mark] of heldBack) { if (mark) state[id] = mark; else delete state[id]; }
 }
 if (!DRY && (sent > 0 || filed > 0)) writeState(state);
 

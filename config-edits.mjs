@@ -67,3 +67,18 @@ export function takeOut(lines, path, mine) {
     if (left && !lines.slice(left.at + 1, left.end).some(meaningful)) lines.splice(left.at, left.end - left.at);
   }
 }
+
+/**
+ * ONLY THE HOUSE'S OWN DOOR (0.6.16, audit L5; the same rule as log-session.mjs and count-behaviour.mjs): an MCP address is
+ * WorkTrust's when its path is /api/mcp and its host is worktrust.io or a subdomain over https, the host WORKTRUST_MCP_URL
+ * names, or this computer. `/api/mcp` alone is every hosted MCP server's conventional path, so another product's entry is
+ * never adopted as the coupling, and never taken out with it.
+ */
+export const isWorkTrustDoor = (url) => {
+  try {
+    const parsed = new URL(String(url));
+    if (!/\/api\/mcp\/?$/.test(parsed.pathname)) return false;
+    const own = process.env.WORKTRUST_MCP_URL ? new URL(process.env.WORKTRUST_MCP_URL).host : null;
+    return parsed.protocol === "https:" && (parsed.hostname === "worktrust.io" || parsed.hostname.endsWith(".worktrust.io")) || (own !== null && parsed.host === own) || parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  } catch { return false; }
+};

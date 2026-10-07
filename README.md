@@ -38,7 +38,7 @@ yourself run a command that sends. See [Keep your history](#keep-your-history).
 3. **The terminal finishes by itself.** It keeps the key in its private file and gives every
    AI app here the WorkTrust door, then installs the session hook. Quit your AI apps and open them
    again.
-4. **Earlier work only if you say yes.** It counts the Claude Code and Codex sessions already on
+4. **Earlier work only if you say yes.** It counts your AI apps' sessions already on
    this computer and asks `Send these as history? [y/N]`. Enter sends nothing. What goes is hours
    and tokens per day, never text, and WorkTrust shows it as earlier work, never as verified hours.
    Nothing from before the coupling is ever sent without that yes: the session hook starts at the
@@ -202,11 +202,11 @@ which would delete every password on the computer, and many people rightly keep 
 
 | | |
 |---|---|
-| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw), and the chats Cursor and Copilot keep (clocks, models and token counts only). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files and the session databases of Hermes, Goose, OpenCode and OpenClaw on this computer to measure durations and token counts. |
+| **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw), and the chats Cursor and Copilot keep (clocks, models and token counts only). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files, the session databases of Hermes, Goose, OpenCode and OpenClaw, and the chats Cursor and Copilot keep, on this computer to measure durations and token counts. |
 | **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`, Hermes's and Goose's `config.yaml`, OpenCode's `opencode.json`, OpenClaw through `openclaw mcp set`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
 | **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. WorkTrust also records the network address the request arrives from, as a security record kept 90 days and seen only by WorkTrust staff (to answer a theft or fraud report). |
-| **Sends, afterwards** | Durations, token counts, model names, one layer keyword (frontend, backend …), counts of how you work. |
-| **Never sends** | Prompts, answers, code, file names or paths, commit messages, branch or project names. The door has no field for them and refuses a submission that carries them. |
+| **Sends, afterwards** | Per measured stretch of work, and nothing else: its durations (`seconds`, `duration_basis`, `model_seconds`, `tool_seconds`, `human_seconds`, `idle_seconds`), token counts (`tokens_in`, `tokens_out`, `tokens_cache_read`, `tokens_cache_write`, `token_basis`), the model's name (`model`), the kind of work and one layer keyword such as frontend or backend (`title`, `kind`, `layer`, `layers`), counts of how you work (`exchanges`, `turn_basis`, `agent_runs`, `agent_seconds`, `agent_peak`), when it ended (`at`), a hash of the session and the day (`stretch_ref`), `steered_from` when it ran over SSH, and, so the work can be matched to GitHub, the repository as its remote's owner/name (`repo`) and the hashes of the commits made in the stretch (`commits`, never their messages). |
+| **Never sends** | Prompts, answers, code, file names or paths, commit messages, branch names, or the name of your local folder (a repository is named only as its remote's owner/name, above). The door has no field for them and refuses a submission that carries them. |
 
 ## Why you can check it
 

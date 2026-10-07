@@ -33,6 +33,7 @@ export const hermesSteered = (source) => (HERMES_DESK.has(source) ? "desk" : HER
 let sqlite;
 /** A database session's pseudo-file, `<client>:<database>#<session id>`, back into its parts. */
 const splitSession = (pseudo) => { const at = pseudo.lastIndexOf("#"); return { file: pseudo.slice(pseudo.indexOf(":") + 1, at), id: pseudo.slice(at + 1) }; };
+const isoOf = (value) => { const at = new Date(value); return Number.isFinite(at.getTime()) ? at.toISOString() : null; }; // null: that row is skipped, never the session (0.6.16, M2)
 const openDatabase = (file) => {
   if (sqlite === undefined) {
     // node:sqlite says it is experimental on some Node versions; that line is not the person's business inside a hook.
@@ -85,10 +86,10 @@ export function hermesLines(pseudo) {
     const out = [{ type: "meta", ...(typeof session.cwd === "string" ? { cwd: session.cwd } : {}), steered: hermesSteered(session.source) }];
     const lastAssistant = messages.map((m) => m.role).lastIndexOf("assistant");
     messages.forEach((message, i) => {
-      const timestamp = new Date(Number(message.timestamp) * 1000).toISOString();
+      const timestamp = isoOf(Number(message.timestamp) * 1000); if (!timestamp) return;
       if (message.role === "user") out.push({ type: "user", timestamp, message: { content: [{ type: "text" }] } });
       else if (message.role === "tool") out.push({ type: "user", timestamp, message: { content: [{ type: "tool_result" }] } });
-      else if (message.role === "assistant") out.push({ type: "assistant", timestamp, message: { model, ...(i === lastAssistant ? { usage: { input_tokens: Number(session.input_tokens) || 0, output_tokens: Number(session.output_tokens) || 0, cache_read_input_tokens: Number(session.cache_read_tokens) || 0, cache_creation_input_tokens: Number(session.cache_write_tokens) || 0 } } : {}), content: [] } });
+      else if (message.role === "assistant") out.push({ type: "assistant", timestamp, ...(i === lastAssistant ? { cumulative: true } : {}), message: { model, ...(i === lastAssistant ? { usage: { input_tokens: Number(session.input_tokens) || 0, output_tokens: Number(session.output_tokens) || 0, cache_read_input_tokens: Number(session.cache_read_tokens) || 0, cache_creation_input_tokens: Number(session.cache_write_tokens) || 0 } } : {}), content: [] } });
     });
     return out;
   } catch { return null; } finally { db.close(); }
@@ -146,16 +147,15 @@ export function gooseLines(pseudo) {
     const messages = db.prepare(`select role, created_timestamp as at,
       case when json_valid(content_json) then (select group_concat(json_extract(value, '$.type')) from json_each(content_json)) end as kinds
       from messages where session_id = ? order by created_timestamp, id`).all(id);
-    const ledger = db.prepare("select 1 from sqlite_master where type = 'table' and name = 'usage_ledger'").get()
-      ? db.prepare("select created_timestamp as at, model, input_tokens as input, output_tokens as output, cache_read_tokens as cache_read, cache_write_tokens as cache_write from usage_ledger where session_id = ? order by created_timestamp, id").all(id)
+    const ledger = db.prepare("select 1 from sqlite_master where type = 'table' and name = 'usage_ledger'").get() ? db.prepare("select created_timestamp as at, model, input_tokens as input, output_tokens as output, cache_read_tokens as cache_read, cache_write_tokens as cache_write from usage_ledger where session_id = ? order by created_timestamp, id").all(id)
       : null;
     const fallbackModel = cleanModel(session.model);
     const lines = messages.map((message) => {
       const kinds = new Set(String(message.kinds ?? "").split(","));
-      const timestamp = new Date(ms(message.at)).toISOString();
+      const timestamp = isoOf(ms(message.at)); if (!timestamp) return null;
       if (message.role === "user") return { type: "user", timestamp, message: { content: [{ type: kinds.has("toolResponse") ? "tool_result" : kinds.has("text") || kinds.has("image") ? "text" : "tool_result" }] } };
       return { type: "assistant", timestamp, at: ms(message.at), message: { model: fallbackModel, content: [] } };
-    });
+    }).filter(Boolean);
     const assistants = lines.filter((line) => line.type === "assistant");
     const usageOf = (row) => ({ input_tokens: Number(row.input) || 0, output_tokens: Number(row.output) || 0, cache_read_input_tokens: Number(row.cache_read) || 0, cache_creation_input_tokens: Number(row.cache_write) || 0 });
     const add = (line, usage) => { const was = line.message.usage; line.message.usage = was ? Object.fromEntries(Object.entries(usage).map(([key, n]) => [key, n + (was[key] ?? 0)])) : usage; };
@@ -165,7 +165,7 @@ export function gooseLines(pseudo) {
       if (!line) continue;
       add(line, usageOf(row));
       if (cleanModel(row.model)) line.message.model = cleanModel(row.model);
-    } else if (assistants.length) add(assistants.at(-1), usageOf(session));
+    } else if (assistants.length) { add(assistants.at(-1), usageOf(session)); assistants.at(-1).cumulative = true; } // the session's totals: sent as what they grew by
     for (const line of assistants) delete line.at;
     return [{ type: "meta", ...(typeof session.cwd === "string" ? { cwd: session.cwd } : {}), steered: gooseSteered(session.type) }, ...lines];
   } catch { return null; } finally { db.close(); }
@@ -212,11 +212,11 @@ export function opencodeLines(pseudo) {
       json_extract(data, '$.tokens.reasoning') as reasoning, json_extract(data, '$.tokens.cache.read') as cache_read, json_extract(data, '$.tokens.cache.write') as cache_write
       from message where session_id = ? order by time_created, id`).all(id);
     const lines = messages.map((message) => {
-      const timestamp = new Date(Number(message.at)).toISOString();
+      const timestamp = isoOf(Number(message.at)); if (!timestamp) return null;
       if (message.role === "user") return { type: "user", timestamp, message: { content: [{ type: "text" }] } };
       const counted = message.input !== null || message.output !== null;
       return { type: "assistant", timestamp, message: { model: cleanModel(message.model), ...(counted ? { usage: { input_tokens: Number(message.input) || 0, output_tokens: (Number(message.output) || 0) + (Number(message.reasoning) || 0), cache_read_input_tokens: Number(message.cache_read) || 0, cache_creation_input_tokens: Number(message.cache_write) || 0 } } : {}), content: [] } };
-    });
+    }).filter(Boolean);
     return [{ type: "meta", ...(typeof session.cwd === "string" ? { cwd: session.cwd } : {}) }, ...lines];
   } catch { return null; } finally { db.close(); }
 }
@@ -349,7 +349,7 @@ export function cursorLines(pseudo) {
     const model = cleanModel(chat?.model);
     const lines = [];
     for (const bubble of bubbles.sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
-      const timestamp = new Date(bubble.at).toISOString();
+      const timestamp = isoOf(bubble.at); if (!timestamp) continue;
       if (Number(bubble.type) === 1) lines.push({ type: "user", timestamp, message: { content: [{ type: "text" }] } });
       else if (Number(bubble.type) === 2) {
         const usage = Number(bubble.input) || Number(bubble.output) ? { usage: { input_tokens: Number(bubble.input) || 0, output_tokens: Number(bubble.output) || 0 } } : {};

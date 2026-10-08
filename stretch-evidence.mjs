@@ -100,6 +100,22 @@ export const readKindOf = (block) => {
 };
 
 /**
+ * A CHECK WHOSE OUTPUT GOES THROUGH A PIPE (0.9.8): `tsc | tail -3` exits with tail's code, so the exit code says nothing
+ * about the check (68% of the owner's checks were so). Outside quotes, the piece holding the check pipes into another
+ * command and no pipefail is set. Its outcome is then read from its output's words, here and never kept.
+ */
+export const pipedCheck = (block) => {
+  if (!SHELL_TOOLS.has(String(block?.name ?? ""))) return false;
+  const raw = block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd;
+  if (typeof raw !== "string" || /pipefail/.test(raw)) return false;
+  const bare = raw.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  return bare.split(/;|&&|\n/).some((piece) => /\|(?!\|)/.test(piece.replace(/\|\|/g, "")) && callKindsOf({ name: "Bash", input: { command: piece.split("|")[0] } }).some((kind) => CHECK_KINDS.includes(kind)));
+};
+const FAIL_WORDS = /\berror TS\d+|\b\d+ (errors?|failed|failing)\b(?<!\b0 errors?)(?<!\b0 failed)|\bFAIL(ED)?\b|✗|✖|\bAssertionError\b|\bELIFECYCLE\b|\bnpm ERR!|\bTraceback\b|\b(gate|verify|exit)=[1-9]/;
+const PASS_WORDS = /\bPASS(ED)?\b|\bpassed\b|✓|✔|\b0 (errors?|failed|problems?)\b|\b(gate|verify|exit|tsc)=0\b|\ball tests passed\b|\bassertions hold\b/i;
+export const outputVerdict = (text) => (FAIL_WORDS.test(text) ? "fail" : PASS_WORDS.test(text) ? "pass" : null);
+
+/**
  * A TOOL RESULT AS THE STRETCH READS IT (0.8.1): its call's id, whether it failed, and, read here and never kept, WHO
  * refused it when it was refused: the PERSON (Claude Code's fixed sentence when they decline a tool use or a plan) or a
  * GUARD (the client's own safety layer or auto-mode classifier). Framework L8 and L5.
@@ -114,13 +130,14 @@ export const resultOf = (block) => {
   if (!failed && block.outcome === "unknown") return { id: block.tool_use_id, failed: null, refusal: null };
   // 0.9.3: an OUTAGE (the model or a tool overloaded, rate-limited, timed out, unreachable), read here and never kept.
   const outage = failed && OUTAGE.test(text);
-  return { id: block.tool_use_id, failed, refusal: failed && PERSON_REFUSED.test(text) ? "person" : failed && GUARD_REFUSED.test(text) ? "guard" : null, ...(outage ? { outage: true } : {}) };
+  const words = outputVerdict(text), silent = /^\s*(\((Bash|Command|Tool) (completed|ran|returned) with no output\)|no output)?\s*$/i.test(text);
+  return { id: block.tool_use_id, failed, refusal: failed && PERSON_REFUSED.test(text) ? "person" : failed && GUARD_REFUSED.test(text) ? "guard" : null, ...(outage ? { outage: true } : {}), ...(words ? { words } : {}), ...(silent ? { silent: true } : {}) };
 };
 /** A to-do list the agent wrote (TodoWrite): how many items and how many done, never what they say. */
 const planOf = (block) => (block.name === "TodoWrite" && Array.isArray(block.input?.todos) ? { items: block.input.todos.length, done: block.input.todos.filter((todo) => todo && todo.status === "completed").length } : null);
 
 /** One tool call as the stretch reads it: its id, its kinds, its FAMILY (the tool and its check kinds) and a digest of its input (compared, never kept). */
-export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block), marks = marksOf(block), read = readKindOf(block); return { id: block.id, kinds, ...(marks.length ? { marks } : {}), ...(read ? { read } : {}), family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
+export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block), marks = marksOf(block), read = readKindOf(block), piped = pipedCheck(block); return { id: block.id, kinds, ...(marks.length ? { marks } : {}), ...(read ? { read } : {}), ...(piped ? { piped } : {}), family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
 
 /**
  * VERIFICATION PER STRETCH (0.7.1; framework L7, L12): per kind of check, how many ran and how many failed; per step of
@@ -554,9 +571,50 @@ function reachOf(messages) {
   return Object.keys(kept).length > 0 ? kept : null;
 }
 
+/**
+ * OUTCOMES OF THE STEPS (0.9.8): per kind of check, whether its FIRST run passed (first-pass, the quality of the first
+ * try); delivery attempts that did not go through (a push or deploy refused or failed); and what HELPED: a model change,
+ * and a new plan, after a failure, each followed by a passing check before the next failure. Counts and flags.
+ */
+function outcomesOf(messages) {
+  const results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result);
+  const firstPass = {}, out = { deliveries_failed: 0, escalations_helped: 0, replans_helped: 0 };
+  let model = null, failedAt = null, index = 0, pending = null; // pending: what came after the last failure ("model" | "plan")
+  for (const message of messages) {
+    if (message.bridge) continue;
+    if (message.type === "assistant" && message.model) { if (model && message.model !== model && failedAt !== null && index - failedAt <= 3 && !pending) pending = "model"; model = message.model; }
+    for (const call of message.calls ?? []) {
+      index += 1;
+      const result = results.get(call.id);
+      if (call.plan && failedAt !== null && !pending) pending = "plan";
+      const checks = call.kinds.filter((kind) => CHECK_KINDS.includes(kind));
+      for (const kind of checks) if (firstPass[kind] === undefined && (result?.failed === true || result?.failed === false)) firstPass[kind] = result.failed === false;
+      if (call.kinds.some((kind) => DELIVERY_KINDS.includes(kind)) && result?.failed === true && !result.refusal) out.deliveries_failed += 1;
+      if (checks.length > 0 && result?.failed === false && pending) { if (pending === "model") out.escalations_helped += 1; else out.replans_helped += 1; pending = null; failedAt = null; }
+      if (result?.failed === true) { failedAt = index; pending = null; }
+    }
+  }
+  const kept = Object.fromEntries(Object.entries(out).filter(([, value]) => value > 0));
+  if (Object.keys(firstPass).length > 0) kept.first_pass = firstPass;
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
-export function deriveStretch(messages, helpers) {
+/** A piped check's outcome from its output's words: failed or passed when they say so, unknown (null) when they do not. */
+function settlePiped(messages) {
+  const piped = new Map();
+  for (const message of messages) for (const call of message.calls ?? []) if (call.piped) piped.set(call.id, call.kinds);
+  if (piped.size === 0) return messages;
+  // A type check and a linter print nothing when they pass: silence behind the pipe is their pass, no other check's.
+  const quietPass = (kinds) => kinds.some((kind) => kind === "typecheck" || kind === "lint") && !kinds.some((kind) => !["typecheck", "lint"].includes(kind) && CHECK_KINDS.includes(kind));
+  const settle = (result) => ({ ...result, failed: result.words === "fail" ? true : result.words === "pass" ? false : result.silent && quietPass(piped.get(result.id)) ? false : null });
+  return messages.map((message) => (message.results?.some((result) => piped.has(result.id)) ? { ...message, results: message.results.map((result) => (piped.has(result.id) && !result.refusal ? settle(result) : result)) } : message));
+}
+
+export function deriveStretch(raw, helpers) {
+  const messages = settlePiped(raw);
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), outcomes = outcomesOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}), ...(outcomes ? { outcomes } : {}) };
 }

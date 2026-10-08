@@ -184,6 +184,7 @@ nothing it does not:
 | `reach` | the work's reach and its plan: commands on infrastructure (terraform, kubectl, helm, docker), data (psql, sqlite, bq, dbt) and cloud (aws, gcloud, az, supabase, vercel); plan or roadmap documents written and whether one came before the first code change; reviews approved, sent back or commented and issues opened or closed from the terminal; counts and one flag, never a command, a file name or a path (0.9.4) |
 | `hygiene.secrets` | counts a secret touched only when a file that holds one (a .env, a private key, credentials.json, .aws/credentials) is shown or copied (cat, head, tail, base64, cp); a search for a word (grep, sed, awk) is no read (0.9.5) |
 | `hygiene.secrets` | counts a secret shown only when a reader (cat, head, tail, base64, cp) takes the file as its own argument; a command that uses a .env and reads its output, and a template (.env.example), are no secret shown (0.9.6) |
+| `outcomes` | outcomes of the steps: per kind of check whether its first run passed, delivery attempts that failed, a model change and a new plan after a failure each followed by a passing check; and a check whose output goes through a pipe is read from its output's words (an error fails, a pass passes, a silent type check or lint passes, anything else is unconfirmed), never from the pipe's exit code (0.9.8) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

@@ -104,6 +104,18 @@ export const readKindOf = (block) => {
  * about the check (68% of the owner's checks were so). Outside quotes, the piece holding the check pipes into another
  * command and no pipefail is set. Its outcome is then read from its output's words, here and never kept.
  */
+/** A shell command that is a search (0.9.9): its first word, outside quotes; the pattern is never kept. */
+export const shellSearch = (block) => {
+  if (!SHELL_TOOLS.has(String(block?.name ?? ""))) return false;
+  const raw = block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd;
+  return typeof raw === "string" && raw.split(/;|&&|\n/).some((piece) => /^\s*(rg|grep|egrep|fgrep|ag|ack|fd|find|git\s+grep|locate)\b/.test(piece.split("|")[0]));
+};
+/** A shell command that reads a file (cat, sed -n, head, tail, less, bat): after a search, it found something (0.9.9). */
+export const shellReads = (block) => {
+  if (!SHELL_TOOLS.has(String(block?.name ?? ""))) return false;
+  const raw = block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd;
+  return typeof raw === "string" && /^\s*(cat|sed\s+-n|head|tail|less|bat|nl|awk)\b/.test(raw.split("|")[0]);
+};
 export const pipedCheck = (block) => {
   if (!SHELL_TOOLS.has(String(block?.name ?? ""))) return false;
   const raw = block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd;
@@ -137,7 +149,7 @@ export const resultOf = (block) => {
 const planOf = (block) => (block.name === "TodoWrite" && Array.isArray(block.input?.todos) ? { items: block.input.todos.length, done: block.input.todos.filter((todo) => todo && todo.status === "completed").length } : null);
 
 /** One tool call as the stretch reads it: its id, its kinds, its FAMILY (the tool and its check kinds) and a digest of its input (compared, never kept). */
-export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block), marks = marksOf(block), read = readKindOf(block), piped = pipedCheck(block); return { id: block.id, kinds, ...(marks.length ? { marks } : {}), ...(read ? { read } : {}), ...(piped ? { piped } : {}), family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
+export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block), marks = marksOf(block), read = readKindOf(block), piped = pipedCheck(block), search = shellSearch(block), shellRead = shellReads(block); return { id: block.id, kinds, ...(marks.length ? { marks } : {}), ...(read ? { read } : {}), ...(piped ? { piped } : {}), ...(search ? { search } : {}), ...(shellRead ? { shellRead } : {}), family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
 
 /**
  * VERIFICATION PER STRETCH (0.7.1; framework L7, L12): per kind of check, how many ran and how many failed; per step of
@@ -600,6 +612,46 @@ function outcomesOf(messages) {
   return Object.keys(kept).length > 0 ? kept : null;
 }
 
+/**
+ * RETRIEVAL AND GROUNDING (0.9.9): searches (grep, rg, find, git grep, Grep, Glob, a web search, an MCP search or
+ * retrieval tool), the same search again, a search followed by a read or a change (it found something) against another
+ * search straight after (again), searches before the first change and right after a failure, and deliveries
+ * with docs or tests read, or a search, since the last change (grounded). What was searched is never kept.
+ */
+const SEARCH_TOOLS = new Set(["Grep", "Glob", "WebSearch", "web_search", "grep_search", "file_search", "codebase_search", "search_files", "find_files"]);
+const SEARCH_COMMAND = /^\s*(rg|grep|egrep|fgrep|ag|ack|fd|find|git\s+grep|locate)\b/;
+const isSearch = (call) => {
+  const tool = call.family.split("|")[0];
+  return SEARCH_TOOLS.has(tool) || (/^mcp__/.test(tool) && /search|query|retriev|vector|semantic|lookup/i.test(tool)) || call.search === true;
+};
+function retrievalOf(messages) {
+  const results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result);
+  const out = { searches: 0, repeated: 0, found: 0, again: 0, before_change: 0, after_failure: 0, deliveries: 0, grounded: 0 };
+  const seen = new Set();
+  let previousSearch = false, changed = false, sinceFailure = null, groundedSinceChange = false;
+  for (const message of messages) {
+    if (message.bridge) continue;
+    for (const call of message.calls ?? []) {
+      const tool = call.family.split("|")[0], result = results.get(call.id), search = isSearch(call);
+      if (previousSearch) { if (search) out.again += 1; else if (tool === "Read" || EDIT_TOOLS.has(tool) || call.shellRead) out.found += 1; }
+      if (search) {
+        out.searches += 1;
+        if (seen.has(call.digest)) out.repeated += 1; else seen.add(call.digest);
+        if (!changed) out.before_change += 1;
+        if (sinceFailure !== null && sinceFailure <= 3) out.after_failure += 1;
+        groundedSinceChange = true;
+      }
+      if (call.read === "docs" || call.read === "tests") groundedSinceChange = true;
+      if (EDIT_TOOLS.has(tool)) { changed = true; groundedSinceChange = false; }
+      if (call.kinds.some((kind) => DELIVERY_KINDS.includes(kind)) && result?.failed === false) { out.deliveries += 1; if (groundedSinceChange) out.grounded += 1; }
+      previousSearch = search;
+      sinceFailure = result?.failed === true ? 0 : sinceFailure === null ? null : sinceFailure + 1;
+    }
+  }
+  return out.searches > 0 || out.deliveries > 0 ? Object.fromEntries(Object.entries(out).filter(([, value]) => value > 0)) : null;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 /** A piped check's outcome from its output's words: failed or passed when they say so, unknown (null) when they do not. */
 function settlePiped(messages) {
@@ -615,6 +667,6 @@ function settlePiped(messages) {
 export function deriveStretch(raw, helpers) {
   const messages = settlePiped(raw);
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), outcomes = outcomesOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}), ...(outcomes ? { outcomes } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), outcomes = outcomesOf(messages), retrieval = retrievalOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}), ...(outcomes ? { outcomes } : {}), ...(retrieval ? { retrieval } : {}) };
 }

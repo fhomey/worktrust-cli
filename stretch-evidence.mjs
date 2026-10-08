@@ -37,6 +37,29 @@ export const callKindsOf = (block) => {
   return typeof command === "string" ? CALL_KINDS.filter(([, pattern]) => pattern.test(command)).map(([kind]) => kind) : [];
 };
 /**
+ * RISK AND HYGIENE MARKS (0.9.1), beside the kinds and outside a call's family so no earlier measure moves: a ROLLBACK
+ * (git revert or restore, a hard reset, a deploy rolled back), a PRIVILEGED command (sudo, a forced push, a world-
+ * writable chmod), a BYPASS (hooks skipped with --no-verify), and a SECRET touched (a .env, a private key, a credentials
+ * or token file read or printed). The path and the command are read here and never kept; only the mark travels.
+ */
+const MARKS = [
+  ["rollback", /\bgit\s+(revert|restore)\b|\bgit\s+reset\s+--hard\b|\b(vercel|fly|netlify)\s+rollback\b|\bkubectl\s+rollout\s+undo\b/],
+  ["privilege", /(^|[\s;&|])sudo\s|\bgit\s+push\b[^\n]*\s(-f|--force(-with-lease)?)\b|\bchmod\s+(-R\s+)?777\b/],
+  ["bypass", /\s--no-verify\b/],
+];
+const SECRET_FILE = /(^|[\/\s'"])(\.env(\.[\w-]+)?|id_(rsa|ed25519|ecdsa)|[\w.-]+\.(pem|p12|pfx|key)|credentials(\.json)?|\.npmrc|\.netrc|\.pgpass)(['"\s]|$)/;
+const PRINTS = /\b(cat|less|more|head|tail|bat|type|Get-Content|grep|sed|awk|cp|scp|base64)\b/;
+const READ_TOOLS = new Set(["Read", "read_file", "view", "open_file"]);
+export const marksOf = (block) => {
+  const name = String(block?.name ?? "");
+  const command = SHELL_TOOLS.has(name) ? block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd : null;
+  const path = READ_TOOLS.has(name) ? block.input?.file_path ?? block.input?.path ?? null : null;
+  const marks = typeof command === "string" ? MARKS.filter(([, pattern]) => pattern.test(command)).map(([mark]) => mark) : [];
+  if ((typeof path === "string" && SECRET_FILE.test(path)) || (typeof command === "string" && PRINTS.test(command) && SECRET_FILE.test(command))) marks.push("secret");
+  return marks;
+};
+
+/**
  * A TOOL RESULT AS THE STRETCH READS IT (0.8.1): its call's id, whether it failed, and, read here and never kept, WHO
  * refused it when it was refused: the PERSON (Claude Code's fixed sentence when they decline a tool use or a plan) or a
  * GUARD (the client's own safety layer or auto-mode classifier). Framework L8 and L5.
@@ -54,7 +77,7 @@ export const resultOf = (block) => {
 const planOf = (block) => (block.name === "TodoWrite" && Array.isArray(block.input?.todos) ? { items: block.input.todos.length, done: block.input.todos.filter((todo) => todo && todo.status === "completed").length } : null);
 
 /** One tool call as the stretch reads it: its id, its kinds, its FAMILY (the tool and its check kinds) and a digest of its input (compared, never kept). */
-export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block); return { id: block.id, kinds, family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
+export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block), marks = marksOf(block); return { id: block.id, kinds, ...(marks.length ? { marks } : {}), family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
 
 /**
  * VERIFICATION PER STRETCH (0.7.1; framework L7, L12): per kind of check, how many ran and how many failed; per step of
@@ -381,9 +404,42 @@ function timingOf(messages, { isHumanTurn, textOf }) {
   return Object.keys(kept).length > 0 ? kept : null;
 }
 
+/**
+ * RISK AND HYGIENE PER STRETCH (0.9.1): rollbacks, privileged commands, hooks skipped, secrets touched; destructive
+ * commands and how many a look (git diff, show, status) or a check came before since the last change; after a guard
+ * refused a call, whether the next call was the same one again (retried), another (changed), or none (stopped); and
+ * whether a check ran after the stretch's first delivery step (a push, a deploy). Counts only.
+ */
+function hygieneOf(messages) {
+  const results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result);
+  const out = { rollbacks: 0, privileged: 0, bypasses: 0, secrets: 0, destructive: 0, destructive_checked: 0, guard_retried: 0, guard_changed: 0, guard_stopped: 0 };
+  let lookedSinceChange = false, delivered = false, checkedAfterDelivery = false, refusedDigest = null;
+  for (const message of messages) {
+    if (message.bridge) continue;
+    for (const call of message.calls ?? []) {
+      const tool = call.family.split("|")[0], result = results.get(call.id), marks = call.marks ?? [];
+      if (refusedDigest !== null) { if (call.digest === refusedDigest) out.guard_retried += 1; else out.guard_changed += 1; refusedDigest = null; }
+      if (marks.includes("rollback")) out.rollbacks += 1;
+      if (marks.includes("privilege")) out.privileged += 1;
+      if (marks.includes("bypass")) out.bypasses += 1;
+      if (marks.includes("secret")) out.secrets += 1;
+      if (call.kinds.includes("destructive")) { out.destructive += 1; if (lookedSinceChange) out.destructive_checked += 1; }
+      if (EDIT_TOOLS.has(tool)) lookedSinceChange = false;
+      if (call.kinds.includes("inspect") || call.kinds.some((kind) => CHECK_KINDS.includes(kind))) { lookedSinceChange = true; if (delivered) checkedAfterDelivery = true; }
+      if ((call.kinds.includes("push") || call.kinds.includes("deploy")) && result?.failed === false) delivered = true;
+      if (result?.refusal === "guard") refusedDigest = call.digest;
+    }
+  }
+  if (refusedDigest !== null) out.guard_stopped += 1;
+  const kept = Object.fromEntries(Object.entries(out).filter(([, value]) => value > 0));
+  if (delivered) kept.checked_after_delivery = checkedAfterDelivery;
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}) };
 }

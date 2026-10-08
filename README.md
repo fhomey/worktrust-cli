@@ -170,6 +170,7 @@ nothing it does not:
 | `oversight`, `planning`, `changes` | how often you refused an action or a plan the agent proposed, and how often a guard (the client's safety layer) refused one; how often the agent wrote its to-do list, the most items, and of the last list how many were done (never what they say); how many files the stretch's commits changed and how many of them tests (never a path) (0.8.1) |
 | `supplements` | a supplement line: when a newer CLI measures more of a stretch already archived, the new fields go into a line of their own that names that stretch; nothing earlier is rewritten, and the chain and the day's root cover it (0.8.2) |
 | `evidence` (sent) | the same derived record now also travels with each stretch to WorkTrust, kinds and counts only, and `npx worktrust status` shows what this computer measured in the last thirty days (0.8.3) |
+| `unconfirmed` | checks the stretch ran whose outcome no reader could see (Codex's code mode prints no exit code; a background terminal), per kind: counted, never as a pass (0.8.5) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

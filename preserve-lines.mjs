@@ -54,6 +54,11 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
     const kept = Object.entries(entry.verification).filter(([kind, tally]) => CHECK_KINDS.includes(kind) && Array.isArray(tally) && tally.length === 2 && tally.every(whole) && tally[1] <= tally[0] && tally[0] > 0).sort();
     if (kept.length > 0) line.verification = Object.fromEntries(kept);
   }
+  // UNCONFIRMED (0.8.5): checks run whose outcome no reader could see, per kind, whole counts.
+  if (entry.unconfirmed && typeof entry.unconfirmed === "object") {
+    const kept = Object.entries(entry.unconfirmed).filter(([kind, count]) => CHECK_KINDS.includes(kind) && whole(count) && count > 0).sort();
+    if (kept.length > 0) line.unconfirmed = Object.fromEntries(kept);
+  }
   if (entry.delivery && typeof entry.delivery === "object") {
     const kept = Object.entries(entry.delivery).filter(([kind, count]) => DELIVERY_KINDS.includes(kind) && whole(count) && count > 0).sort();
     if (kept.length > 0) line.delivery = { ...Object.fromEntries(kept), verified_first: entry.delivery.verified_first === true };
@@ -138,7 +143,7 @@ export function archiveEntries(dir, ownKey) {
  * a line of their own that names the stretch it adds to (`supplements`) and carries only what no earlier line of that
  * stretch carries, in the same chain, under the same day's root. Null when there is nothing new.
  */
-export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "interrupts", "steers", "utc_offset"];
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "interrupts", "steers", "utc_offset"];
 export function supplementFor(line, earlier) {
   const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
   if (missing.length === 0) return null;

@@ -43,7 +43,7 @@ export const CODEX_ROLLOUT = /(^|[\\/])rollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f-
 /** A rollout's thread id: its file's name without .jsonl, split on either separator. */
 export const codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, "");
 export const CODEX_HARNESS_TURN = /^\s*<[a-z][a-z_]*[\s>]/i;
-export const codexToolName = (name) => (name === "exec" || name === "shell" || name === "container.exec" || name === "local_shell" ? "Bash" : name === "apply_patch" ? "Edit" : name === "spawn_agent" ? "Agent" : String(name ?? "tool"));
+export const codexToolName = (name) => (name === "exec" || name === "shell" || name === "container.exec" || name === "local_shell" ? "Bash" : name === "apply_patch" ? "Edit" : name === "spawn_agent" || name === "followup_task" ? "Agent" : name === "request_user_input" || name === "request_user_input_async" ? "AskUserQuestion" : String(name ?? "tool"));
 export const codexToolInput = (name, raw) => {
   const mapped = codexToolName(name);
   if (mapped === "Bash") {
@@ -91,7 +91,7 @@ export function* codexLines(records) {
     if (kind === "custom_tool_call_output" || kind === "function_call_output") {
       const text = codexOutputText(payload.output);
       const exit = /(?:failed with|exited with|exit code)[:\s]+(-?\d+)/i.exec(text.slice(-400));
-      yield { type: "user", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { content: [{ type: "tool_result", ...(payload.call_id ? { tool_use_id: String(payload.call_id) } : {}), content: text, is_error: exit ? exit[1] !== "0" : false }] } };
+      yield { type: "user", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { content: [{ type: "tool_result", ...(payload.call_id ? { tool_use_id: String(payload.call_id) } : {}), content: text, is_error: exit ? exit[1] !== "0" : false, ...(exit ? {} : { outcome: "unknown" }) }] } }; // 0.8.5: no exit code (Codex code mode never prints one) is an unknown outcome, never a pass
     }
   }
 }
@@ -220,3 +220,44 @@ export function rememberAntigravity(input) {
   return id;
 }
 // ── end antigravity transcript reader ──
+
+// ── the database clients' tool calls (0.8.5), read by session-databases.mjs ──
+/**
+ * A CURSOR TOOL CALL AS THE STRETCH READS IT (0.8.5): its name mapped to the common one (a terminal command is Bash,
+ * its to-do list is TodoWrite), the command for the CLI to name a KIND of (never kept), the to-do statuses (never their
+ * text), and the outcome Cursor recorded: an exit code only when the command failed, an error status, or the person's
+ * rejection; a background command, or a call with no outcome, is unknown, never a pass.
+ */
+const CURSOR_NAMES = { run_terminal_command_v2: "Bash", run_terminal_cmd: "Bash", todo_write: "TodoWrite", edit_file_v2: "Edit", edit_file: "Edit", read_file_v2: "Read", read_file: "Read", ripgrep_raw_search: "Grep", glob_file_search: "Glob", delete_file: "Edit" };
+const json = (text) => { if (typeof text !== "string") return null; try { return JSON.parse(text); } catch { return null; } };
+export function cursorCall(bubble) {
+  const id = typeof bubble.callId === "string" && bubble.callId ? bubble.callId : null;
+  if (!id) return null;
+  const raw = String(bubble.toolName ?? "tool"), name = CURSOR_NAMES[raw] ?? raw;
+  const todos = json(bubble.todoStatuses);
+  const input = name === "Bash" ? { command: typeof bubble.command === "string" ? bubble.command : "" } : name === "TodoWrite" && Array.isArray(todos) && todos.length > 0 ? { todos: todos.map((status) => ({ status: status === "completed" ? "completed" : "pending" })) } : {};
+  const rejected = Number(bubble.rejected) === 1 || bubble.rejected === true || bubble.decision === "rejected";
+  const exit = bubble.exitCode === null || bubble.exitCode === undefined ? null : Number(bubble.exitCode);
+  const failed = rejected || (exit !== null && exit !== 0) || bubble.outcome === "error" || bubble.status === "error";
+  const known = failed || (name === "Bash" ? Number(bubble.hasOutput) === 1 && Number(bubble.background) !== 1 : bubble.status === "completed" || bubble.outcome === "success");
+  return {
+    use: { type: "tool_use", id, name, input },
+    result: { type: "tool_result", tool_use_id: id, is_error: failed, ...(known ? {} : { outcome: "unknown" }), content: rejected ? "User rejected the tool call." : "" },
+  };
+}
+/**
+ * A COPILOT TOOL CALL AS THE STRETCH READS IT (0.8.5): a terminal command is Bash (its command line for the CLI to name
+ * a kind of, never kept) with the exit code VS Code recorded; a missing exit code is unknown. Its to-do list is TodoWrite
+ * (statuses only), its subagents are Agent. What a confirmation type means is not documented, so no refusal is read.
+ */
+const COPILOT_NAMES = { run_in_terminal: "Bash", manage_todo_list: "TodoWrite", execution_subagent: "Agent", runSubagent: "Agent", copilot_replaceString: "Edit", copilot_createFile: "Write", copilot_readFile: "Read", copilot_findTextInFiles: "Grep", copilot_findFiles: "Glob" };
+export function copilotCall(part) {
+  const id = typeof part.toolCallId === "string" && part.toolCallId ? part.toolCallId : null;
+  if (!id) return null;
+  const raw = String(part.toolId ?? "tool"), name = COPILOT_NAMES[raw] ?? raw, data = part.toolSpecificData ?? {};
+  const line = data.commandLine && typeof data.commandLine === "object" ? data.commandLine.toolEdited ?? data.commandLine.original : null;
+  const input = name === "Bash" ? { command: typeof line === "string" ? line : "" } : name === "TodoWrite" && Array.isArray(data.todoList) ? { todos: data.todoList.map((todo) => ({ status: todo?.status === "completed" ? "completed" : "pending" })) } : {};
+  const exit = Number.isInteger(data.terminalCommandState?.exitCode) ? data.terminalCommandState.exitCode : null;
+  const known = name === "Bash" ? exit !== null : false;
+  return { use: { type: "tool_use", id, name, input }, result: { type: "tool_result", tool_use_id: id, is_error: exit !== null && exit !== 0, ...(known ? {} : { outcome: "unknown" }), content: "" } };
+}

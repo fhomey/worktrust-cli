@@ -42,6 +42,8 @@ const GUARD_REFUSED = /^\s*Permission for this (command|action) was denied by/i;
 export const resultOf = (block) => {
   const text = typeof block.content === "string" ? block.content : Array.isArray(block.content) ? block.content.map((part) => (part && typeof part.text === "string" ? part.text : "")).join("") : "";
   const failed = block.is_error === true;
+  // 0.8.5: a reader that could not see the outcome (Codex's code mode, a background terminal) says so; unknown is never a pass.
+  if (!failed && block.outcome === "unknown") return { id: block.tool_use_id, failed: null, refusal: null };
   return { id: block.tool_use_id, failed, refusal: failed && PERSON_REFUSED.test(text) ? "person" : failed && GUARD_REFUSED.test(text) ? "guard" : null };
 };
 /** A to-do list the agent wrote (TodoWrite): how many items and how many done, never what they say. */
@@ -58,17 +60,20 @@ export const callOf = (block) => { const kinds = callKindsOf(block), plan = plan
 function verificationOf(messages, helpers) {
   const kinds = new Map();
   for (const message of messages) for (const call of message.calls ?? []) kinds.set(call.id, call.kinds);
-  const checks = {}, delivered = {};
+  const checks = {}, delivered = {}, unconfirmed = {};
   let deliveredAt = null, passedFirst = false;
   for (const message of messages) for (const result of message.results ?? []) {
     for (const kind of kinds.get(result.id) ?? []) {
+      // A check whose outcome nobody could see is counted as run and unconfirmed, apart from the known tallies (0.8.5).
+      if (CHECK_KINDS.includes(kind) && result.failed === null) { unconfirmed[kind] = (unconfirmed[kind] ?? 0) + 1; continue; }
+      if (DELIVERY_KINDS.includes(kind) && result.failed === null) continue;
       if (CHECK_KINDS.includes(kind)) { const tally = (checks[kind] ??= [0, 0]); tally[0] += 1; if (result.failed) tally[1] += 1; else if (deliveredAt === null) passedFirst = true; }
       else if (DELIVERY_KINDS.includes(kind) && !result.failed) { delivered[kind] = (delivered[kind] ?? 0) + 1; if (deliveredAt === null) deliveredAt = message.at; }
     }
   }
   const any = (record) => Object.keys(record).length > 0;
   const recovery = recoveryOf(messages), delegation = delegationOf(messages, helpers);
-  return { ...(any(checks) ? { verification: checks } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}), ...(recovery ? { recovery } : {}), ...(delegation ? { delegation } : {}) };
+  return { ...(any(checks) ? { verification: checks } : {}), ...(any(unconfirmed) ? { unconfirmed } : {}), ...(any(delivered) ? { delivery: { ...delivered, verified_first: passedFirst } } : {}), ...(recovery ? { recovery } : {}), ...(delegation ? { delegation } : {}) };
 }
 
 /**

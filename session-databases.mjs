@@ -12,7 +12,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as zlib from "node:zlib"; // zstd since Node 22.15; older Node reads OpenClaw's uncompressed rows only
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { cleanModel } from "./transcript-readers.mjs";
+import { cleanModel, cursorCall, copilotCall } from "./transcript-readers.mjs";
 
 // ── hermes session reader ──
 /**
@@ -344,18 +344,34 @@ export function cursorLines(pseudo) {
     const chat = db.prepare("select json_extract(value, '$.modelConfig.modelName') as model from cursorDiskKV where key = ?").get(`composerData:${id}`);
     const bubbles = db.prepare(`select json_extract(value, '$.type') as type, json_extract(value, '$.createdAt') as at,
         json_extract(value, '$.tokenCount.inputTokens') as input, json_extract(value, '$.tokenCount.outputTokens') as output,
-        json_extract(value, '$.toolFormerData') is not null as tool
+        json_extract(value, '$.toolFormerData') is not null as tool,
+        json_extract(value, '$.toolFormerData.name') as toolName, json_extract(value, '$.toolFormerData.toolCallId') as callId,
+        json_extract(value, '$.toolFormerData.status') as status, json_extract(value, '$.toolFormerData.userDecision') as decision,
+        json_extract(value, '$.toolFormerData.additionalData.status') as outcome,
+        json_extract(json_extract(value, '$.toolFormerData.params'), '$.command') as command,
+        json_extract(json_extract(value, '$.toolFormerData.result'), '$.exitCode') as exitCode,
+        json_extract(json_extract(value, '$.toolFormerData.result'), '$.rejected') as rejected,
+        json_extract(json_extract(value, '$.toolFormerData.result'), '$.backgroundShellId') is not null as background,
+        json_type(json_extract(value, '$.toolFormerData.result'), '$.output') = 'text' as hasOutput,
+        (select json_group_array(json_extract(todo.value, '$.status')) from json_each(json_extract(cursorDiskKV.value, '$.toolFormerData.result'), '$.finalTodos') as todo) as todoStatuses
       from cursorDiskKV where key > ? and key < ? and json_extract(value, '$.createdAt') is not null`).all(`bubbleId:${id}:`, `bubbleId:${id};`);
     const model = cleanModel(chat?.model);
     const lines = [];
+    let pending = null;
     for (const bubble of bubbles.sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
       const timestamp = isoOf(bubble.at); if (!timestamp) continue;
+      if (pending) { lines.push({ ...pending, timestamp }); pending = null; }
       if (Number(bubble.type) === 1) lines.push({ type: "user", timestamp, message: { content: [{ type: "text" }] } });
       else if (Number(bubble.type) === 2) {
         const usage = Number(bubble.input) || Number(bubble.output) ? { usage: { input_tokens: Number(bubble.input) || 0, output_tokens: Number(bubble.output) || 0 } } : {};
-        lines.push({ type: "assistant", timestamp, message: { model, ...usage, content: bubble.tool ? [{ type: "tool_use", name: "tool", input: {} }] : [] } });
+        const call = bubble.tool ? cursorCall(bubble) : null;
+        lines.push({ type: "assistant", timestamp, message: { model, ...usage, content: call ? [call.use] : [] } });
+        // THE CALL'S RESULT (0.8.5) lands at the NEXT bubble's moment: the gap after a call stays tool time and no gap is
+        // added, so the stretch's seconds and layers are exactly as before; a call that ends the session closes on its own moment.
+        if (call) pending = { type: "user", timestamp, message: { content: [call.result] } };
       }
     }
+    if (pending) lines.push(pending);
     return lines;
   } catch { return null; } finally { db.close(); }
 }
@@ -421,6 +437,13 @@ export function copilotLines(pseudo) {
     const meta = request?.result?.metadata ?? {};
     const usage = Number(meta.promptTokens) || Number(meta.outputTokens) ? { usage: { input_tokens: Number(meta.promptTokens) || 0, output_tokens: Number(meta.outputTokens) || 0 } } : {};
     // `agentic` (owner, 2026-10-06): the request's own run, asked → completed, is the agent's time; the hook files that gap as tool time, uncapped.
+    // THE REQUEST'S TOOL CALLS (0.8.5), all at the moment it was asked: no gap is added, so its seconds and layers are as before.
+    for (const part of Array.isArray(request?.response) ? request.response : []) {
+      const call = part && part.kind === "toolInvocationSerialized" ? copilotCall(part) : null;
+      if (!call) continue;
+      lines.push({ type: "assistant", timestamp: new Date(asked).toISOString(), message: { content: [call.use] } });
+      lines.push({ type: "user", timestamp: new Date(asked).toISOString(), message: { content: [call.result] } });
+    }
     lines.push({ type: "assistant", timestamp: new Date(done).toISOString(), agentic: true, message: { model: cleanModel(String(meta.resolvedModel ?? request?.modelId ?? "").replace(/^copilot\//, "")), ...usage, content: [] } });
   }
   return lines;

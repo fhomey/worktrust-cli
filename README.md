@@ -186,6 +186,7 @@ nothing it does not:
 | `hygiene.secrets` | counts a secret shown only when a reader (cat, head, tail, base64, cp) takes the file as its own argument; a command that uses a .env and reads its output, and a template (.env.example), are no secret shown (0.9.6) |
 | `outcomes` | outcomes of the steps: per kind of check whether its first run passed, delivery attempts that failed, a model change and a new plan after a failure each followed by a passing check; and a check whose output goes through a pipe is read from its output's words (an error fails, a pass passes, a silent type check or lint passes, anything else is unconfirmed), never from the pipe's exit code (0.9.8) |
 | `retrieval` | retrieval and grounding: searches (grep, rg, find, Grep, Glob, a web search, an MCP search tool), the same search again, a search followed by a read or a change (found) or by another search (again), searches before the first change and right after a failure, and deliveries with docs, tests or a search since the last change (grounded); counts only, nothing searched is kept (0.9.9) |
+| `window` | the context window, from the token counts the AI app writes beside each answer (input plus cached, once per message): the peak a turn carried, the turns over 100k, 200k and 500k, the growth from the first quarter of answers to the last, and compactions near the peak; counts only, nothing of what the context held (0.10.0) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

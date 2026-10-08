@@ -652,6 +652,34 @@ function retrievalOf(messages) {
   return out.searches > 0 || out.deliveries > 0 ? Object.fromEntries(Object.entries(out).filter(([, value]) => value > 0)) : null;
 }
 
+/**
+ * THE CONTEXT WINDOW (0.10.0), from the token counts the AI app writes beside each answer (input plus cached, read
+ * once per message): the peak a turn carried, the turns over 100k, 200k and 500k, the growth from the stretch's first
+ * quarter of answers to its last (their middles, as a percentage), and compactions that came at 80% of the peak or more
+ * (the window managed before it ran out). Counts; nothing of what the context held.
+ */
+function windowOf(messages) {
+  const seen = new Set(), sizes = [];
+  let compactNearPeak = 0, last = 0;
+  const marks = [];
+  for (const message of messages) {
+    if (message.bridge) continue;
+    if (message.compacted) marks.push(last);
+    if (message.type !== "assistant" || !message.usage) continue;
+    if (message.messageId) { if (seen.has(message.messageId)) continue; seen.add(message.messageId); }
+    const u = message.usage, size = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+    if (size > 0) { sizes.push(size); last = size; }
+  }
+  if (sizes.length === 0) return null;
+  const peak = Math.max(...sizes);
+  for (const before of marks) if (before >= 0.8 * peak) compactNearPeak += 1;
+  const middle = (values) => { const sorted = [...values].sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)]; };
+  const quarter = Math.floor(sizes.length / 4);
+  const growth = quarter >= 2 ? Math.round((100 * middle(sizes.slice(-quarter))) / Math.max(1, middle(sizes.slice(0, quarter)))) : null;
+  const out = { peak, over_100k: sizes.filter((size) => size > 100_000).length, over_200k: sizes.filter((size) => size > 200_000).length, over_500k: sizes.filter((size) => size > 500_000).length, ...(growth !== null ? { growth } : {}), ...(compactNearPeak ? { compact_near_peak: compactNearPeak } : {}) };
+  return Object.fromEntries(Object.entries(out).filter(([key, value]) => key === "peak" || value > 0));
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 /** A piped check's outcome from its output's words: failed or passed when they say so, unknown (null) when they do not. */
 function settlePiped(messages) {
@@ -667,6 +695,6 @@ function settlePiped(messages) {
 export function deriveStretch(raw, helpers) {
   const messages = settlePiped(raw);
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), outcomes = outcomesOf(messages), retrieval = retrievalOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}), ...(outcomes ? { outcomes } : {}), ...(retrieval ? { retrieval } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), outcomes = outcomesOf(messages), retrieval = retrievalOf(messages), window = windowOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}), ...(outcomes ? { outcomes } : {}), ...(retrieval ? { retrieval } : {}), ...(window ? { window } : {}) };
 }

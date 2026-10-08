@@ -46,6 +46,9 @@ const MARKS = [
   ["rollback", /\bgit\s+(revert|restore)\b|\bgit\s+reset\s+--hard\b|\b(vercel|fly|netlify)\s+rollback\b|\bkubectl\s+rollout\s+undo\b/],
   ["privilege", /(^|[\s;&|])sudo\s|\bgit\s+push\b[^\n]*\s(-f|--force(-with-lease)?)\b|\bchmod\s+(-R\s+)?777\b/],
   ["bypass", /\s--no-verify\b/],
+  // 0.9.2: the route the work took: a branch of its own, or a push straight to the default branch.
+  ["branch", /\bgit\s+(checkout\s+-b|switch\s+-c)\s|\bgit\s+branch\s+(?!-)[\w./-]+/],
+  ["push_main", /\bgit\s+push\b[^\n;&|]*\s(main|master)\b/],
 ];
 const SECRET_FILE = /(^|[\/\s'"])(\.env(\.[\w-]+)?|id_(rsa|ed25519|ecdsa)|[\w.-]+\.(pem|p12|pfx|key)|credentials(\.json)?|\.npmrc|\.netrc|\.pgpass)(['"\s]|$)/;
 const PRINTS = /\b(cat|less|more|head|tail|bat|type|Get-Content|grep|sed|awk|cp|scp|base64)\b/;
@@ -437,9 +440,22 @@ function hygieneOf(messages) {
   return Object.keys(kept).length > 0 ? kept : null;
 }
 
+/** THE ROUTE (0.9.2), from the commands: branches made, pushes straight to the default branch that went through. */
+function routeOf(messages) {
+  const results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result);
+  let branches = 0, pushesToMain = 0;
+  for (const message of messages) for (const call of message.calls ?? []) {
+    const marks = call.marks ?? [];
+    if (marks.includes("branch")) branches += 1;
+    if (marks.includes("push_main") && results.get(call.id)?.failed === false) pushesToMain += 1;
+  }
+  return branches + pushesToMain > 0 ? { ...(branches ? { branches } : {}), ...(pushesToMain ? { pushes_to_main: pushesToMain } : {}) } : null;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}) };
 }

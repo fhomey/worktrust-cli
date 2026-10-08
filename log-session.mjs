@@ -153,6 +153,31 @@ const contextFilesOf = (paths) => { const out = {}; for (const path of paths) fo
 const AI_COAUTHOR = /\b(claude|anthropic|codex|openai|chatgpt|copilot|cursor|devin|gemini|jules|aider|windsurf|cline)\b/i;
 /** A path that holds tests, by the conventions of the common test runners (read here; the path never leaves). */
 const TEST_PATH = /(^|[\\/])(__tests__|tests?|spec|e2e)[\\/]|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$|(^|[\\/])test_[^\\/]+\.py$|Tests?\.(java|kt|cs|swift)$/;
+/**
+ * THE ROUTE FROM GIT (0.9.2), of the stretch's own commits, read here and never kept: commits over twenty files, a fix
+ * that followed another commit of the stretch, a commit naming an issue (#12, ABC-123); and of the changed files, how
+ * many are CI, scripts or docs (what lets another person run it again). Subjects and paths never leave.
+ */
+const CI_PATH = /(^|[\\/])\.github[\\/]workflows[\\/]|(^|[\\/])\.gitlab-ci\.ya?ml$|(^|[\\/])Jenkinsfile$|(^|[\\/])\.circleci[\\/]|(^|[\\/])azure-pipelines\.ya?ml$/;
+const SCRIPT_PATH = /(^|[\\/])scripts?[\\/]|(^|[\\/])Makefile$|(^|[\\/])justfile$|\.(sh|ps1)$/;
+const DOC_PATH = /(^|[\\/])docs?[\\/]|(^|[\\/])README(\.[a-z]+)?$|(^|[\\/])CHANGELOG\.md$/i;
+const FIX_SUBJECT = /^(fix|hotfix|revert)\b/i, ISSUE_REF = /#\d+\b|\b[A-Z][A-Z0-9]+-\d+\b/;
+const gitRouteOf = (cwd, shas, paths) => {
+  const out = {};
+  if (cwd && shas.length > 0) {
+    const commits = git(cwd, "log", "--no-walk", "--date-order", "--reverse", "--format=%x1e%s", "--shortstat", ...shas.slice(0, 50)).split("\x1e").map((block) => block.trim()).filter(Boolean)
+      .map((block) => ({ subject: block.split("\n")[0], files: Number(/(\d+) files? changed/.exec(block)?.[1] ?? 0) }));
+    const large = commits.filter((commit) => commit.files > 20).length, fixes = commits.slice(1).filter((commit) => FIX_SUBJECT.test(commit.subject)).length, issues = commits.filter((commit) => ISSUE_REF.test(commit.subject)).length;
+    if (large) out.commits_large = large;
+    if (fixes) out.fix_followups = fixes;
+    if (issues) out.issue_refs = issues;
+  }
+  const ci = paths.filter((path) => CI_PATH.test(path)).length, scripts = paths.filter((path) => SCRIPT_PATH.test(path)).length, docs = paths.filter((path) => DOC_PATH.test(path)).length;
+  if (ci) out.ci_files = ci;
+  if (scripts) out.script_files = scripts;
+  if (docs) out.doc_files = docs;
+  return out;
+};
 /** The derived record of a stretch, kept for the local archive only (see payloadFor). */
 const DERIVED = new WeakMap();
 const AGENT_RUNS_MAX = 10000, AGENT_SECONDS_MAX = 2592000;
@@ -622,7 +647,8 @@ function payloadFor(stretch) {
   const changed = [...new Set(touched.paths)], tests = changed.filter((path) => TEST_PATH.test(path)).length;
   // 0.8.7: of the stretch's commits, how many name an AI as co-author (the Co-authored-by trailer, read here, never kept).
   const coauthored = cwd && touched.shas.length > 0 ? git(cwd, "log", "--no-walk", "--format=%(trailers:key=Co-authored-by,valueonly,separator=%x01)%x00", ...touched.shas.slice(0, 50)).split("\0").filter((entry, index) => index < Math.min(50, touched.shas.length) && AI_COAUTHOR.test(entry)).length : 0;
-  const derived = stretch.derived ? { ...stretch.derived, ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(contextFilesOf(changed) ? { context_files: contextFilesOf(changed) } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) } : null;
+  const route = { ...(stretch.derived?.route ?? {}), ...(touched.committed ? gitRouteOf(cwd, touched.shas, changed) : {}) };
+  const derived = stretch.derived ? { ...stretch.derived, ...(Object.keys(route).length > 0 ? { route } : {}), ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(contextFilesOf(changed) ? { context_files: contextFilesOf(changed) } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) } : null;
   const payload = {
     title: layer ? `AI-assisted work · ${layer}` : "AI-assisted work",
     kind,

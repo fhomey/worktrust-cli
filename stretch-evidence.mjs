@@ -49,7 +49,19 @@ const MARKS = [
   // 0.9.2: the route the work took: a branch of its own, or a push straight to the default branch.
   ["branch", /\bgit\s+(checkout\s+-b|switch\s+-c)\s|\bgit\s+branch\s+(?!-)[\w./-]+/],
   ["push_main", /\bgit\s+push\b[^\n;&|]*\s(main|master)\b/],
+  // 0.9.4: the kind of system a command worked on, and reviews and issues handled from the terminal.
+  ["infra", /(^|[\s;&|(])(terraform|tofu|pulumi|kubectl|helm|kustomize|ansible(-playbook)?|docker(\s+compose)?|docker-compose|podman)\s/],
+  ["data", /(^|[\s;&|(])(psql|pg_dump|pg_restore|mysql|sqlite3|duckdb|mongosh|redis-cli|bq|snowsql|dbt|clickhouse(-client)?)\b/],
+  ["cloud", /(^|[\s;&|(])(aws|gcloud|gsutil|az|vercel|netlify|fly|flyctl|wrangler|supabase|firebase|heroku|doctl)\s/],
+  ["review_approve", /\bgh\s+pr\s+review\b[^\n;&|]*\s(-a|--approve)\b/],
+  ["review_changes", /\bgh\s+pr\s+review\b[^\n;&|]*\s(-r|--request-changes)\b/],
+  ["review_comment", /\bgh\s+pr\s+review\b[^\n;&|]*\s(-c|--comment)\b/],
+  ["issue_open", /\bgh\s+issue\s+create\b/],
+  ["issue_close", /\bgh\s+issue\s+close\b/],
 ];
+/** A plan or roadmap the work wrote down (0.9.4), by the file's name; the name never leaves. */
+const PLAN_DOC = /(^|[\\/])(PLAN|ROADMAP|DESIGN|SPEC|RFC|ADR)[\w.-]*\.(md|mdx|txt)$|(^|[\\/])(plans?|roadmaps?|rfcs?|adrs?|specs?)[\\/][^\\/]+\.(md|mdx)$|\.plan\.md$/i;
+const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "write_file", "edit_file", "create_file"]);
 const SECRET_FILE = /(^|[\/\s'"])(\.env(\.[\w-]+)?|id_(rsa|ed25519|ecdsa)|[\w.-]+\.(pem|p12|pfx|key)|credentials(\.json)?|\.npmrc|\.netrc|\.pgpass)(['"\s]|$)/;
 const PRINTS = /\b(cat|less|more|head|tail|bat|type|Get-Content|grep|sed|awk|cp|scp|base64)\b/;
 const READ_TOOLS = new Set(["Read", "read_file", "view", "open_file"]);
@@ -58,6 +70,8 @@ export const marksOf = (block) => {
   const command = SHELL_TOOLS.has(name) ? block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd : null;
   const path = READ_TOOLS.has(name) ? block.input?.file_path ?? block.input?.path ?? null : null;
   const marks = typeof command === "string" ? MARKS.filter(([, pattern]) => pattern.test(command)).map(([mark]) => mark) : [];
+  const written = WRITE_TOOLS.has(name) ? block.input?.file_path ?? block.input?.path ?? null : null;
+  if (typeof written === "string" && PLAN_DOC.test(written)) marks.push("plan_doc");
   if ((typeof path === "string" && SECRET_FILE.test(path)) || (typeof command === "string" && PRINTS.test(command) && SECRET_FILE.test(command))) marks.push("secret");
   return marks;
 };
@@ -509,9 +523,34 @@ function adaptationOf(messages) {
   return Object.keys(kept).length > 0 ? kept : null;
 }
 
+/**
+ * THE WORK'S REACH AND ITS PLAN (0.9.4): commands on infrastructure, data and cloud; plan or roadmap documents written,
+ * and whether one came before the first code change; reviews approved, sent back or commented and issues opened or closed
+ * from the terminal. Counts, and one flag.
+ */
+function reachOf(messages) {
+  const results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result);
+  const out = { infra: 0, data: 0, cloud: 0, plan_docs: 0, reviews_approved: 0, reviews_changes: 0, reviews_commented: 0, issues_opened: 0, issues_closed: 0 };
+  const KEY = { infra: "infra", data: "data", cloud: "cloud", plan_doc: "plan_docs", review_approve: "reviews_approved", review_changes: "reviews_changes", review_comment: "reviews_commented", issue_open: "issues_opened", issue_close: "issues_closed" };
+  let changed = false, planFirst = null;
+  for (const message of messages) {
+    if (message.bridge) continue;
+    for (const call of message.calls ?? []) {
+      const tool = call.family.split("|")[0], marks = call.marks ?? [], result = results.get(call.id);
+      if (marks.includes("plan_doc") && !changed && planFirst === null) planFirst = true;
+      if (EDIT_TOOLS.has(tool) && !marks.includes("plan_doc")) { if (!changed && planFirst === null) planFirst = false; changed = true; }
+      for (const mark of marks) if (KEY[mark] && result?.failed !== true) out[KEY[mark]] += 1;
+    }
+  }
+  const kept = Object.fromEntries(Object.entries(out).filter(([, value]) => value > 0));
+  if (out.plan_docs > 0) kept.plan_first = planFirst === true;
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}) };
 }

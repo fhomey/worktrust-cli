@@ -134,6 +134,12 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt
     if (Object.keys(sources).length > 0) adaptation.sources = sources;
     if (Object.keys(adaptation).length > 0) line.adaptation = adaptation;
   }
+  // 0.9.4: the work's reach and its plan; whole counts, and whether a plan came first.
+  if (entry.reach && typeof entry.reach === "object") {
+    const reach = Object.fromEntries(REACH_KEYS.filter((key) => whole(entry.reach[key])).map((key) => [key, entry.reach[key]]));
+    if (typeof entry.reach.plan_first === "boolean" && reach.plan_docs) reach.plan_first = entry.reach.plan_first;
+    if (Object.keys(reach).length > 0) line.reach = reach;
+  }
   const risk = pick(entry.risk, ["proposed", "refused", "run"]);
   if (risk && risk.proposed > 0 && risk.refused + risk.run <= risk.proposed) line.risk = risk;
   const keyed = (record, keys) => { const kept = Object.entries(record && typeof record === "object" ? record : {}).filter(([key, n]) => keys.includes(key) && whole(n) && n > 0).sort(); return kept.length ? Object.fromEntries(kept) : null; };
@@ -193,6 +199,8 @@ export function archiveEntries(dir, ownKey) {
 /** The furthest step a stretch reached on the computer (0.8.9). */
 const STAGES = ["attempted", "verified", "committed", "pushed", "pr", "deployed"];
 /** How fast a stretch moved (0.9.0). */
+/** The work's reach and its plan (0.9.4). */
+const REACH_KEYS = ["infra", "data", "cloud", "plan_docs", "reviews_approved", "reviews_changes", "reviews_commented", "issues_opened", "issues_closed"];
 /** Evidence read and adaptation (0.9.3). */
 const ADAPTATION_KEYS = ["replans", "escalations", "reconciled", "outages", "outages_continued"];
 const READ_KINDS = ["docs", "tests", "logs", "config", "source", "web"];
@@ -201,7 +209,7 @@ const ROUTE_KEYS = ["branches", "pushes_to_main", "commits_large", "fix_followup
 /** Risk and hygiene (0.9.1). */
 const HYGIENE_KEYS = ["rollbacks", "privileged", "bypasses", "secrets", "destructive", "destructive_checked", "guard_retried", "guard_changed", "guard_stopped"];
 const TIMING_KEYS = ["first_action_s", "first_check_s", "detect_actions", "detect_s", "recovery_calls", "resume_actions"];
-export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "stage", "timing", "hygiene", "route", "adaptation", "interrupts", "steers", "utc_offset"];
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "stage", "timing", "hygiene", "route", "adaptation", "reach", "interrupts", "steers", "utc_offset"];
 export function supplementFor(line, earlier) {
   const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
   if (missing.length === 0) return null;

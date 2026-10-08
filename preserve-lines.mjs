@@ -105,7 +105,12 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt
   // PRACTICE (0.8.8): framing, verification quality, risk, tool mix, re-reads, context files; whole counts and flags only.
   const bool = (value) => value === true || value === false;
   if (entry.framing && whole(entry.framing.turns_before_action) && bool(entry.framing.planned_first)) line.framing = { turns_before_action: entry.framing.turns_before_action, planned_first: entry.framing.planned_first };
-  if (entry.quality && whole(entry.quality.fix_cycles_max) && (bool(entry.quality.checked_after_change) || entry.quality.checked_after_change === null) && (bool(entry.quality.inspected_first) || entry.quality.inspected_first === null)) line.quality = { checked_after_change: entry.quality.checked_after_change, fix_cycles_max: entry.quality.fix_cycles_max, inspected_first: entry.quality.inspected_first };
+  if (entry.quality && whole(entry.quality.fix_cycles_max) && (bool(entry.quality.checked_after_change) || entry.quality.checked_after_change === null) && (bool(entry.quality.inspected_first) || entry.quality.inspected_first === null)) {
+    line.quality = { checked_after_change: entry.quality.checked_after_change, fix_cycles_max: entry.quality.fix_cycles_max, inspected_first: entry.quality.inspected_first };
+    // 0.8.9: change blocks, how many a check followed, rework cycles.
+    if (whole(entry.quality.change_blocks) && whole(entry.quality.checked_blocks) && whole(entry.quality.rework_cycles) && entry.quality.checked_blocks <= entry.quality.change_blocks) Object.assign(line.quality, { change_blocks: entry.quality.change_blocks, checked_blocks: entry.quality.checked_blocks, rework_cycles: entry.quality.rework_cycles });
+  }
+  if (STAGES.includes(entry.stage)) line.stage = entry.stage;
   const risk = pick(entry.risk, ["proposed", "refused", "run"]);
   if (risk && risk.proposed > 0 && risk.refused + risk.run <= risk.proposed) line.risk = risk;
   const keyed = (record, keys) => { const kept = Object.entries(record && typeof record === "object" ? record : {}).filter(([key, n]) => keys.includes(key) && whole(n) && n > 0).sort(); return kept.length ? Object.fromEntries(kept) : null; };
@@ -162,7 +167,9 @@ export function archiveEntries(dir, ownKey) {
  * a line of their own that names the stretch it adds to (`supplements`) and carries only what no earlier line of that
  * stretch carries, in the same chain, under the same day's root. Null when there is nothing new.
  */
-export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "interrupts", "steers", "utc_offset"];
+/** The furthest step a stretch reached on the computer (0.8.9). */
+const STAGES = ["attempted", "verified", "committed", "pushed", "pr", "deployed"];
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "stage", "interrupts", "steers", "utc_offset"];
 export function supplementFor(line, earlier) {
   const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
   if (missing.length === 0) return null;

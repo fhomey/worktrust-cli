@@ -268,6 +268,10 @@ function autonomyOf(messages) {
  *            (plan mode, a plan approved, a to-do list) came before it.
  *   quality: whether a check passed AFTER the stretch's last change; the most failures one check family took before it
  *            passed; whether the change was looked at (git diff, show, status) before the first delivery step.
+ *            0.8.9: change BLOCKS (edits with no check between them) and how many a check followed before the next one;
+ *            REWORK cycles (a check failed, then a change before that check ran again: change, fail, change).
+ *   stage:   the furthest step the stretch reached on this computer: attempted (it changed something), verified (a check
+ *            passed), committed, pushed, pr, deployed (0.8.9). Merged and confirmed are the server's, from GitHub.
  *   risk:    destructive commands proposed, refused (by the person or a guard) and run.
  *   tool_mix: calls per kind of tool (search, read, edit, shell, agent, web, data, mcp, plan).
  *   reads:   files read again unchanged (the same read twice), the cost of context that did not hold.
@@ -282,6 +286,8 @@ function practiceOf(messages, { isHumanTurn }) {
   let turns = 0, acted = false, planned = false, turnsBefore = 0, plannedFirst = false;
   let lastChange = -1, passedAfter = false, delivered = false, inspectedFirst = false;
   const failuresBefore = new Map(); let cyclesMax = 0;
+  let blocks = 0, checkedBlocks = 0, inBlock = false, rework = 0, passedAny = false;
+  const pendingFail = new Set(), reached = new Set();
   const risk = { proposed: 0, refused: 0, run: 0 }, mix = {}, reads = new Map();
   let index = 0;
   for (const message of messages) {
@@ -294,15 +300,21 @@ function practiceOf(messages, { isHumanTurn }) {
       mix[toolKind(tool)] = (mix[toolKind(tool)] ?? 0) + 1;
       if (PLAN_TOOLS.has(tool) && tool !== "AskUserQuestion") planned = true;
       if (!acted && ACTION_TOOLS.has(tool)) { acted = true; turnsBefore = turns; plannedFirst = planned; }
-      if (EDIT_TOOLS.has(tool)) { lastChange = index; passedAfter = false; }
+      if (EDIT_TOOLS.has(tool)) {
+        lastChange = index; passedAfter = false;
+        if (!inBlock) { blocks += 1; inBlock = true; }
+        rework += pendingFail.size; pendingFail.clear();
+      }
       if (tool === "Read") reads.set(call.digest, (reads.get(call.digest) ?? 0) + 1);
       const checks = call.kinds.filter((kind) => CHECK_KINDS.includes(kind));
+      if (checks.length > 0 && inBlock) { checkedBlocks += 1; inBlock = false; }
       for (const kind of checks) {
-        if (result?.failed === true) failuresBefore.set(kind, (failuresBefore.get(kind) ?? 0) + 1);
+        if (result?.failed === true) { failuresBefore.set(kind, (failuresBefore.get(kind) ?? 0) + 1); pendingFail.add(kind); }
+        if (result?.failed === false) { passedAny = true; pendingFail.delete(kind); }
         if (result?.failed === false) { cyclesMax = Math.max(cyclesMax, failuresBefore.get(kind) ?? 0); failuresBefore.set(kind, 0); if (index > lastChange) passedAfter = true; }
       }
       if (call.kinds.includes("inspect") && !delivered) inspectedFirst = true;
-      if (call.kinds.some((kind) => DELIVERY_KINDS.includes(kind)) && result?.failed === false) delivered = true;
+      if (call.kinds.some((kind) => DELIVERY_KINDS.includes(kind)) && result?.failed === false) { delivered = true; for (const kind of call.kinds) if (DELIVERY_KINDS.includes(kind)) reached.add(kind); }
       if (call.kinds.includes("destructive")) {
         risk.proposed += 1;
         if (result?.refusal) risk.refused += 1; else if (result?.failed === false) risk.run += 1;
@@ -311,9 +323,11 @@ function practiceOf(messages, { isHumanTurn }) {
   }
   if (index === 0) return null;
   const repeated = [...reads.values()].reduce((sum, n) => sum + Math.max(0, n - 1), 0);
+  const stage = ["deploy", "pr", "push", "commit"].find((kind) => reached.has(kind)) ?? (lastChange > 0 ? (passedAny ? "verified" : "attempted") : null);
   return {
     framing: { turns_before_action: acted ? turnsBefore : turns, planned_first: acted ? plannedFirst : planned },
-    quality: { checked_after_change: lastChange > 0 ? passedAfter : null, fix_cycles_max: cyclesMax, inspected_first: delivered ? inspectedFirst : null },
+    quality: { checked_after_change: lastChange > 0 ? passedAfter : null, fix_cycles_max: cyclesMax, inspected_first: delivered ? inspectedFirst : null, change_blocks: blocks, checked_blocks: checkedBlocks, rework_cycles: rework },
+    ...(stage ? { stage: { deploy: "deployed", pr: "pr", push: "pushed", commit: "committed" }[stage] ?? stage } : {}),
     ...(risk.proposed > 0 ? { risk } : {}),
     tool_mix: mix,
     reads: { repeated },

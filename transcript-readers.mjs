@@ -56,7 +56,7 @@ export const codexToolInput = (name, raw) => {
 export const codexOutputText = (output) => (typeof output === "string" ? output : Array.isArray(output) ? output.map((part) => (typeof part === "string" ? part : part?.text ?? "")).join("\n") : "");
 /** The rollout's raw JSON lines → transcript-shaped line objects, in file order. */
 export function* codexLines(records) {
-  let cwd = null, model = null;
+  let cwd = null, model = null, mode = null;
   const seenResponses = new Set();
   for (const raw of records) {
     if (!raw || !String(raw).trim()) continue;
@@ -64,7 +64,13 @@ export function* codexLines(records) {
     const timestamp = typeof record?.timestamp === "string" ? record.timestamp : null;
     const payload = record?.payload && typeof record.payload === "object" ? record.payload : {};
     if (record.type === "session_meta") { if (typeof payload.cwd === "string") cwd = payload.cwd; continue; }
-    if (record.type === "turn_context") { if (typeof payload.cwd === "string") cwd = payload.cwd; if (typeof payload.model === "string") model = payload.model; continue; }
+    if (record.type === "turn_context") {
+      if (typeof payload.cwd === "string") cwd = payload.cwd; if (typeof payload.model === "string") model = payload.model;
+      // 0.8.7: Codex's approval policy and sandbox, as one word on the common scale (never asks and full access is "full").
+      const approval = String(payload.approval_policy ?? ""), sandbox = String(payload.sandbox_policy?.type ?? payload.sandbox_policy ?? payload.sandbox_mode ?? "");
+      mode = approval === "never" ? (sandbox === "danger-full-access" ? "full" : "auto") : approval === "on-failure" ? "edits" : approval ? "ask" : mode;
+      continue;
+    }
     if (record.type === "token_usage_record") {
       const id = String(payload.response_id ?? "");
       const usage = payload.usage;
@@ -80,7 +86,7 @@ export function* codexLines(records) {
       if (payload.role !== "user" && payload.role !== "assistant") continue;
       const text = Array.isArray(payload.content) ? payload.content.filter((part) => typeof part?.text === "string").map((part) => part.text).join("\n") : typeof payload.content === "string" ? payload.content : "";
       if (payload.role === "user" && CODEX_HARNESS_TURN.test(text)) continue;
-      yield { type: payload.role, timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(payload.role === "assistant" && model ? { model } : {}), content: [{ type: "text", text }] } };
+      yield { type: payload.role, timestamp, cwd, ...(mode ? { permissionMode: mode } : {}), uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(payload.role === "assistant" && model ? { model } : {}), content: [{ type: "text", text }] } };
       continue;
     }
     if (kind === "custom_tool_call" || kind === "function_call") {

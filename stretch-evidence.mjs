@@ -237,9 +237,28 @@ function planningOf(messages) {
   return { lists: lists.length, items_max: Math.max(...lists.map((list) => list.items)), items_last: last.items, done_last: last.done };
 }
 
+/**
+ * THE AUTONOMY THE PERSON GAVE (0.8.7; framework L5, "autonomy calibration"): the permission mode the client ran in, on
+ * one common scale (ask, edits, plan, auto, full), as the mode most turns ran in, how often it changed, and how many
+ * turns ran in plan mode. Claude Code records its own word per turn; the Codex reader maps its approval policy and
+ * sandbox. Null where no client recorded one.
+ */
+const MODE_SCALE = { default: "ask", ask: "ask", acceptEdits: "edits", edits: "edits", plan: "plan", auto: "auto", bypassPermissions: "full", dontAsk: "full", full: "full" };
+function autonomyOf(messages) {
+  const modes = [];
+  for (const message of messages) if (!message.bridge && message.permissionMode && MODE_SCALE[message.permissionMode]) modes.push(MODE_SCALE[message.permissionMode]);
+  if (modes.length === 0) return null;
+  const tally = {};
+  for (const mode of modes) tally[mode] = (tally[mode] ?? 0) + 1;
+  const mode = Object.entries(tally).sort((a, b) => b[1] - a[1])[0][0];
+  let switches = 0;
+  for (let i = 1; i < modes.length; i += 1) if (modes[i] !== modes[i - 1]) switches += 1;
+  return { mode, switches, plan_turns: tally.plan ?? 0 };
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages);
-  return { ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
+  const tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages);
+  return { ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
 }

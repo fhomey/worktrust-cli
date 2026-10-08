@@ -98,6 +98,10 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt
   if (planning && planning.lists > 0 && planning.done_last <= planning.items_last && planning.items_last <= planning.items_max) line.planning = planning;
   const changes = pick(entry.changes, ["files", "test_files"]);
   if (changes && changes.test_files <= changes.files) line.changes = changes;
+  // AUTONOMY AND AUTHORSHIP (0.8.7): the permission mode on one scale; commits and those naming an AI as co-author.
+  if (entry.autonomy && ["ask", "edits", "plan", "auto", "full"].includes(entry.autonomy.mode) && whole(entry.autonomy.switches) && whole(entry.autonomy.plan_turns)) line.autonomy = { mode: entry.autonomy.mode, switches: entry.autonomy.switches, plan_turns: entry.autonomy.plan_turns };
+  const authorship = pick(entry.authorship, ["commits", "ai_coauthored"]);
+  if (authorship && authorship.commits > 0 && authorship.ai_coauthored <= authorship.commits) line.authorship = authorship;
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();
@@ -145,7 +149,7 @@ export function archiveEntries(dir, ownKey) {
  * a line of their own that names the stretch it adds to (`supplements`) and carries only what no earlier line of that
  * stretch carries, in the same chain, under the same day's root. Null when there is nothing new.
  */
-export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "interrupts", "steers", "utc_offset"];
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "interrupts", "steers", "utc_offset"];
 export function supplementFor(line, earlier) {
   const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
   if (missing.length === 0) return null;

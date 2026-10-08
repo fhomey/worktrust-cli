@@ -171,6 +171,7 @@ nothing it does not:
 | `supplements` | a supplement line: when a newer CLI measures more of a stretch already archived, the new fields go into a line of their own that names that stretch; nothing earlier is rewritten, and the chain and the day's root cover it (0.8.2) |
 | `evidence` (sent) | the same derived record now also travels with each stretch to WorkTrust, kinds and counts only, and `npx worktrust status` shows what this computer measured in the last thirty days (0.8.3) |
 | `unconfirmed` | checks the stretch ran whose outcome no reader could see (Codex's code mode prints no exit code; a background terminal), per kind: counted, never as a pass (0.8.5) |
+| `autonomy`, `authorship` | the permission mode the AI app ran in, on one scale (ask, edits, plan, auto, full), how often it changed and the turns in plan mode; of the stretch's commits, how many name an AI as co-author (the trailer is read here, its names never leave) (0.8.7) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

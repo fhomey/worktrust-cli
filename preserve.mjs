@@ -31,7 +31,7 @@ import { dirname, join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { summaryLines } from "./preserve-summary.mjs";
-import { archiveLine, stretchSignals } from "./preserve-lines.mjs";
+import { archiveLine, stretchSignals, supplementFor } from "./preserve-lines.mjs";
 
 const args = process.argv.slice(2).filter((arg) => arg !== "preserve");
 const has = (name) => args.includes(`--${name}`);
@@ -260,12 +260,16 @@ function archive(dir) {
   const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();
   if (!Number.isInteger(end) || end !== rows.length - 1) { say(`  The session hook's answer came back incomplete (${rows.length - 1} of ${end ?? "an unknown number of"} lines), so nothing was added. Run it again.`); process.exit(1); }
   const signals = stretchSignals(HERE, say);
-  const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [], measured = new Set();
+  const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [], measured = new Set(), additions = [];
+  const byRef = new Map(); // 0.8.2: every earlier line of a stretch, its supplements included
+  for (const line of existing.lines) { const ref = line.supplements ?? line.stretch_ref; byRef.set(ref, [...(byRef.get(ref) ?? []), line]); }
   let waiting = 0;
   for (const text of rows.slice(0, -1)) {
     let entry; try { entry = JSON.parse(text); } catch { continue; }
     const line = archiveLine(entry, signals?.get(entry.stretch_ref) ?? null, { ids: IDS, collector: COLLECTOR });
-    if (line && line.day < today()) measured.add(line.stretch_ref); if (!line || known.has(line.stretch_ref)) continue; // a file present twice is one stretch
+    if (line && line.day < today()) measured.add(line.stretch_ref);
+    if (line && byRef.has(line.stretch_ref)) { const extra = supplementFor(line, byRef.get(line.stretch_ref)); if (extra) { additions.push(extra); byRef.set(line.stretch_ref, [...byRef.get(line.stretch_ref), extra]); } continue; }
+    if (!line || known.has(line.stretch_ref)) continue; // a file present twice is one stretch
     if (line.day >= today()) { waiting += 1; continue; }
     known.add(line.stretch_ref);
     fresh.push(line);
@@ -274,7 +278,7 @@ function archive(dir) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   let prev = existing.lines.at(-1)?.hash ?? null, seq = existing.lines.length;
   const all = [...existing.lines];
-  for (const line of fresh) {
+  for (const line of [...fresh, ...additions]) {
     const chained = { ...line, seq: (seq += 1), prev };
     const hashed = { ...chained, hash: sha256(canonical(chained)) };
     mkdirSync(join(dir, line.day.slice(0, 4), line.day.slice(5, 7)), { recursive: true });
@@ -288,16 +292,18 @@ function archive(dir) {
   const key = deviceKey();
   const ours = (document) => !document || (key && typeof document.signature === "string" && document.public_key === key.publicX);
   mkdirSync(join(dir, "proofs"), { recursive: true });
-  for (const day of new Set(fresh.map((line) => line.day))) {
+  for (const day of new Set([...fresh, ...additions].map((line) => line.day))) {
     const own = !existing.days?.has(day) || ours(existing.proofs?.get(day));
     const body = proofBody(day, all.filter((line) => line.day === day), own ? key : null);
     writeFileSync(join(dir, "proofs", `${day}.json`), `${JSON.stringify(sealed(body, own ? key : null), null, 1)}\n`);
   }
   // The manifest is sealed the same way: a new archive, or one whose manifest this key already signed.
   const manifestKey = !existing.manifest || ours(existing.manifest) ? key : null;
-  if (fresh.length > 0 || !existing.manifest) writeFileSync(join(dir, "manifest.json"), `${JSON.stringify(sealed({ format: "worktrust-ai-evidence/1", collector_version: COLLECTOR, created: existing.manifest?.created ?? new Date().toISOString(), updated: new Date().toISOString(), clients: [...new Set(all.map((line) => line.client))].sort(), ...IDS, count: all.length, head: prev, ...(manifestKey ? { public_key: manifestKey.publicX } : {}) }, manifestKey), null, 1)}\n`);
+  if (fresh.length + additions.length > 0 || !existing.manifest) writeFileSync(join(dir, "manifest.json"), `${JSON.stringify(sealed({ format: "worktrust-ai-evidence/1", collector_version: COLLECTOR, created: existing.manifest?.created ?? new Date().toISOString(), updated: new Date().toISOString(), clients: [...new Set(all.map((line) => line.client))].sort(), ...IDS, count: all.length, head: prev, ...(manifestKey ? { public_key: manifestKey.publicX } : {}) }, manifestKey), null, 1)}\n`);
   say();
-  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${all.length}, the session hook measures ${measured.size} finished ones here now${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
+  const stretches = all.filter((line) => !line.supplements).length;
+  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${stretches}, the session hook measures ${measured.size} finished ones here now${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
+  if (additions.length > 0) say(`    ${additions.length} stretch${additions.length === 1 ? "" : "es"} already here gained the newer measurements, each in a supplement line; nothing earlier was rewritten.`);
   if (waiting > 0) say(`    ${waiting} of today wait for tomorrow's run: a day is archived once it is over.`);
   say("    Metadata only: clocks, counts, model names, a hash of each project's name. Nothing was sent.");
 }
@@ -308,7 +314,8 @@ function verifyArchive(dir) {
   if (result.lines.length === 0) { say(`  Nothing to verify in ${dir}.`); return; }
   const daySeal = result.signed === 0 ? "no day signed" : result.ours === result.signed ? `${result.signed} signed by this computer's key` : `${result.signed} signed (${result.ours} by this computer's key, ${result.signed - result.ours} by another key named in them)`;
   const seal = typeof result.manifest?.signature !== "string" ? "manifest unsigned" : result.manifest.public_key === deviceKey()?.publicX ? "manifest signed by this computer's key" : "manifest signed by another key named in it";
-  say(`  OK  ${result.lines.length} stretches · ${result.days.size} days · the chain is whole · every day's root matches · ${daySeal} · ${seal}`);
+  const added = result.lines.filter((line) => line.supplements).length;
+  say(`  OK  ${result.lines.length - added} stretches${added ? ` (and ${added} supplement${added === 1 ? "" : "s"})` : ""} · ${result.days.size} days · the chain is whole · every day's root matches · ${daySeal} · ${seal}`);
 }
 
 /** --summary: what a person or a team reads from the archive, counted locally (preserve-summary.mjs) once the chain checks out. */

@@ -168,6 +168,7 @@ nothing it does not:
 | `steering` | the moments you stepped in while the agent worked (stopping it, or a message mid-task), how many changed what the agent did next, and how many were followed by a passing check (0.7.5) |
 | `tools`, `complexity` | how many different tools the agent used, and the stretch's task complexity C1 to C5 by the rule complexity/1 (points for layers touched, tools, subagents, duration, a recovered failure, kinds of check and a delivery; the rule is in stretch-evidence.mjs), with its points and the rule's version (0.7.6) |
 | `oversight`, `planning`, `changes` | how often you refused an action or a plan the agent proposed, and how often a guard (the client's safety layer) refused one; how often the agent wrote its to-do list, the most items, and of the last list how many were done (never what they say); how many files the stretch's commits changed and how many of them tests (never a path) (0.8.1) |
+| `supplements` | a supplement line: when a newer CLI measures more of a stretch already archived, the new fields go into a line of their own that names that stretch; nothing earlier is rewritten, and the chain and the day's root cover it (0.8.2) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

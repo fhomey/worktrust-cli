@@ -116,6 +116,7 @@ export function archiveEntries(dir, ownKey) {
     if (!existsSync(file)) continue;
     for (const text of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
       let line; try { line = JSON.parse(text); } catch { continue; }
+      if (line.supplements) continue; // a supplement adds fields to a stretch, it is no stretch of its own
       const proof = read(join(dir, "proofs", `${line.day}.json`));
       if (!ownKey || !proof || typeof proof.signature !== "string" || proof.public_key !== ownKey) continue;
       const entry = {
@@ -129,4 +130,18 @@ export function archiveEntries(dir, ownKey) {
     }
   }
   return out;
+}
+
+/**
+ * A SUPPLEMENT FOR A STRETCH ALREADY ARCHIVED (0.8.2). The archive only grows: a line is never rewritten. When a newer
+ * CLI measures more of a stretch that is already in it (verification, recovery, the signals …), the new fields go into
+ * a line of their own that names the stretch it adds to (`supplements`) and carries only what no earlier line of that
+ * stretch carries, in the same chain, under the same day's root. Null when there is nothing new.
+ */
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "interrupts", "steers", "utc_offset"];
+export function supplementFor(line, earlier) {
+  const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
+  if (missing.length === 0) return null;
+  const { device_id: device, profile_id: profile } = line;
+  return { client: line.client, day: line.day, started_at: line.started_at, ended_at: line.ended_at, supplements: line.stretch_ref, ...Object.fromEntries(missing.map((key) => [key, line[key]])), ...(device ? { device_id: device } : {}), ...(profile ? { profile_id: profile } : {}), collector_version: line.collector_version };
 }

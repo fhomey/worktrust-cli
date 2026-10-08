@@ -62,8 +62,10 @@ const MARKS = [
 /** A plan or roadmap the work wrote down (0.9.4), by the file's name; the name never leaves. */
 const PLAN_DOC = /(^|[\\/])(PLAN|ROADMAP|DESIGN|SPEC|RFC|ADR)[\w.-]*\.(md|mdx|txt)$|(^|[\\/])(plans?|roadmaps?|rfcs?|adrs?|specs?)[\\/][^\\/]+\.(md|mdx)$|\.plan\.md$/i;
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "write_file", "edit_file", "create_file"]);
-const SECRET_FILE = /(^|[\/\s'"])(\.env(\.[\w-]+)?|id_(rsa|ed25519|ecdsa)|[\w.-]+\.(pem|p12|pfx|key)|credentials(\.json)?|\.npmrc|\.netrc|\.pgpass)(['"\s]|$)/;
-const PRINTS = /\b(cat|less|more|head|tail|bat|type|Get-Content|grep|sed|awk|cp|scp|base64)\b/;
+// 0.9.5: a file that holds a secret by its name, as a path token; "credentials" only as a file (a search for the word is no read).
+const SECRET_FILE = /(^|[\/\s'"])(\.env(\.[\w-]+)?|id_(rsa|ed25519|ecdsa)|[\w.-]+\.(pem|p12|pfx|key)|credentials\.json|\.aws[\/]credentials|\.npmrc|\.netrc|\.pgpass)(['"\s]|$)/;
+// 0.9.5: a command that shows or copies a file's content; a search (grep, sed, awk) names a word and is no read.
+const PRINTS = /(^|[\s;&|(])(cat|less|more|head|tail|bat|type|Get-Content|base64|xxd|strings|cp|scp)\s/;
 const READ_TOOLS = new Set(["Read", "read_file", "view", "open_file"]);
 export const marksOf = (block) => {
   const name = String(block?.name ?? "");

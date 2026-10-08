@@ -24,7 +24,7 @@
  * (~/.worktrust/key.json) when there is one. Today waits for the next run. Nothing leaves this computer.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, verify } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -182,6 +182,12 @@ function computerIds() {
   const hash = (text) => createHash("sha256").update(text).digest("base64url");
   return { device_id: hash(`worktrust-machine|${machine.toLowerCase()}`), profile_id: hash(`worktrust-profile|${machine.toLowerCase()}|${homedir()}`) };
 }
+/** This computer's own secret for the archive's project hashes (0.8.6): made once, readable by its owner alone, never archived. */
+function archiveSalt() {
+  const file = home(".worktrust", "archive-salt");
+  try { const kept = readFileSync(file, "utf8").trim(); if (/^[0-9a-f]{64}$/.test(kept)) return kept; } catch { /* first run */ }
+  try { mkdirSync(home(".worktrust"), { recursive: true, mode: 0o700 }); const made = randomBytes(32).toString("hex"); writeFileSync(file, `${made}\n`, { mode: 0o600, flag: "wx" }); return made; } catch { try { return readFileSync(file, "utf8").trim(); } catch { return null; } }
+}
 /** The device key, when this computer is coupled: its private half signs, its public half goes into the proof. */
 function deviceKey() {
   try {
@@ -259,14 +265,14 @@ function archive(dir) {
   // A WHOLE ANSWER OR NOTHING: the hook ends with its own count; one line missing or cut is a read to refuse, never part of an archive.
   const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();
   if (!Number.isInteger(end) || end !== rows.length - 1) { say(`  The session hook's answer came back incomplete (${rows.length - 1} of ${end ?? "an unknown number of"} lines), so nothing was added. Run it again.`); process.exit(1); }
-  const signals = stretchSignals(HERE, say);
+  const signals = stretchSignals(HERE, say), salt = archiveSalt();
   const known = new Set(existing.lines.map((line) => line.stretch_ref)), fresh = [], measured = new Set(), additions = [];
   const byRef = new Map(); // 0.8.2: every earlier line of a stretch, its supplements included
   for (const line of existing.lines) { const ref = line.supplements ?? line.stretch_ref; byRef.set(ref, [...(byRef.get(ref) ?? []), line]); }
   let waiting = 0;
   for (const text of rows.slice(0, -1)) {
     let entry; try { entry = JSON.parse(text); } catch { continue; }
-    const line = archiveLine(entry, signals?.get(entry.stretch_ref) ?? null, { ids: IDS, collector: COLLECTOR });
+    const line = archiveLine(entry, signals?.get(entry.stretch_ref) ?? null, { ids: IDS, collector: COLLECTOR, salt });
     if (line && line.day < today()) measured.add(line.stretch_ref);
     if (line && byRef.has(line.stretch_ref)) { const extra = supplementFor(line, byRef.get(line.stretch_ref)); if (extra) { additions.push(extra); byRef.set(line.stretch_ref, [...byRef.get(line.stretch_ref), extra]); } continue; }
     if (!line || known.has(line.stretch_ref)) continue; // a file present twice is one stretch

@@ -303,9 +303,15 @@ const layersOf = (paths) => {
 };
 
 const git = (cwd, ...argv) => { try { return execFileSync("git", ["-C", cwd, ...argv], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
-/** owner/name from any remote shape, or null. Nothing else of the remote is read. */
+/**
+ * owner/name of a remote WorkTrust can couple, or null (0.8.6, privacy by design). Only a repository on GitHub, GitLab or
+ * Bitbucket can be joined to its commits, CI and deploys; the name of one on the person's own or a client's server
+ * proves nothing and could name the client, so it is never sent. Nothing else of the remote is read.
+ */
+const CODE_HOSTS = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(github\.com|gitlab\.com|bitbucket\.org)[:/]/i;
 const repoOf = (cwd) => {
   const remote = git(cwd, "remote", "get-url", "origin");
+  if (!CODE_HOSTS.test(remote)) return null;
   const match = /[:/]([^/:]+)\/([^/]+?)(?:\.git)?$/.exec(remote);
   return match ? `${match[1]}/${match[2]}` : null;
 };

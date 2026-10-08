@@ -4,7 +4,7 @@
  * tranches (docs/CAPABILITY-EVIDENCE-ROADMAP.md) add their fields here, each with its own check.
  */
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -32,7 +32,7 @@ export function stretchSignals(here, say) {
   return new Map(rows.slice(0, -1).filter(Boolean).map((row) => [row.stretch_ref, row]));
 }
 const SIGNAL = /^[a-zA-Z][A-Za-z0-9._-]{1,63}$/;
-export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {}) {
+export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt = null } = {}) {
   if (typeof entry?.client !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(entry.client) || !ISO.test(entry.started_at ?? "") || !ISO.test(entry.at ?? "") || !/^[A-Za-z0-9_-]{16,128}$/.test(entry.stretch_ref ?? "")) return null;
   const line = { client: entry.client, day: entry.started_at.slice(0, 10), started_at: entry.started_at, ended_at: entry.at };
   for (const key of COUNTS) if (typeof entry[key] === "number" && Number.isFinite(entry[key]) && entry[key] >= 0) line[key] = entry[key];
@@ -46,7 +46,9 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
   if (Array.isArray(entry.commits) && entry.commits.length > 0 && entry.commits.every((sha) => typeof sha === "string" && /^[0-9a-f]{7,40}$/.test(sha))) line.commits = entry.commits.slice(0, 50);
   // The project as a one-way hash of its name (owner/name, else the folder's own name): which days belong together, never which project.
   const name = entry.repo ?? entry.folder;
-  if (typeof name === "string" && name) line.project = sha256(`worktrust-project|${name}`);
+  // KEYED (0.8.6, audit S6): with this computer's own secret (~/.worktrust/archive-salt, never in the archive) a guessed
+  // repository name can no longer be tested against the archive; without one the plain hash, as before.
+  if (typeof name === "string" && name) line.project = salt ? createHmac("sha256", salt).update(`worktrust-project|${name}`).digest("hex") : sha256(`worktrust-project|${name}`);
   // VERIFICATION AND DELIVERY (0.7.1): per kind of check [ran, failed], per delivery step a count, and whether a check had
   // passed before the first; known kinds and whole numbers only, a failure count never above its runs.
   const whole = (value) => Number.isInteger(value) && value >= 0 && value <= 100000;

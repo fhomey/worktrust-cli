@@ -57,7 +57,7 @@
  *
  * No dependencies: Node 18 or later.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
@@ -73,7 +73,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.8.2";
+const CLI_VERSION = "0.8.3";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -863,6 +863,32 @@ function status() {
   if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust\.mjs\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust@latest update writes it)"); }
   if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust@latest update asks)");
   say(existsSync(join(HOME_DIR, "pinned")) ? "  Counter: from the package, pinned" : existsSync(join(HOME_DIR, "count-behaviour.mjs")) ? "  Counter: follows the site" : "  Counter: not installed");
+  measuredHere();
+}
+
+/**
+ * WHAT THIS COMPUTER MEASURES (0.8.3): the last thirty days of its own sessions, as the hook derives them and sends them
+ * with each stretch (kinds and counts, never text). Read here by the hook beside this file; nothing is sent to show it.
+ */
+function measuredHere() {
+  const hook = [join(HERE, "log-session.mjs"), join(HOME_DIR, "log-session.mjs")].find((path) => existsSync(path));
+  if (!hook) return;
+  const run = spawnSync(process.execPath, [hook, "--evidence-summary"], { encoding: "utf8", maxBuffer: 1 << 26, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "", WORKTRUST_HOOK_INPUT: "" } });
+  let m = null;
+  try { m = JSON.parse(run.stdout.trim().split("\n").pop()); } catch { return; }
+  if (!m || !m.stretches) { say("  Measured here, last 30 days: no finished work stretch yet."); return; }
+  const of = (part, whole, unit) => `${part} of ${whole} ${unit}`;
+  say();
+  say(`  Measured here, last 30 days: ${m.stretches} work stretches · ${m.hours} h`);
+  if (m.delivered) say(`    verified before delivery   ${of(m.verified_first, m.delivered, "stretches that delivered")}`);
+  if (m.failures) say(`    recovered failures         ${of(m.recovered, m.failures, "failed tool calls")} (${m.blind_retries} retried unchanged)`);
+  if (m.steers) say(`    steering that worked       ${of(m.effective_steers, m.steers, "times you stepped in")}`);
+  if (m.refused || m.guard_denied) say(`    refused                    ${m.refused} by you · ${m.guard_denied} by a guard`);
+  if (m.planned) say(`    planned                    ${m.planned} stretches with a to-do list`);
+  if (m.files) say(`    tests among changed files  ${of(m.test_files, m.files, "files")}`);
+  const tiers = Object.entries(m.complexity ?? {}).sort();
+  if (tiers.length) say(`    task complexity            ${tiers.map(([tier, n]) => `${tier} ${n}`).join(" · ")}`);
+  say("  Sent with each stretch as kinds and counts, never text. Keep your own copy: npx worktrust@latest preserve");
 }
 
 /** Claude Code's `cleanupPeriodDays` (its default 30), or null without Claude Code here. Read only: preserve.mjs changes it, on a yes. */

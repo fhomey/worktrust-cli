@@ -593,6 +593,10 @@ function payloadFor(stretch) {
   // The seventh kind, used as it is defined: a stretch that changed no artefact is knowing
   // something, not building something, and it earns neither an artefact's nor a validation's credit.
   const kind = touched.paths.length === 0 ? "researched" : touched.committed ? "changed" : "built";
+  // 0.8.1: what the stretch changed, as counts of files (never their paths): how many, and how many of them tests.
+  // 0.7.6: and the stretch's complexity class, read from what the hook knows here (layers, subagents, duration) and the record.
+  const changed = [...new Set(touched.paths)], tests = changed.filter((path) => TEST_PATH.test(path)).length;
+  const derived = stretch.derived ? { ...stretch.derived, ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) } : null;
   const payload = {
     title: layer ? `AI-assisted work · ${layer}` : "AI-assisted work",
     kind,
@@ -622,13 +626,13 @@ function payloadFor(stretch) {
     ...(stretch.interrupts > 0 ? { interrupts: Math.min(10000, stretch.interrupts) } : {}),
     ...(stretch.steers > 0 ? { steers: Math.min(10000, stretch.steers) } : {}),
     ...(stretch.agents && stretch.agents.runs > 0 ? { agent_runs: Math.min(AGENT_RUNS_MAX, stretch.agents.runs), agent_seconds: Math.min(AGENT_SECONDS_MAX, stretch.agents.seconds), agent_peak: Math.min(AGENT_RUNS_MAX, stretch.agents.peak) } : {}),
+    // THE STRETCH'S EVIDENCE (0.8.3): what the CLI derived from it here, kinds and counts only (stretch-evidence.mjs); the door keeps it from a CLI key alone.
+    ...(derived ? { evidence: derived } : {}),
     at: new Date(stretch.to).toISOString(),
   };
   // WHAT STAYS ON THIS COMPUTER (0.7.1): the stretch's derived record rides beside the payload for the local archive, never in it.
-  // 0.7.6: and the stretch's complexity class, read from what the hook knows here (layers, subagents, duration) and the record.
-  // 0.8.1: what the stretch changed, as counts of files (never their paths): how many, and how many of them tests.
-  const changed = [...new Set(touched.paths)], tests = changed.filter((path) => TEST_PATH.test(path)).length;
-  if (stretch.derived) DERIVED.set(payload, { ...stretch.derived, ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) });
+  // The same record rides beside the payload for the local archive (preserve --archive).
+  if (derived) DERIVED.set(payload, derived);
   return payload;
 }
 
@@ -934,6 +938,24 @@ const doorFor = (entry) => (String(entry?.id ?? "").startsWith("codex:") ? codex
 const entrySource = new WeakMap(); // an entry → "codex" or "antigravity" by the client that wrote it; the sends route and name by it
 const entryFile = new WeakMap(); // a history entry → its transcript (`--summary` counts sessions), first moment and folder name (`--archive-lines`)
 // THE LOCAL ARCHIVE (`npx worktrust preserve --archive`, 2026-10-06): every measured day, live window and floors aside, as JSON lines to preserve.mjs on this computer, which keeps metadata only; nothing is sent.
+// WHAT THIS COMPUTER MEASURES (0.8.3, for `npx worktrust status`): the last thirty days of its own sessions, summed from
+// the same derived record the hook sends, counts only; reads, prints and exits, nothing sent.
+if (flag("evidence-summary")) {
+  const since = Date.now() - 30 * 86400_000, rows = historyEntries(null, true).filter((entry) => Date.parse(entry.at) >= since);
+  const sum = (pick) => rows.reduce((total, entry) => total + (pick(DERIVED.get(entry) ?? {}) ?? 0), 0);
+  const complexity = {};
+  for (const entry of rows) { const tier = DERIVED.get(entry)?.complexity?.class; if (tier) complexity[tier] = (complexity[tier] ?? 0) + 1; }
+  const summary = {
+    stretches: rows.length, hours: Math.round(rows.reduce((total, entry) => total + (entry.seconds ?? 0), 0) / 360) / 10,
+    delivered: sum((d) => (d.delivery ? 1 : 0)), verified_first: sum((d) => (d.delivery?.verified_first ? 1 : 0)),
+    failures: sum((d) => d.recovery?.failures), recovered: sum((d) => d.recovery?.recovered), blind_retries: sum((d) => d.recovery?.blind_retries),
+    steers: sum((d) => d.steering?.moments), effective_steers: sum((d) => d.steering?.effective),
+    refused: sum((d) => (d.oversight ? d.oversight.refused + d.oversight.plans_rejected : 0)), guard_denied: sum((d) => d.oversight?.guard_denied),
+    planned: sum((d) => (d.planning ? 1 : 0)), files: sum((d) => d.changes?.files), test_files: sum((d) => d.changes?.test_files), complexity,
+  };
+  process.stdout.write(`${JSON.stringify(summary)}\n`);
+  await exitFlushed(0);
+}
 if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
 

@@ -83,6 +83,14 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector } = {
   // TOOL BREADTH AND COMPLEXITY (0.7.6): distinct tools; a class C1–C5 with its points and the rule's version.
   if (whole(entry.tools) && entry.tools > 0) line.tools = entry.tools;
   if (entry.complexity && /^C[1-5]$/.test(entry.complexity.class ?? "") && whole(entry.complexity.points) && /^complexity\/\d+$/.test(entry.complexity.rule ?? "")) line.complexity = { class: entry.complexity.class, points: entry.complexity.points, rule: entry.complexity.rule };
+  // OVERSIGHT, PLANNING AND CHANGES (0.8.1): refusals by the person and by a guard; the agent's to-do lists; files changed and test files among them.
+  const pick = (record, keys) => (record && typeof record === "object" && keys.every((key) => whole(record[key])) ? Object.fromEntries(keys.map((key) => [key, record[key]])) : null);
+  const oversight = pick(entry.oversight, ["refused", "plans_rejected", "guard_denied"]);
+  if (oversight) line.oversight = oversight;
+  const planning = pick(entry.planning, ["lists", "items_max", "items_last", "done_last"]);
+  if (planning && planning.lists > 0 && planning.done_last <= planning.items_last && planning.items_last <= planning.items_max) line.planning = planning;
+  const changes = pick(entry.changes, ["files", "test_files"]);
+  if (changes && changes.test_files <= changes.files) line.changes = changes;
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();

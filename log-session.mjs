@@ -135,6 +135,8 @@ const DAY_SECONDS = 86400;
 const TOOL_CAP = 1800;
 /** Tools whose result waits for the person: the gap to it is the person's time. Names only; nothing of the call is read. */
 const WAITS_FOR_PERSON = new Set(["AskUserQuestion", "ExitPlanMode"]);
+/** A path that holds tests, by the conventions of the common test runners (read here; the path never leaves). */
+const TEST_PATH = /(^|[\\/])(__tests__|tests?|spec|e2e)[\\/]|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$|(^|[\\/])test_[^\\/]+\.py$|Tests?\.(java|kt|cs|swift)$/;
 /** The derived record of a stretch, kept for the local archive only (see payloadFor). */
 const DERIVED = new WeakMap();
 const AGENT_RUNS_MAX = 10000, AGENT_SECONDS_MAX = 2592000;
@@ -211,7 +213,7 @@ const excluded = (path) => excludes.some((text) => text && path.includes(text));
 const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
 // THE STRETCH'S DERIVED RECORD (0.7.4: split from this file): tool calls named by kind, verification, recovery, delegation,
 // context and routing, for the local archive only. A copy without the module still measures and sends exactly as before.
-const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
+const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null, resultOf = (block) => ({ id: block.tool_use_id, failed: block.is_error === true, refusal: null }) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
@@ -398,7 +400,7 @@ const messageOf = (line, at) => {
     // 0.7.1: each tool call's kinds (never its command) and each tool result's outcome, joined on the call's id in `measure`.
     // 0.7.2: and the call's FAMILY (the tool, and its check kinds) and a digest of its input, compared here and never kept.
     calls: line.type === "assistant" ? blocks.filter((block) => block && block.type === "tool_use" && typeof block.id === "string").map(callOf) : [],
-    results: blocks.filter((block) => block && block.type === "tool_result" && typeof block.tool_use_id === "string").map((block) => ({ id: block.tool_use_id, failed: block.is_error === true })),
+    results: blocks.filter((block) => block && block.type === "tool_result" && typeof block.tool_use_id === "string").map(resultOf),
   };
 };
 
@@ -624,7 +626,9 @@ function payloadFor(stretch) {
   };
   // WHAT STAYS ON THIS COMPUTER (0.7.1): the stretch's derived record rides beside the payload for the local archive, never in it.
   // 0.7.6: and the stretch's complexity class, read from what the hook knows here (layers, subagents, duration) and the record.
-  if (stretch.derived) DERIVED.set(payload, { ...stretch.derived, ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) });
+  // 0.8.1: what the stretch changed, as counts of files (never their paths): how many, and how many of them tests.
+  const changed = [...new Set(touched.paths)], tests = changed.filter((path) => TEST_PATH.test(path)).length;
+  if (stretch.derived) DERIVED.set(payload, { ...stretch.derived, ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) });
   return payload;
 }
 

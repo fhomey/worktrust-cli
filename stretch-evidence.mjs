@@ -32,8 +32,23 @@ export const callKindsOf = (block) => {
   const command = block && SHELL_TOOLS.has(String(block.name)) ? block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd : null;
   return typeof command === "string" ? CALL_KINDS.filter(([, pattern]) => pattern.test(command)).map(([kind]) => kind) : [];
 };
+/**
+ * A TOOL RESULT AS THE STRETCH READS IT (0.8.1): its call's id, whether it failed, and, read here and never kept, WHO
+ * refused it when it was refused: the PERSON (Claude Code's fixed sentence when they decline a tool use or a plan) or a
+ * GUARD (the client's own safety layer or auto-mode classifier). Framework L8 and L5.
+ */
+const PERSON_REFUSED = /^\s*(The user doesn't want to (proceed|take this action)|User rejected|The user rejected|The user declined)/i;
+const GUARD_REFUSED = /^\s*Permission for this (command|action) was denied by/i;
+export const resultOf = (block) => {
+  const text = typeof block.content === "string" ? block.content : Array.isArray(block.content) ? block.content.map((part) => (part && typeof part.text === "string" ? part.text : "")).join("") : "";
+  const failed = block.is_error === true;
+  return { id: block.tool_use_id, failed, refusal: failed && PERSON_REFUSED.test(text) ? "person" : failed && GUARD_REFUSED.test(text) ? "guard" : null };
+};
+/** A to-do list the agent wrote (TodoWrite): how many items and how many done, never what they say. */
+const planOf = (block) => (block.name === "TodoWrite" && Array.isArray(block.input?.todos) ? { items: block.input.todos.length, done: block.input.todos.filter((todo) => todo && todo.status === "completed").length } : null);
+
 /** One tool call as the stretch reads it: its id, its kinds, its FAMILY (the tool and its check kinds) and a digest of its input (compared, never kept). */
-export const callOf = (block) => { const kinds = callKindsOf(block); return { id: block.id, kinds, family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16) }; };
+export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block); return { id: block.id, kinds, family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
 
 /**
  * VERIFICATION PER STRETCH (0.7.1; framework L7, L12): per kind of check, how many ran and how many failed; per step of
@@ -194,9 +209,32 @@ export function complexityOf(derived, { layers = 0, agentRuns = 0, agentPeak = 0
 /** How many different tools the stretch's agent used (framework L11: tool breadth); null without a tool call. */
 const toolsOf = (messages) => { const names = new Set(); for (const message of messages) for (const call of message.calls ?? []) names.add(call.family.split("|")[0]); return names.size > 0 ? names.size : null; };
 
+/**
+ * OVERSIGHT AND PLANNING PER STRETCH (0.8.1; framework L8, L5, L2). Oversight: how often the PERSON refused an action
+ * or a plan the agent proposed, and how often a GUARD (the client's safety layer) refused one. Planning: how often the
+ * agent wrote its to-do list, the most items one list held, and of the last list how many were done. Null where none.
+ */
+function oversightOf(messages) {
+  let person = 0, plans = 0, guard = 0;
+  const tools = new Map();
+  for (const message of messages) for (const call of message.calls ?? []) tools.set(call.id, call.family.split("|")[0]);
+  for (const message of messages) for (const result of message.results ?? []) {
+    if (result.refusal === "person") { if (tools.get(result.id) === "ExitPlanMode") plans += 1; else person += 1; }
+    if (result.refusal === "guard") guard += 1;
+  }
+  return person + plans + guard > 0 ? { refused: person, plans_rejected: plans, guard_denied: guard } : null;
+}
+function planningOf(messages) {
+  const lists = [];
+  for (const message of messages) for (const call of message.calls ?? []) if (call.plan) lists.push(call.plan);
+  if (lists.length === 0) return null;
+  const last = lists.at(-1);
+  return { lists: lists.length, items_max: Math.max(...lists.map((list) => list.items)), items_last: last.items, done_last: last.done };
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const tools = toolsOf(messages);
-  return { ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
+  const tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages);
+  return { ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
 }

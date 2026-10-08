@@ -25,8 +25,12 @@ const CALL_KINDS = [
   ["pr", /\bgh\s+pr\s+(create|merge)\b/],
   ["push", /\bgit\s+push\b/],
   ["deploy", /\b(vercel(\s+deploy)?\s+--prod|fly\s+deploy|netlify\s+deploy|wrangler\s+deploy)\b/],
+  // 0.8.8: a security scan is a check of its own; looking at the change before delivering it; and a destructive command.
+  ["security", /\b(gitleaks|trufflehog|semgrep|snyk|osv-scanner|trivy|bandit)\b|\b(npm|pnpm|yarn)\s+audit\b/],
+  ["inspect", /\bgit\s+(diff|show|status)\b/],
+  ["destructive", /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r|\bgit\s+(reset\s+--hard|push\s+(-f\b|--force)|clean\s+-[a-z]*f)|\bdrop\s+(table|database|schema)\b|\btruncate\s+table\b|\bkubectl\s+delete\b|\bterraform\s+destroy\b/i],
 ];
-const CHECK_KINDS = ["test", "typecheck", "lint", "build", "gate", "ci"];
+const CHECK_KINDS = ["test", "typecheck", "lint", "build", "gate", "ci", "security"];
 const DELIVERY_KINDS = ["commit", "pr", "push", "deploy"];
 export const callKindsOf = (block) => {
   const command = block && SHELL_TOOLS.has(String(block.name)) ? block.input?.command ?? block.input?.CommandLine ?? block.input?.cmd : null;
@@ -256,9 +260,69 @@ function autonomyOf(messages) {
   return { mode, switches, plan_turns: tally.plan ?? 0 };
 }
 
+/**
+ * HOW THE WORK WAS FRAMED, CHECKED AND RISKED (0.8.8; the owner's capability list: problem framing, verification quality,
+ * acceptance discipline, risk awareness, tool selection, context efficiency, recovery cycles). All structural, read from
+ * the order of turns and calls; nothing of their content.
+ *   framing: the person's turns before the agent's first action (an edit, a write or a shell command), and whether a plan
+ *            (plan mode, a plan approved, a to-do list) came before it.
+ *   quality: whether a check passed AFTER the stretch's last change; the most failures one check family took before it
+ *            passed; whether the change was looked at (git diff, show, status) before the first delivery step.
+ *   risk:    destructive commands proposed, refused (by the person or a guard) and run.
+ *   tool_mix: calls per kind of tool (search, read, edit, shell, agent, web, data, mcp, plan).
+ *   reads:   files read again unchanged (the same read twice), the cost of context that did not hold.
+ */
+const ACTION_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]);
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+const PLAN_TOOLS = new Set(["TodoWrite", "ExitPlanMode", "AskUserQuestion"]);
+const toolKind = (tool) => EDIT_TOOLS.has(tool) ? "edit" : tool === "Read" ? "read" : ["Grep", "Glob", "WebSearch", "ToolSearch"].includes(tool) ? "search" : tool === "Bash" ? "shell" : ["Agent", "Task"].includes(tool) ? "agent" : /^(WebFetch|browser|mcp__.*(playwright|browser|chrome))/i.test(tool) ? "web" : /sql|postgres|supabase|database|bigquery|snowflake/i.test(tool) ? "data" : /^mcp__/.test(tool) ? "mcp" : PLAN_TOOLS.has(tool) ? "plan" : "other";
+function practiceOf(messages, { isHumanTurn }) {
+  const results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result);
+  let turns = 0, acted = false, planned = false, turnsBefore = 0, plannedFirst = false;
+  let lastChange = -1, passedAfter = false, delivered = false, inspectedFirst = false;
+  const failuresBefore = new Map(); let cyclesMax = 0;
+  const risk = { proposed: 0, refused: 0, run: 0 }, mix = {}, reads = new Map();
+  let index = 0;
+  for (const message of messages) {
+    if (message.bridge) continue;
+    if (message.type === "user" && !message.meta && message.kind !== "tool_result" && isHumanTurn(message.content)) turns += 1;
+    if (message.permissionMode === "plan") planned = true;
+    for (const call of message.calls ?? []) {
+      index += 1;
+      const tool = call.family.split("|")[0], result = results.get(call.id);
+      mix[toolKind(tool)] = (mix[toolKind(tool)] ?? 0) + 1;
+      if (PLAN_TOOLS.has(tool) && tool !== "AskUserQuestion") planned = true;
+      if (!acted && ACTION_TOOLS.has(tool)) { acted = true; turnsBefore = turns; plannedFirst = planned; }
+      if (EDIT_TOOLS.has(tool)) { lastChange = index; passedAfter = false; }
+      if (tool === "Read") reads.set(call.digest, (reads.get(call.digest) ?? 0) + 1);
+      const checks = call.kinds.filter((kind) => CHECK_KINDS.includes(kind));
+      for (const kind of checks) {
+        if (result?.failed === true) failuresBefore.set(kind, (failuresBefore.get(kind) ?? 0) + 1);
+        if (result?.failed === false) { cyclesMax = Math.max(cyclesMax, failuresBefore.get(kind) ?? 0); failuresBefore.set(kind, 0); if (index > lastChange) passedAfter = true; }
+      }
+      if (call.kinds.includes("inspect") && !delivered) inspectedFirst = true;
+      if (call.kinds.some((kind) => DELIVERY_KINDS.includes(kind)) && result?.failed === false) delivered = true;
+      if (call.kinds.includes("destructive")) {
+        risk.proposed += 1;
+        if (result?.refusal) risk.refused += 1; else if (result?.failed === false) risk.run += 1;
+      }
+    }
+  }
+  if (index === 0) return null;
+  const repeated = [...reads.values()].reduce((sum, n) => sum + Math.max(0, n - 1), 0);
+  return {
+    framing: { turns_before_action: acted ? turnsBefore : turns, planned_first: acted ? plannedFirst : planned },
+    quality: { checked_after_change: lastChange > 0 ? passedAfter : null, fix_cycles_max: cyclesMax, inspected_first: delivered ? inspectedFirst : null },
+    ...(risk.proposed > 0 ? { risk } : {}),
+    tool_mix: mix,
+    reads: { repeated },
+  };
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages);
-  return { ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
+  const tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
 }

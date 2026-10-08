@@ -9,7 +9,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
-const CHECK_KINDS = ["test", "typecheck", "lint", "build", "gate", "ci"], DELIVERY_KINDS = ["commit", "pr", "push", "deploy"];
+const CHECK_KINDS = ["test", "typecheck", "lint", "build", "gate", "ci", "security"], DELIVERY_KINDS = ["commit", "pr", "push", "deploy"];
 
 /** THE ALLOWLIST: what a line may carry, each value checked for its type. A key not named here never reaches the archive. */
 export const COUNTS = ["seconds", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak", "interrupts", "steers"];
@@ -102,6 +102,19 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt
   if (entry.autonomy && ["ask", "edits", "plan", "auto", "full"].includes(entry.autonomy.mode) && whole(entry.autonomy.switches) && whole(entry.autonomy.plan_turns)) line.autonomy = { mode: entry.autonomy.mode, switches: entry.autonomy.switches, plan_turns: entry.autonomy.plan_turns };
   const authorship = pick(entry.authorship, ["commits", "ai_coauthored"]);
   if (authorship && authorship.commits > 0 && authorship.ai_coauthored <= authorship.commits) line.authorship = authorship;
+  // PRACTICE (0.8.8): framing, verification quality, risk, tool mix, re-reads, context files; whole counts and flags only.
+  const bool = (value) => value === true || value === false;
+  if (entry.framing && whole(entry.framing.turns_before_action) && bool(entry.framing.planned_first)) line.framing = { turns_before_action: entry.framing.turns_before_action, planned_first: entry.framing.planned_first };
+  if (entry.quality && whole(entry.quality.fix_cycles_max) && (bool(entry.quality.checked_after_change) || entry.quality.checked_after_change === null) && (bool(entry.quality.inspected_first) || entry.quality.inspected_first === null)) line.quality = { checked_after_change: entry.quality.checked_after_change, fix_cycles_max: entry.quality.fix_cycles_max, inspected_first: entry.quality.inspected_first };
+  const risk = pick(entry.risk, ["proposed", "refused", "run"]);
+  if (risk && risk.proposed > 0 && risk.refused + risk.run <= risk.proposed) line.risk = risk;
+  const keyed = (record, keys) => { const kept = Object.entries(record && typeof record === "object" ? record : {}).filter(([key, n]) => keys.includes(key) && whole(n) && n > 0).sort(); return kept.length ? Object.fromEntries(kept) : null; };
+  const mix = keyed(entry.tool_mix, ["search", "read", "edit", "shell", "agent", "web", "data", "mcp", "plan", "other"]);
+  if (mix) line.tool_mix = mix;
+  const reads = pick(entry.reads, ["repeated"]);
+  if (reads) line.reads = reads;
+  const files = keyed(entry.context_files, ["instructions", "skills", "agents", "commands", "settings", "mcp"]);
+  if (files) line.context_files = files;
   // The behaviour signals of this stretch (0.7.0): keys of the counter's rubric and whole counts, never a word of a turn.
   if (behaviour && behaviour.signals && typeof behaviour.analyzer_version === "string" && /^counter@\d+\.\d+\.\d+$/.test(behaviour.analyzer_version)) {
     const kept = Object.entries(behaviour.signals).filter(([key, count]) => SIGNAL.test(key) && Number.isInteger(count) && count > 0).sort();
@@ -149,7 +162,7 @@ export function archiveEntries(dir, ownKey) {
  * a line of their own that names the stretch it adds to (`supplements`) and carries only what no earlier line of that
  * stretch carries, in the same chain, under the same day's root. Null when there is nothing new.
  */
-export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "interrupts", "steers", "utc_offset"];
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "interrupts", "steers", "utc_offset"];
 export function supplementFor(line, earlier) {
   const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
   if (missing.length === 0) return null;

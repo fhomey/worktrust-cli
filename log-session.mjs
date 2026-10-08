@@ -135,6 +135,20 @@ const DAY_SECONDS = 86400;
 const TOOL_CAP = 1800;
 /** Tools whose result waits for the person: the gap to it is the person's time. Names only; nothing of the call is read. */
 const WAITS_FOR_PERSON = new Set(["AskUserQuestion", "ExitPlanMode"]);
+/**
+ * CONTEXT ENGINEERING (0.8.8, framework L6): which of an AI app's own context files the stretch changed, by category,
+ * counted; read from the changed paths here, a path never leaves. Instructions (CLAUDE.md, AGENTS.md, GEMINI.md, Cursor
+ * rules, Copilot instructions), skills, subagents, commands, the client's settings (permissions, hooks), MCP servers.
+ */
+const CONTEXT_FILES = [
+  ["instructions", /(^|[\\/])(CLAUDE|AGENTS|GEMINI)\.md$|(^|[\\/])\.cursorrules$|(^|[\\/])\.cursor[\\/]rules[\\/]|copilot-instructions\.md$|\.instructions\.md$|(^|[\\/])\.windsurfrules$/i],
+  ["skills", /(^|[\\/])\.claude[\\/]skills[\\/]|(^|[\\/])SKILL\.md$/],
+  ["agents", /(^|[\\/])\.claude[\\/]agents[\\/]|(^|[\\/])\.github[\\/]agents[\\/]/],
+  ["commands", /(^|[\\/])\.claude[\\/]commands[\\/]|(^|[\\/])\.github[\\/]prompts[\\/]/],
+  ["settings", /(^|[\\/])\.claude[\\/]settings(\.local)?\.json$|(^|[\\/])\.codex[\\/]config\.toml$/],
+  ["mcp", /(^|[\\/])\.?mcp\.json$|(^|[\\/])\.cursor[\\/]mcp\.json$|(^|[\\/])\.vscode[\\/]mcp\.json$/],
+];
+const contextFilesOf = (paths) => { const out = {}; for (const path of paths) for (const [kind, pattern] of CONTEXT_FILES) if (pattern.test(path)) { out[kind] = (out[kind] ?? 0) + 1; break; } return Object.keys(out).length ? out : null; };
 /** An AI named as a commit's co-author by the tools that sign their work that way (read locally; the name never leaves). */
 const AI_COAUTHOR = /\b(claude|anthropic|codex|openai|chatgpt|copilot|cursor|devin|gemini|jules|aider|windsurf|cline)\b/i;
 /** A path that holds tests, by the conventions of the common test runners (read here; the path never leaves). */
@@ -608,7 +622,7 @@ function payloadFor(stretch) {
   const changed = [...new Set(touched.paths)], tests = changed.filter((path) => TEST_PATH.test(path)).length;
   // 0.8.7: of the stretch's commits, how many name an AI as co-author (the Co-authored-by trailer, read here, never kept).
   const coauthored = cwd && touched.shas.length > 0 ? git(cwd, "log", "--no-walk", "--format=%(trailers:key=Co-authored-by,valueonly,separator=%x01)%x00", ...touched.shas.slice(0, 50)).split("\0").filter((entry, index) => index < Math.min(50, touched.shas.length) && AI_COAUTHOR.test(entry)).length : 0;
-  const derived = stretch.derived ? { ...stretch.derived, ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) } : null;
+  const derived = stretch.derived ? { ...stretch.derived, ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(contextFilesOf(changed) ? { context_files: contextFilesOf(changed) } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) } : null;
   const payload = {
     title: layer ? `AI-assisted work · ${layer}` : "AI-assisted work",
     kind,

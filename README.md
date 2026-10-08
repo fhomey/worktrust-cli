@@ -172,6 +172,7 @@ nothing it does not:
 | `evidence` (sent) | the same derived record now also travels with each stretch to WorkTrust, kinds and counts only, and `npx worktrust status` shows what this computer measured in the last thirty days (0.8.3) |
 | `unconfirmed` | checks the stretch ran whose outcome no reader could see (Codex's code mode prints no exit code; a background terminal), per kind: counted, never as a pass (0.8.5) |
 | `autonomy`, `authorship` | the permission mode the AI app ran in, on one scale (ask, edits, plan, auto, full), how often it changed and the turns in plan mode; of the stretch's commits, how many name an AI as co-author (the trailer is read here, its names never leave) (0.8.7) |
+| `framing`, `quality`, `risk`, `tool_mix`, `reads`, `context_files` | how the work was framed (your turns before the agent's first action, a plan first or not), checked (a check passing after the last change, the failures before a check passed, the change looked at before delivery; security scans count as checks), risked (destructive commands proposed, refused, run), which kinds of tools were used, files read again unchanged, and which of the AI app's own context files (instructions, skills, agents, commands, settings, MCP) the commits changed; kinds and counts only (0.8.8) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

@@ -680,6 +680,54 @@ function windowOf(messages) {
   return Object.fromEntries(Object.entries(out).filter(([key, value]) => key === "peak" || value > 0));
 }
 
+/**
+ * REVIEWING THE AGENT (0.10.1; Agent Oversight & Steering): a REVIEW is the person's turn while the agent was working (a
+ * tool call since their last turn). Counted: reviews, the middle of the time between them, subagent runs and how many the
+ * person reviewed before the next change or delivery, and what a review led to within three calls: the agent changing
+ * course (another model, a plan left, a to-do list that grew or shrank; another tool alone says nothing), a change (something found), a check. What was said is never read.
+ */
+function reviewOf(messages, { isHumanTurn }) {
+  const out = { reviews: 0, agent_runs: 0, agent_runs_reviewed: 0, changed_course: 0, changed_code: 0, checked: 0 };
+  const times = [];
+  let workedSinceTurn = false, lastModel = null, lastItems = null, after = null, agentPending = 0;
+  for (const message of messages) {
+    if (message.bridge) continue;
+    if (message.type === "user" && !message.meta && message.kind !== "tool_result" && isHumanTurn(message.content)) {
+      if (workedSinceTurn) {
+        out.reviews += 1;
+        if (Number.isFinite(message.at)) times.push(message.at);
+        out.agent_runs_reviewed += agentPending;
+        after = { left: 3, changed: false, coded: false, checked: false };
+      }
+      agentPending = 0; workedSinceTurn = false;
+      continue;
+    }
+    if (message.type === "assistant" && message.model && after && after.left > 0 && lastModel && message.model !== lastModel && !after.changed) { after.changed = true; out.changed_course += 1; }
+    if (message.type === "assistant" && message.model) lastModel = message.model;
+    for (const call of message.calls ?? []) {
+      const tool = call.family.split("|")[0];
+      workedSinceTurn = true;
+      if (tool === "Agent" || tool === "Task") { out.agent_runs += 1; agentPending += 1; }
+      if (EDIT_TOOLS.has(tool) || call.kinds.some((kind) => DELIVERY_KINDS.includes(kind))) agentPending = 0;
+      if (after && after.left > 0) {
+        // Another model, a plan left, or a to-do list that grew or shrank: not merely another tool (after almost every turn the
+        // next tool differs, 84% on the owner's history) and not a ticked item.
+        const replanned = tool === "ExitPlanMode" || (call.plan && lastItems !== null && call.plan.items !== lastItems);
+        if (!after.changed && replanned) { after.changed = true; out.changed_course += 1; }
+        if (!after.coded && EDIT_TOOLS.has(tool)) { after.coded = true; out.changed_code += 1; }
+        if (!after.checked && call.kinds.some((kind) => CHECK_KINDS.includes(kind))) { after.checked = true; out.checked += 1; }
+        after.left -= 1;
+      }
+      if (call.plan) lastItems = call.plan.items;
+    }
+  }
+  if (out.reviews === 0 && out.agent_runs === 0) return null;
+  const gaps = times.slice(1).map((time, index) => Math.round((time - times[index]) / 1000)).filter((gap) => gap >= 0).sort((a, b) => a - b);
+  const kept = Object.fromEntries(Object.entries(out).filter(([, value]) => value > 0));
+  if (gaps.length >= 2) kept.interval_median_s = gaps[Math.floor(gaps.length / 2)];
+  return kept;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 /** A piped check's outcome from its output's words: failed or passed when they say so, unknown (null) when they do not. */
 function settlePiped(messages) {
@@ -695,6 +743,6 @@ function settlePiped(messages) {
 export function deriveStretch(raw, helpers) {
   const messages = settlePiped(raw);
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), outcomes = outcomesOf(messages), retrieval = retrievalOf(messages), window = windowOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}), ...(outcomes ? { outcomes } : {}), ...(retrieval ? { retrieval } : {}), ...(window ? { window } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), reach = reachOf(messages), outcomes = outcomesOf(messages), retrieval = retrievalOf(messages), window = windowOf(messages), review = reviewOf(messages, helpers), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}), ...(reach ? { reach } : {}), ...(outcomes ? { outcomes } : {}), ...(retrieval ? { retrieval } : {}), ...(window ? { window } : {}), ...(review ? { review } : {}) };
 }

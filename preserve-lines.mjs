@@ -157,6 +157,11 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt
     const span = Object.fromEntries(WINDOW_KEYS.filter((key) => Number.isInteger(entry.window[key]) && entry.window[key] >= 0).map((key) => [key, entry.window[key]]));
     if (Object.keys(span).length > 0) line.window = span;
   }
+  // 0.10.1: reviewing the agent; whole counts only.
+  if (entry.review && typeof entry.review === "object") {
+    const review = Object.fromEntries(REVIEW_KEYS.filter((key) => Number.isInteger(entry.review[key]) && entry.review[key] >= 0 && entry.review[key] <= 100_000).map((key) => [key, entry.review[key]]));
+    if (Object.keys(review).length > 0) line.review = review;
+  }
   const risk = pick(entry.risk, ["proposed", "refused", "run"]);
   if (risk && risk.proposed > 0 && risk.refused + risk.run <= risk.proposed) line.risk = risk;
   const keyed = (record, keys) => { const kept = Object.entries(record && typeof record === "object" ? record : {}).filter(([key, n]) => keys.includes(key) && whole(n) && n > 0).sort(); return kept.length ? Object.fromEntries(kept) : null; };
@@ -218,6 +223,8 @@ const STAGES = ["attempted", "verified", "committed", "pushed", "pr", "deployed"
 /** How fast a stretch moved (0.9.0). */
 /** The context window (0.10.0); the peak may pass the whole-count bound of 100,000. */
 const WINDOW_KEYS = ["peak", "over_100k", "over_200k", "over_500k", "growth", "compact_near_peak"];
+/** Reviewing the agent (0.10.1): counts, and the middle interval between reviews in seconds. */
+const REVIEW_KEYS = ["reviews", "agent_runs", "agent_runs_reviewed", "changed_course", "changed_code", "checked", "interval_median_s"];
 /** Retrieval and grounding (0.9.9). */
 const RETRIEVAL_KEYS = ["searches", "repeated", "found", "again", "before_change", "after_failure", "deliveries", "grounded"];
 /** Outcomes of the steps (0.9.8). */
@@ -233,7 +240,7 @@ const ROUTE_KEYS = ["branches", "pushes_to_main", "commits_large", "fix_followup
 /** Risk and hygiene (0.9.1). */
 const HYGIENE_KEYS = ["rollbacks", "privileged", "bypasses", "secrets", "destructive", "destructive_checked", "guard_retried", "guard_changed", "guard_stopped"];
 const TIMING_KEYS = ["first_action_s", "first_check_s", "detect_actions", "detect_s", "recovery_calls", "resume_actions"];
-export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "stage", "timing", "hygiene", "route", "adaptation", "reach", "outcomes", "retrieval", "window", "interrupts", "steers", "utc_offset"];
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "stage", "timing", "hygiene", "route", "adaptation", "reach", "outcomes", "retrieval", "window", "review", "interrupts", "steers", "utc_offset"];
 export function supplementFor(line, earlier) {
   const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
   if (missing.length === 0) return null;

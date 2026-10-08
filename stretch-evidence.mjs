@@ -334,9 +334,56 @@ function practiceOf(messages, { isHumanTurn }) {
   };
 }
 
+/**
+ * HOW FAST A STRETCH MOVED (0.9.0): seconds from the person's first turn to the agent's first action (an edit, a write or
+ * a shell command) and from the first change to the first check; per failure, the actions and seconds until the next
+ * change that answered it (detection), and the calls from a failed check to that check passing (recovery depth); after
+ * a resume, a clear or a compaction, the calls until the next change or check (back to work). Medians, from the order
+ * and the clocks alone; nothing of what was said or run.
+ */
+const median = (values) => { if (values.length === 0) return null; const sorted = [...values].sort((a, b) => a - b); const middle = Math.floor(sorted.length / 2); return Math.round(sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2); };
+function timingOf(messages, { isHumanTurn, textOf }) {
+  let firstTurn = null, firstAction = null, firstChange = null, firstCheck = null, index = 0, resumedAt = null;
+  const kindsById = new Map(), open = [], openChecks = new Map(), detect = [], detectSeconds = [], depth = [], resume = [];
+  for (const message of messages) {
+    if (message.bridge || !Number.isFinite(message.at)) continue;
+    const text = message.type === "user" ? textOf(message.content) : "";
+    if (message.compacted || ["compact", "clear", "resume"].includes(COMMAND.exec(text)?.[1] ?? "")) resumedAt = index;
+    if (message.type === "user" && !message.meta && message.kind !== "tool_result" && isHumanTurn(message.content) && firstTurn === null) firstTurn = message.at;
+    for (const result of message.results ?? []) {
+      const kinds = kindsById.get(result.id) ?? [];
+      if (result.failed !== true) {
+        for (const kind of kinds.filter((item) => CHECK_KINDS.includes(item) && result.failed === false)) { const at = openChecks.get(kind); if (at !== undefined) { depth.push(index - at); openChecks.delete(kind); } }
+        continue;
+      }
+      open.push({ index, at: message.at });
+      for (const kind of kinds.filter((item) => CHECK_KINDS.includes(item))) if (!openChecks.has(kind)) openChecks.set(kind, index);
+    }
+    for (const call of message.calls ?? []) {
+      index += 1;
+      kindsById.set(call.id, call.kinds);
+      const tool = call.family.split("|")[0];
+      if (firstAction === null && ACTION_TOOLS.has(tool)) firstAction = message.at;
+      if (EDIT_TOOLS.has(tool)) {
+        if (firstChange === null) firstChange = message.at;
+        for (const failure of open.splice(0)) { detect.push(index - failure.index); detectSeconds.push(Math.max(0, (message.at - failure.at) / 1000)); }
+      }
+      if (firstChange !== null && firstCheck === null && call.kinds.some((kind) => CHECK_KINDS.includes(kind))) firstCheck = message.at;
+      if (resumedAt !== null && (EDIT_TOOLS.has(tool) || call.kinds.some((kind) => CHECK_KINDS.includes(kind)))) { resume.push(index - resumedAt); resumedAt = null; }
+    }
+  }
+  const out = {
+    first_action_s: firstTurn !== null && firstAction !== null && firstAction >= firstTurn ? Math.round((firstAction - firstTurn) / 1000) : null,
+    first_check_s: firstChange !== null && firstCheck !== null ? Math.round((firstCheck - firstChange) / 1000) : null,
+    detect_actions: median(detect), detect_s: median(detectSeconds), recovery_calls: median(depth), resume_actions: median(resume),
+  };
+  const kept = Object.fromEntries(Object.entries(out).filter(([, value]) => value !== null));
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}) };
+  const timing = timingOf(messages, helpers), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}) };
 }

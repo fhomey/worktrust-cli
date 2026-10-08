@@ -111,6 +111,11 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt
     if (whole(entry.quality.change_blocks) && whole(entry.quality.checked_blocks) && whole(entry.quality.rework_cycles) && entry.quality.checked_blocks <= entry.quality.change_blocks) Object.assign(line.quality, { change_blocks: entry.quality.change_blocks, checked_blocks: entry.quality.checked_blocks, rework_cycles: entry.quality.rework_cycles });
   }
   if (STAGES.includes(entry.stage)) line.stage = entry.stage;
+  // 0.9.0: how fast the stretch moved; whole seconds and counts, each key optional.
+  if (entry.timing && typeof entry.timing === "object") {
+    const timing = Object.fromEntries(TIMING_KEYS.filter((key) => whole(entry.timing[key])).map((key) => [key, entry.timing[key]]));
+    if (Object.keys(timing).length > 0) line.timing = timing;
+  }
   const risk = pick(entry.risk, ["proposed", "refused", "run"]);
   if (risk && risk.proposed > 0 && risk.refused + risk.run <= risk.proposed) line.risk = risk;
   const keyed = (record, keys) => { const kept = Object.entries(record && typeof record === "object" ? record : {}).filter(([key, n]) => keys.includes(key) && whole(n) && n > 0).sort(); return kept.length ? Object.fromEntries(kept) : null; };
@@ -169,7 +174,9 @@ export function archiveEntries(dir, ownKey) {
  */
 /** The furthest step a stretch reached on the computer (0.8.9). */
 const STAGES = ["attempted", "verified", "committed", "pushed", "pr", "deployed"];
-export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "stage", "interrupts", "steers", "utc_offset"];
+/** How fast a stretch moved (0.9.0). */
+const TIMING_KEYS = ["first_action_s", "first_check_s", "detect_actions", "detect_s", "recovery_calls", "resume_actions"];
+export const DERIVED_KEYS = ["signals", "analyzer_version", "verification", "unconfirmed", "delivery", "recovery", "delegation", "context", "routing", "steering", "tools", "complexity", "oversight", "planning", "changes", "autonomy", "authorship", "framing", "quality", "risk", "tool_mix", "reads", "context_files", "stage", "timing", "interrupts", "steers", "utc_offset"];
 export function supplementFor(line, earlier) {
   const missing = DERIVED_KEYS.filter((key) => line[key] !== undefined && !earlier.some((old) => old[key] !== undefined));
   if (missing.length === 0) return null;

@@ -180,6 +180,7 @@ nothing it does not:
 | `adaptation` | evidence and adaptation: what the stretch read by kind (docs, tests, logs, config, source, the web), a plan written again after a failure, a model changed right after a failure, two or more agents whose work a check met, and outages (overloaded, rate-limited, timed out) and how many the work went on past; counts only, never a path or a message (0.9.3) |
 | `reach` | the work's reach and its plan: commands on infrastructure (terraform, kubectl, helm, docker), data (psql, sqlite, bq, dbt) and cloud (aws, gcloud, az, supabase, vercel); plan or roadmap documents written and whether one came before the first code change; reviews approved, sent back or commented and issues opened or closed from the terminal; counts and one flag, never a command, a file name or a path (0.9.4) |
 | `hygiene.secrets` | counts a secret touched only when a file that holds one (a .env, a private key, credentials.json, .aws/credentials) is shown or copied (cat, head, tail, base64, cp); a search for a word (grep, sed, awk) is no read (0.9.5) |
+| `hygiene.secrets` | counts a secret shown only when a reader (cat, head, tail, base64, cp) takes the file as its own argument; a command that uses a .env and reads its output, and a template (.env.example), are no secret shown (0.9.6) |
 | `collector_version` | the CLI version that measured it |
 | `seq`, `prev`, `hash` | the line's place, the hash of the line before it, and its own hash |
 

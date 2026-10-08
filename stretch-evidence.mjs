@@ -63,9 +63,13 @@ const MARKS = [
 const PLAN_DOC = /(^|[\\/])(PLAN|ROADMAP|DESIGN|SPEC|RFC|ADR)[\w.-]*\.(md|mdx|txt)$|(^|[\\/])(plans?|roadmaps?|rfcs?|adrs?|specs?)[\\/][^\\/]+\.(md|mdx)$|\.plan\.md$/i;
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "write_file", "edit_file", "create_file"]);
 // 0.9.5: a file that holds a secret by its name, as a path token; "credentials" only as a file (a search for the word is no read).
-const SECRET_FILE = /(^|[\/\s'"])(\.env(\.[\w-]+)?|id_(rsa|ed25519|ecdsa)|[\w.-]+\.(pem|p12|pfx|key)|credentials\.json|\.aws[\/]credentials|\.npmrc|\.netrc|\.pgpass)(['"\s]|$)/;
+// 0.9.6: a file that holds a secret by its name, as a path token; a template (.env.example, .sample, .template, .dist) holds none.
+const SECRET_FILE = /(^|[\/\s'"])(\.env(\.(?!example\b|sample\b|template\b|dist\b)[\w-]+)?|id_(rsa|ed25519|ecdsa)|[\w.-]+\.(pem|p12|pfx)|credentials\.json|\.aws[\/]credentials|\.npmrc|\.netrc|\.pgpass)(['"\s]|$)/;
 // 0.9.5: a command that shows or copies a file's content; a search (grep, sed, awk) names a word and is no read.
-const PRINTS = /(^|[\s;&|(])(cat|less|more|head|tail|bat|type|Get-Content|base64|xxd|strings|cp|scp)\s/;
+// 0.9.6: a piece of the pipeline whose command IS a reader (cat, head, tail, cp ...) and whose own arguments name the file;
+// `node --env-file .env.local x | tail` uses the file and reads the output, and is no secret shown (2,000 such counted before).
+const READER = /^\s*(sudo\s+)?(cat|less|more|head|tail|bat|base64|xxd|strings|cp|scp|Get-Content)\b/;
+const readsSecret = (command) => command.split(/\|\|?|&&|;|\n/).some((segment) => READER.test(segment) && SECRET_FILE.test(segment.replace(READER, " ")));
 const READ_TOOLS = new Set(["Read", "read_file", "view", "open_file"]);
 export const marksOf = (block) => {
   const name = String(block?.name ?? "");
@@ -74,7 +78,7 @@ export const marksOf = (block) => {
   const marks = typeof command === "string" ? MARKS.filter(([, pattern]) => pattern.test(command)).map(([mark]) => mark) : [];
   const written = WRITE_TOOLS.has(name) ? block.input?.file_path ?? block.input?.path ?? null : null;
   if (typeof written === "string" && PLAN_DOC.test(written)) marks.push("plan_doc");
-  if ((typeof path === "string" && SECRET_FILE.test(path)) || (typeof command === "string" && PRINTS.test(command) && SECRET_FILE.test(command))) marks.push("secret");
+  if ((typeof path === "string" && SECRET_FILE.test(path)) || (typeof command === "string" && readsSecret(command))) marks.push("secret");
   return marks;
 };
 

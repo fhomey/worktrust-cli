@@ -63,24 +63,44 @@ export const marksOf = (block) => {
 };
 
 /**
+ * WHAT A READ WAS (0.9.3), by kind: docs, tests, logs, config, source, or the web. The path is read here and never kept.
+ */
+const READ_KINDS = [
+  ["docs", /(^|[\\/])docs?[\\/]|(^|[\\/])README|\.(md|mdx|rst|txt)$/i],
+  ["tests", /(^|[\\/])(__tests__|tests?|spec|e2e)[\\/]|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$/],
+  ["logs", /\.log$|(^|[\\/])logs?[\\/]/i],
+  ["config", /\.(json|ya?ml|toml|ini|env\.example)$|(^|[\\/])\.[\w-]+rc$|config/i],
+];
+export const readKindOf = (block) => {
+  const name = String(block?.name ?? "");
+  if (/^(WebFetch|WebSearch|web_fetch|web_search)$/.test(name)) return "web";
+  const path = READ_TOOLS.has(name) ? block.input?.file_path ?? block.input?.path ?? null : null;
+  if (typeof path !== "string") return null;
+  return READ_KINDS.find(([, pattern]) => pattern.test(path))?.[0] ?? "source";
+};
+
+/**
  * A TOOL RESULT AS THE STRETCH READS IT (0.8.1): its call's id, whether it failed, and, read here and never kept, WHO
  * refused it when it was refused: the PERSON (Claude Code's fixed sentence when they decline a tool use or a plan) or a
  * GUARD (the client's own safety layer or auto-mode classifier). Framework L8 and L5.
  */
 const PERSON_REFUSED = /^\s*(The user doesn't want to (proceed|take this action)|User rejected|The user rejected|The user declined)/i;
 const GUARD_REFUSED = /^\s*Permission for this (command|action) was denied by/i;
+const OUTAGE = /\b(overloaded|rate[ -]?limit(ed)?|too many requests|429|503|service unavailable|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND)\b/i;
 export const resultOf = (block) => {
   const text = typeof block.content === "string" ? block.content : Array.isArray(block.content) ? block.content.map((part) => (part && typeof part.text === "string" ? part.text : "")).join("") : "";
   const failed = block.is_error === true;
   // 0.8.5: a reader that could not see the outcome (Codex's code mode, a background terminal) says so; unknown is never a pass.
   if (!failed && block.outcome === "unknown") return { id: block.tool_use_id, failed: null, refusal: null };
-  return { id: block.tool_use_id, failed, refusal: failed && PERSON_REFUSED.test(text) ? "person" : failed && GUARD_REFUSED.test(text) ? "guard" : null };
+  // 0.9.3: an OUTAGE (the model or a tool overloaded, rate-limited, timed out, unreachable), read here and never kept.
+  const outage = failed && OUTAGE.test(text);
+  return { id: block.tool_use_id, failed, refusal: failed && PERSON_REFUSED.test(text) ? "person" : failed && GUARD_REFUSED.test(text) ? "guard" : null, ...(outage ? { outage: true } : {}) };
 };
 /** A to-do list the agent wrote (TodoWrite): how many items and how many done, never what they say. */
 const planOf = (block) => (block.name === "TodoWrite" && Array.isArray(block.input?.todos) ? { items: block.input.todos.length, done: block.input.todos.filter((todo) => todo && todo.status === "completed").length } : null);
 
 /** One tool call as the stretch reads it: its id, its kinds, its FAMILY (the tool and its check kinds) and a digest of its input (compared, never kept). */
-export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block), marks = marksOf(block); return { id: block.id, kinds, ...(marks.length ? { marks } : {}), family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
+export const callOf = (block) => { const kinds = callKindsOf(block), plan = planOf(block), marks = marksOf(block), read = readKindOf(block); return { id: block.id, kinds, ...(marks.length ? { marks } : {}), ...(read ? { read } : {}), family: `${String(block.name)}|${kinds.join("+")}`, digest: createHash("sha256").update(JSON.stringify(block.input ?? null)).digest("base64url").slice(0, 16), ...(plan ? { plan } : {}) }; };
 
 /**
  * VERIFICATION PER STRETCH (0.7.1; framework L7, L12): per kind of check, how many ran and how many failed; per step of
@@ -453,9 +473,45 @@ function routeOf(messages) {
   return branches + pushesToMain > 0 ? { ...(branches ? { branches } : {}), ...(pushesToMain ? { pushes_to_main: pushesToMain } : {}) } : null;
 }
 
+/**
+ * EVIDENCE AND ADAPTATION (0.9.3): what the stretch read, by kind; a plan written again after a failure; a model change
+ * within three calls after a failure (escalation); two or more agents whose work a check met before the next delivery
+ * (reconciliation, a proxy); and outages (the model or a tool overloaded, rate-limited, timed out) and how many the work
+ * went on past (a later call succeeded). Counts only.
+ */
+function adaptationOf(messages) {
+  const results = new Map();
+  for (const message of messages) for (const result of message.results ?? []) results.set(result.id, result);
+  const sources = {}, out = { replans: 0, escalations: 0, reconciled: 0, outages: 0, outages_continued: 0 };
+  let failedSince = false, lastFailureCall = null, index = 0, model = null, agentsOpen = 0, outageOpen = false;
+  for (const message of messages) {
+    if (message.bridge) continue;
+    if (message.type === "assistant" && message.model) {
+      // Once per failure: the change that answered it, not every switch after it.
+      if (model && message.model !== model && lastFailureCall !== null && index - lastFailureCall <= 3) { out.escalations += 1; lastFailureCall = null; }
+      model = message.model;
+    }
+    for (const call of message.calls ?? []) {
+      index += 1;
+      const tool = call.family.split("|")[0], result = results.get(call.id);
+      if (call.read) sources[call.read] = (sources[call.read] ?? 0) + 1;
+      if (call.plan && failedSince) { out.replans += 1; failedSince = false; }
+      if (tool === "Agent" || tool === "Task") agentsOpen += 1;
+      if (call.kinds.some((kind) => CHECK_KINDS.includes(kind)) && agentsOpen >= 2) { out.reconciled += 1; agentsOpen = 0; }
+      if (call.kinds.some((kind) => DELIVERY_KINDS.includes(kind))) agentsOpen = 0;
+      if (result?.outage) { out.outages += 1; outageOpen = true; }
+      else if (outageOpen && result?.failed === false) { out.outages_continued += 1; outageOpen = false; }
+      if (result?.failed === true) { failedSince = true; lastFailureCall = index; }
+    }
+  }
+  const kept = Object.fromEntries(Object.entries(out).filter(([, value]) => value > 0));
+  if (Object.keys(sources).length > 0) kept.sources = sources;
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
 /** The stretch's whole derived record; `helpers` are the hook's own readers of a human turn, so both read it the same way. */
 export function deriveStretch(messages, helpers) {
   const context = contextOf(messages, helpers), routing = routingOf(messages), steering = steeringOf(messages, helpers);
-  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
-  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}) };
+  const timing = timingOf(messages, helpers), hygiene = hygieneOf(messages), route = routeOf(messages), adaptation = adaptationOf(messages), tools = toolsOf(messages), oversight = oversightOf(messages), planning = planningOf(messages), autonomy = autonomyOf(messages), practice = practiceOf(messages, helpers);
+  return { ...(practice ?? {}), ...(oversight ? { oversight } : {}), ...(planning ? { planning } : {}), ...(autonomy ? { autonomy } : {}), ...verificationOf(messages, helpers), ...(context ? { context } : {}), ...(routing ? { routing } : {}), ...(steering ? { steering } : {}), ...(tools ? { tools } : {}), ...(timing ? { timing } : {}), ...(hygiene ? { hygiene } : {}), ...(route ? { route } : {}), ...(adaptation ? { adaptation } : {}) };
 }

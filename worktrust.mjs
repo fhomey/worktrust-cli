@@ -73,7 +73,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.9.6";
+const CLI_VERSION = "0.9.7";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -939,6 +939,20 @@ function help() {
 // THE BARE COMMAND COUPLES (owner, 2026-10-03: "zo kort mogelijk"). `npx worktrust` on a computer
 // without a key here shows the plan and asks, exactly as `connect` does; with one it says what is
 // coupled, so running it twice never re-pairs by surprise.
+// AN AGENT DOES NOT RUN WORKTRUST FOR A PERSON (owner, 2026-10-08; AGENTS.md). The commands that change what this
+// computer sends, couples or rebuilds are the person's to run in their own terminal: in an AI agent's shell they stop
+// before anything is read or written, --yes included. The hook and the MCP bridge are started by the agent's client
+// itself and stay as they are; `status` only reads.
+const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
+const PERSON_ONLY = new Set(["connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import"]);
+const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
+if (agentShell && PERSON_ONLY.has(command)) {
+  say();
+  say(`  worktrust ${command} is run by the person, in their own terminal, never by an AI agent for them (this shell is an agent's: ${agentShell}).`);
+  say("  Nothing was read, sent or changed. See AGENTS.md in the package: https://www.npmjs.com/package/worktrust");
+  process.exit(3);
+}
+
 if (command === "default") { if (keyStore.load()) { status(); say(); say("  This computer is coupled. `npx worktrust@latest connect` couples it again; `npx worktrust@latest disconnect` takes it out."); } else await connect(); }
 else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();

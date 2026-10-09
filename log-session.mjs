@@ -124,11 +124,12 @@ const IDLE_BEFORE_SWEEP = 30 * 60 * 1000;
 /** Under a minute is not a piece of work. */
 const MIN_SECONDS = 60;
 /**
- * The door's own ceiling for one stretch. A day past it is reported SHORT: under-reporting is the
+ * The door's own ceiling for one MEASURED stretch: sixteen hours since 0.10.6 (owner, 2026-10-09; it was eight). Every
+ * second of it lies between two messages at most five minutes apart. A day past it is reported SHORT: under-reporting is the
  * safe direction. Stretches are split by DAY, which is a boundary the clock draws — never by
  * guessing where one piece of work ended and the next began.
  */
-const MAX_SECONDS = 28800;
+const MAX_SECONDS = 57600;
 /** The door's ceilings for the layers (a day) and for a day's subagents: the same bounds its columns check. */
 const DAY_SECONDS = 86400;
 /** A tool gap is tool time up to thirty minutes (proposed, owner 2026-10-06); past that it is a wait, counted as idle. */

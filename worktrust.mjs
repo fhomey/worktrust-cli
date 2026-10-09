@@ -10,7 +10,7 @@
  *   npx worktrust@latest connect               couple again, also on a computer already coupled
  *   npx worktrust@latest update                this computer onto the newest CLI, same key, no new pairing
  *   npx worktrust@latest history               send this computer's earlier sessions as history (asks first)
- *   npx worktrust@latest history --rebuild     re-measure them with the current rules; WorkTrust replaces this computer's
+ *   npx worktrust@latest history --rebuild     the same as history (0.10.5: history always re-measures); WorkTrust replaces this computer's
  *                                              earlier lines day by day, never counting a day twice (shows the plan, asks first)
  *   npx worktrust@latest history --from-archive [dir]   send what your local archive holds of sessions your AI apps have
  *                                              already deleted, marked as from your archive (shows the plan, asks first)
@@ -73,7 +73,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.4";
+const CLI_VERSION = "0.10.5";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -623,7 +623,7 @@ async function connect() {
   await offerCodex();
   await offerAntigravity();
   if (switched) { say(); say("  Earlier work on this computer is not offered: it was coupled to another account before. Only work from now on goes to this account."); }
-  else await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null);
+  else await offerHistory(paths, token, device ? device.privateKey.export({ format: "pem", type: "pkcs8" }) : null, MCP, true);
   say();
   // ONE LINE, NO CHANGE (2026-10-06): Claude Code deletes what the hook measures from; `preserve --apply` keeps it, on a yes.
   const keeps = claudeKeepsDays();
@@ -644,7 +644,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   let found = null;
   try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: nothing to offer */ }
   say();
-  if (!found?.sessions) { say(rebuild ? "  Your AI apps hold no earlier sessions on this computer to re-measure." : "  Your AI apps hold no earlier sessions on this computer to send."); return; }
+  if (!found?.sessions) { historyDone(true); say(rebuild ? "  Your AI apps hold no earlier sessions on this computer to re-measure." : "  Your AI apps hold no earlier sessions on this computer to send."); return; }
   say(`  This computer holds ${found.sessions} earlier sessions of your AI apps · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
   // REBUILD (owner, 2026-10-07): the plan per AI app, in days and hours, and what it replaces, before the one question. Enter is No.
   if (rebuild) {
@@ -654,9 +654,10 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
     say("  never deleted, so a day is counted once. Other computers, web sources and days not listed are not touched.");
   }
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
-  if (!has("history") && !(rebuild ? await ask("Rebuild the history (replaces this computer's earlier lines for these days)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { say(rebuild ? "  Not sent. Rebuild later with: npx worktrust@latest history --rebuild" : "  Not sent. Send them later with: npx worktrust@latest history"); return; }
+  if (!has("history") && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust@latest"); return; }
   const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : [])], token, true, env);
-  if (rebuild) say(sent.code === 0 ? "  ✓ Rebuilt. This computer's earlier lines for those days were replaced; the record shows each replacement." : "  Not all of it arrived. Run npx worktrust@latest history --rebuild again: a day already rebuilt is counted once.");
+  historyDone(sent.code === 0);
+  if (rebuild) say(sent.code === 0 ? "  ✓ Rebuilt. This computer's earlier lines for those days were replaced; the record shows each replacement." : "  Not all of it arrived. Run npx worktrust@latest again: it finishes what did not arrive, a day already rebuilt is counted once.");
   else say(sent.code === 0 ? "  ✓ Sent as history. Measured sessions count toward your verified hours; a day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust@latest history again: a line already received is kept once.");
 }
 
@@ -676,16 +677,47 @@ async function offerRebuild(previousVersion, paths, key) {
   say("  differently (each answer's tokens counted once, nothing lost at midnight, when each stretch began, how you steered");
   say("  the agent, what the seconds were, more AI apps). You can re-measure the");
   say("  sessions still on this computer and have WorkTrust replace this computer's earlier lines, day by day, never counting");
-  say("  a day twice. Later: npx worktrust@latest history --rebuild");
+  say("  a day twice. Later: npx worktrust@latest");
   if (!(await ask("Show the plan and rebuild now?", false))) { say("  Not now."); return; }
   await offerHistory(paths, key.token, key.device ?? null, key.url, true);
+}
+
+/**
+ * WHETHER THE HISTORY ARRIVED (0.10.5, owner: "someone with little experience never knows to rebuild"). Written after each
+ * send: complete when every batch arrived or there was nothing to send. Only the outcome and the version, never a session.
+ */
+const HISTORY_STATE = join(HOME_DIR, "history.json");
+function historyDone(complete) {
+  try { ensureHome(); writeFileSync(HISTORY_STATE, JSON.stringify({ version: CLI_VERSION, at: new Date().toISOString(), complete }), { mode: 0o600 }); } catch { /* the next run asks again */ }
+}
+const historyComplete = () => { try { return JSON.parse(readFileSync(HISTORY_STATE, "utf8")).complete === true; } catch { return false; } };
+
+/**
+ * THE SAME COMMAND AGAIN DOES WHAT IS LEFT (0.10.5). On a computer already coupled, `npx worktrust@latest` brings it onto
+ * this CLI when an earlier one is installed (the update, which also offers the re-measure), else finishes the history
+ * when it never arrived whole (a failed send, a question answered No, a computer coupled before this marker existed);
+ * then says what is coupled. Each step still shows its plan and asks; Enter is No.
+ */
+async function again() {
+  const before = stableVersion();
+  if (before && before !== CLI_VERSION) { await update(); return; }
+  if (!historyComplete()) {
+    const key = await freshKey();
+    if (key) { say(); say("  Your earlier sessions have not all reached WorkTrust from this computer yet. This finishes them."); await offerHistory(await scripts(), key.token, key.device ?? null, key.url, true); }
+  }
+  say();
+  await status();
+  say();
+  say("  This computer is coupled. `npx worktrust@latest connect` couples it again; `npx worktrust@latest disconnect` takes it out.");
 }
 
 async function history() {
   const key = await freshKey();
   if (!key) fail("this computer is not coupled through the key file. Run npx worktrust first.");
   if (has("from-archive")) return offerArchive(await scripts(), key);
-  await offerHistory(await scripts(), key.token, key.device ?? null, key.url, has("rebuild"));
+  // ONE PATH (0.10.5): sending is re-measuring. On a computer WorkTrust has never heard from nothing is replaced, so it is a
+  // plain send; after a failure, a merge or an older CLI, the same command replaces day by day. `--rebuild` still reads.
+  await offerHistory(await scripts(), key.token, key.device ?? null, key.url, true);
 }
 
 /**
@@ -954,7 +986,7 @@ if (agentShell && PERSON_ONLY.has(command)) {
   process.exit(3);
 }
 
-if (command === "default") { if (keyStore.load()) { status(); say(); say("  This computer is coupled. `npx worktrust@latest connect` couples it again; `npx worktrust@latest disconnect` takes it out."); } else await connect(); }
+if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
 else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();

@@ -215,6 +215,10 @@ and counts, exactly as the session hook reads it.
 
 ## Rebuild the history
 
+Since 0.10.5 there is one path: `npx worktrust@latest history` always re-measures and replaces this computer's earlier
+lines day by day. If a send did not finish, or you merged two keys of one computer, run `npx worktrust@latest` again:
+it finishes what did not arrive and never counts a day twice.
+
 A newer version of this command measures a session differently from an older one: what the seconds were (the model
 answering, tools running, your own turns, pauses), your own turns rather than every message, tokens with the cache,
 and more AI apps (Cursor, Copilot, Hermes, Goose, OpenCode, OpenClaw, Codex, Antigravity). Lines an earlier version

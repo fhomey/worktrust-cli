@@ -74,7 +74,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.7";
+const CLI_VERSION = "0.10.8";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -995,7 +995,8 @@ if (agentShell && PERSON_ONLY.has(command)) {
  * test), an AI agent's shell: this version runs as it is. The bridge and the hook, which run many times a day from the
  * stable copy, never ask.
  */
-const RELAY_COMMANDS = new Set(["default", "connect", "update", "history", "status", "disconnect", "preserve", "codex", "antigravity"]);
+// NOT `preserve` (0.10.8): it promises no network connection at all (the site and its kit say so), so it never asks npm.
+const RELAY_COMMANDS = new Set(["default", "connect", "update", "history", "status", "disconnect", "codex", "antigravity"]);
 const semverNewer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 async function newestVersion() {
   try {

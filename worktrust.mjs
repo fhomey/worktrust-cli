@@ -2,7 +2,8 @@
 /**
  * WorkTrust on a computer, in one command — like `gh auth login` (2026-10-03).
  *
- *   npx worktrust                       show the plan, ask, approve this computer in the app, couple;
+ *   npx worktrust                       show the plan, ask, approve this computer in the app, couple (0.10.7: a person's
+ *                                       command always runs the newest version, whatever npx had cached);
  *                                       on a computer already coupled: what is coupled here
  *   npx worktrust --dry-run             show the plan only; nothing is written, nothing is sent
  *   npx worktrust --yes                 no question (for scripts); the computer is still approved in the app
@@ -73,7 +74,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.6";
+const CLI_VERSION = "0.10.7";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -985,6 +986,40 @@ if (agentShell && PERSON_ONLY.has(command)) {
   say("  Nothing was read, sent or changed. See AGENTS.md in the package: https://www.npmjs.com/package/worktrust");
   process.exit(3);
 }
+
+/**
+ * ALWAYS THE NEWEST, WHATEVER WAS TYPED (0.10.7, owner: "npx worktrust should simply be right"). npx runs whatever version
+ * it cached, and a person should never need `@latest` or `--prefer-online`. A command a PERSON runs in a terminal asks npm
+ * which version is newest (the version string only, nothing of this computer, two seconds at most) and, when this one is
+ * older, hands the same command to the newest through npx and steps aside. Offline, npm slow, no terminal (a script, a
+ * test), an AI agent's shell: this version runs as it is. The bridge and the hook, which run many times a day from the
+ * stable copy, never ask.
+ */
+const RELAY_COMMANDS = new Set(["default", "connect", "update", "history", "status", "disconnect", "preserve", "codex", "antigravity"]);
+const semverNewer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+async function newestVersion() {
+  try {
+    const response = await fetch(process.env.WORKTRUST_REGISTRY_URL || "https://registry.npmjs.org/worktrust/latest", { signal: AbortSignal.timeout(2000), headers: { accept: "application/json" } });
+    if (!response.ok) return null;
+    const version = (await response.json())?.version;
+    return typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version) ? version : null;
+  } catch { return null; }
+}
+async function relayToNewest() {
+  if (process.env.WORKTRUST_RELAYED === "1" || !RELAY_COMMANDS.has(command) || !process.stdin.isTTY || !process.stdout.isTTY) return;
+  const latest = await newestVersion();
+  if (!latest || !semverNewer(latest, CLI_VERSION)) return;
+  say(`  worktrust ${CLI_VERSION} is not the newest: running ${latest} instead.`);
+  const argv = ["--yes", `worktrust@${latest}`, ...args];
+  const env = { ...process.env, WORKTRUST_RELAYED: "1" };
+  // A .cmd shim on Windows needs a shell: one line, each argument quoted for cmd.exe, never an argument list beside it.
+  const quote = (arg) => (/^[\w@%+=:,./\\-]+$/.test(arg) ? arg : `"${String(arg).replace(/"/g, '\\"')}"`);
+  const child = platform() === "win32" ? spawn(["npx", ...argv].map(quote).join(" "), { stdio: "inherit", env, shell: true }) : spawn("npx", argv, { stdio: "inherit", env });
+  const code = await new Promise((done) => { child.on("error", () => done(null)); child.on("close", (exit) => done(exit)); });
+  if (code === null) { say("  The newest could not be started; this version runs instead."); return; }
+  process.exit(code);
+}
+await relayToNewest();
 
 if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
 else if (command === "mcp") await bridge();

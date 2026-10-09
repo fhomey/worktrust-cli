@@ -485,12 +485,15 @@ if (flag("classify")) {
  * fetched a script to run from its origin. A door is WorkTrust's when its host is worktrust.io or a
  * subdomain, or a local one named by WORKTRUST_MCP_URL; nothing else is a coupling.
  */
+/** WorkTrust's own local doors (the app in development, 3011; a module branch, 3021). Another product's local MCP server
+ * (the Advisory Board on 3007, 2026-10-09) is not one: it was offered for removal on update, and could have been adopted. */
+const LOCAL_DOOR_PORTS = new Set(["3011", "3021"]);
 const isWorkTrustDoor = (url) => {
   try {
     const parsed = new URL(String(url));
     if (!/\/api\/mcp\/?$/.test(parsed.pathname)) return false;
     const own = process.env.WORKTRUST_MCP_URL ? new URL(process.env.WORKTRUST_MCP_URL).host : null;
-    return parsed.protocol === "https:" && (parsed.hostname === "worktrust.io" || parsed.hostname.endsWith(".worktrust.io")) || (own !== null && parsed.host === own) || parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    return parsed.protocol === "https:" && (parsed.hostname === "worktrust.io" || parsed.hostname.endsWith(".worktrust.io")) || (own !== null && parsed.host === own) || ((parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") && LOCAL_DOOR_PORTS.has(parsed.port));
   } catch { return false; }
 };
 function fromClientConfig() {

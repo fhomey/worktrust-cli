@@ -73,7 +73,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.3";
+const CLI_VERSION = "0.10.4";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -593,7 +593,8 @@ async function connect() {
 
   // The device key: made here, its private half kept with the key, its public half bound at WorkTrust.
   const device = direct ? null : generateKeyPairSync("ed25519");
-  const apps = foundApps.map((line) => /^\s*[↻+✓] ([^:]+):/.exec(line)?.[1]).filter(Boolean).slice(0, 12);
+  // Claude Code is coupled through its own command, so its plan line reads "! … couple with": it is coupled all the same (0.10.4).
+  const apps = foundApps.map((line) => /^\s*(?:[↻+✓] ([^:]+):|! ([^:]+): couple with)/.exec(line)).map((match) => match?.[1] ?? match?.[2]).filter(Boolean).slice(0, 12);
   const extra = { apps, ...computerIds(), ...(device ? { device_key: device.publicKey.export({ format: "jwk" }).x } : {}) };
   const pairing = useDevice() ? await pairByCode(host, extra) : await pairByBrowser(host, extra);
   const { token } = pairing;
@@ -656,7 +657,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   if (!has("history") && !(rebuild ? await ask("Rebuild the history (replaces this computer's earlier lines for these days)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { say(rebuild ? "  Not sent. Rebuild later with: npx worktrust@latest history --rebuild" : "  Not sent. Send them later with: npx worktrust@latest history"); return; }
   const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : [])], token, true, env);
   if (rebuild) say(sent.code === 0 ? "  ✓ Rebuilt. This computer's earlier lines for those days were replaced; the record shows each replacement." : "  Not all of it arrived. Run npx worktrust@latest history --rebuild again: a day already rebuilt is counted once.");
-  else say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as earlier work, never as verified hours." : "  Not all of it arrived. Run npx worktrust@latest history again: a line already received is kept once.");
+  else say(sent.code === 0 ? "  ✓ Sent as history. Measured sessions count toward your verified hours; a day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust@latest history again: a line already received is kept once.");
 }
 
 /** The version stamped in the stable copy in ~/.worktrust, the CLI this computer ran before an update; null without one. */

@@ -68,7 +68,16 @@ const masked = BRIDGE ? "kept in ~/.worktrust/key.json, not in these files" : `$
 const stdio = { command: NODE, args: [BRIDGE ?? "", "mcp"] };
 const home = homedir();
 /** Whether Claude Code's own command is on this machine: asked of the shell, never guessed from a file. */
-const onPath = (command) => spawnSync(platform() === "win32" ? "where" : "which", [command], { encoding: "utf8", shell: platform() === "win32" }).status === 0;
+/**
+ * A COMMAND, RUN THE SAME WAY ON EVERY SYSTEM (0.10.4). On Windows `claude`, `openclaw` and `where` are .cmd shims that
+ * need a shell, and Node 24 warns (DEP0190) when arguments ride beside `shell: true` unescaped. So on Windows the line is
+ * built here, each argument quoted for cmd.exe, and handed over whole; elsewhere no shell is used at all.
+ */
+const quoteForCmd = (arg) => (/^[\w@%+=:,./\\-]+$/.test(arg) ? arg : `"${String(arg).replace(/"/g, '\\"')}"`);
+const runCommand = (command, args, options = {}) => (platform() === "win32"
+  ? spawnSync([command, ...args].map(quoteForCmd).join(" "), { encoding: "utf8", ...options, shell: true })
+  : spawnSync(command, args, { encoding: "utf8", ...options }));
+const onPath = (command) => runCommand(platform() === "win32" ? "where" : "which", [command]).status === 0;
 const claudeOnPath = () => onPath("claude");
 const VIBE_DIR = process.env.VIBE_HOME?.trim() || join(home, ".vibe");
 const GROK_DIR = process.env.GROK_HOME?.trim() || join(home, ".grok");
@@ -214,7 +223,7 @@ for (const client of CLIENTS) {
     if (REMOVE ? !named : named && text.includes(JSON.stringify(BRIDGE ?? URL_).slice(1, -1)) && (BRIDGE === undefined || !text.includes(URL_))) { console.log(REMOVE ? `  – ${client.label}: does not name the door` : `  ✓ ${client.label}: already names the door (${client.file})`); if (!REMOVE) standing += 1; continue; }
     if (!WRITE) { console.log(`  ${REMOVE ? "−" : "+"} ${client.label}: would run ${shown}`); continue; }
     if (!onPath("openclaw")) { console.log(`  ! ${client.label}: the \`openclaw\` command is not on this machine's PATH; run ${shown}`); continue; }
-    const run = spawnSync("openclaw", verb, { encoding: "utf8", shell: platform() === "win32" });
+    const run = runCommand("openclaw", verb);
     if (run.status === 0) { console.log(`  ${REMOVE ? "−" : "+"} ${client.label}: ${REMOVE ? "removed" : "coupled"} through \`openclaw mcp ${REMOVE ? "unset" : "set"}\``); touched += 1; }
     else console.log(`  ! ${client.label}: \`openclaw mcp\` refused (${(run.stderr || run.stdout || "").trim().split("\n")[0] || "no output"}); run it yourself: ${shown}`);
     continue;
@@ -232,11 +241,11 @@ for (const client of CLIENTS) {
     if (BRIDGE || REMOVE) for (const entry of direct.entries.filter((one) => !(REMOVE && one.name === NAME && one.scope === "user"))) {
       const verb = `claude mcp remove -s ${entry.scope} ${entry.name}`;
       if (!WRITE) { console.log(`  ↻ ${client.label}: the direct entry "${entry.name}" (${entry.scope}) is replaced`); continue; }
-      const out = claudeOnPath() ? spawnSync("claude", ["mcp", "remove", "-s", entry.scope, entry.name], { encoding: "utf8", shell: platform() === "win32", ...(entry.dir ? { cwd: entry.dir } : {}) }) : null;
+      const out = claudeOnPath() ? runCommand("claude", ["mcp", "remove", "-s", entry.scope, entry.name], entry.dir ? { cwd: entry.dir } : {}) : null;
       console.log(out?.status === 0 ? `  – ${client.label}: removed the direct entry "${entry.name}" (${entry.scope})` : `  ! ${client.label}: could not remove "${entry.name}"; run it yourself${entry.dir ? ` in ${entry.dir}` : ""}: ${verb}`);
     }
     if (WRITE && claudeOnPath()) {
-      const run = spawnSync("claude", claudeArgs, { encoding: "utf8", shell: platform() === "win32" });
+      const run = runCommand("claude", claudeArgs);
       if (run.status === 0) { console.log(`  + ${client.label}: ${REMOVE ? "removed" : "coupled"} through \`claude mcp ${REMOVE ? "remove" : "add"}\` (user scope)`); touched += 1; continue; }
       console.log(`  ! ${client.label}: \`claude mcp\` refused (${(run.stderr || run.stdout || "").trim().split("\n")[0] || "no output"}); run it yourself: ${shown}`);
       continue;

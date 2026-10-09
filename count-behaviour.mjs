@@ -17,6 +17,7 @@
  *   node count-behaviour.mjs --url https://app.worktrust.io/api/mcp --token wt_...
  *   node count-behaviour.mjs --dry-run --exclude client-x --exclude secret
  *   node count-behaviour.mjs --dry-run --claude-export ~/Downloads/claude-export   (a claude.ai data export beside the transcripts)
+ *   node count-behaviour.mjs --dry-run --chatgpt-export ~/Downloads/chatgpt-export (a ChatGPT data export, the same way)
  *
  * CONFIDENTIAL PROJECTS stay out BEFORE anything is counted: `--exclude <text>` (repeatable)
  * skips every project directory whose name contains that text, and `.worktrust-counter.json`
@@ -433,6 +434,15 @@ for (let i = 0; i < args.length; i += 1) if (args[i] === "--exclude" && args[i +
  */
 const EXPORTS = [];
 for (let i = 0; i < args.length; i += 1) if (args[i] === "--claude-export" && args[i + 1]) EXPORTS.push(args[i + 1]);
+/**
+ * A CHATGPT DATA EXPORT (Settings → Data controls → Export data; docs/OPEN.md §0p step 2), the same way:
+ * `--chatgpt-export <folder or conversations.json>`, repeatable. A conversation is a tree (`mapping`, a node per
+ * message with its parent); only the branch that ends at `current_node` is read, so an answer regenerated or a message
+ * edited is counted once, as the person kept it. The person's own messages are the turns, `create_time` (epoch
+ * seconds) the clock, `model_slug` the model. No tokens: the export carries none, and none are estimated from text.
+ */
+const CHATGPT_EXPORTS = [];
+for (let i = 0; i < args.length; i += 1) if (args[i] === "--chatgpt-export" && args[i + 1]) CHATGPT_EXPORTS.push(args[i + 1]);
 try {
   const config = JSON.parse(readFileSync(join(homedir(), ".worktrust-counter.json"), "utf8"));
   for (const entry of Array.isArray(config.exclude) ? config.exclude : []) EXCLUDE.push(String(entry).toLowerCase());
@@ -628,6 +638,44 @@ function* claudeExportSessions() {
     }
   }
 }
+let chatgptConversations = 0;
+/** The kept branch of one ChatGPT conversation, oldest first: from `current_node` up through the parents. */
+function chatgptBranch(conversation) {
+  const mapping = conversation?.mapping && typeof conversation.mapping === "object" ? conversation.mapping : {};
+  const branch = [];
+  const seen = new Set();
+  for (let id = conversation?.current_node; id && mapping[id] && !seen.has(id); id = mapping[id].parent) { seen.add(id); branch.push(mapping[id]); }
+  return branch.reverse();
+}
+function* chatgptExportSessions() {
+  for (const given of CHATGPT_EXPORTS) {
+    let path = given.replace(/^~(?=\/|$)/, homedir());
+    try { if (statSync(path).isDirectory()) path = join(path, "conversations.json"); } catch { throw Error(`chatgpt export not found: ${given}`); }
+    let conversations; try { conversations = JSON.parse(readFileSync(path, "utf8")); } catch { throw Error(`chatgpt export unreadable: ${path}`); }
+    if (!Array.isArray(conversations)) throw Error("chatgpt export must contain an array of conversations");
+    for (const conversation of conversations) {
+      const title = String(conversation?.title ?? "");
+      if (excluded(title)) { skippedConversations.push(title.slice(0, 40)); continue; }
+      const lines = [];
+      for (const node of chatgptBranch(conversation)) {
+        const m = node?.message;
+        const role = m?.author?.role;
+        // The person and the model only: system prompts, tools and what the app hides are neither.
+        if ((role !== "user" && role !== "assistant") || m?.metadata?.is_visually_hidden_from_conversation) continue;
+        const parts = Array.isArray(m?.content?.parts) ? m.content.parts.filter((part) => typeof part === "string") : [];
+        const text = parts.join("\n");
+        if (text.length === 0) continue;
+        const seconds = Number(m?.create_time ?? conversation?.create_time);
+        const at = Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : null;
+        const model = typeof m?.metadata?.model_slug === "string" ? m.metadata.model_slug : undefined;
+        lines.push({ type: role === "user" ? "user" : "assistant", timestamp: at, message: { ...(role === "assistant" && model ? { model } : {}), content: [{ type: "text", text }] } });
+      }
+      if (lines.length === 0) continue;
+      chatgptConversations += 1;
+      yield { key: `chatgpt:${conversation?.conversation_id ?? conversation?.id ?? title}`, projectDir: "chatgpt", basename: "chatgpt", lines };
+    }
+  }
+}
 /**
  * THE READERS FOR CODEX AND ANTIGRAVITY live in transcript-readers.mjs beside this file (2026-10-04;
  * the session hook imports the same file). Run alone, without it, the counter reads Claude Code,
@@ -712,7 +760,7 @@ function* sessions() {
   // A rollout is a transcript on this machine, so --only-transcripts keeps it.
   yield* codexSessions();
   yield* antigravitySessions();
-  if (!flag("only-transcripts")) { yield* claudeExportSessions(); yield* copilotSessions(); }
+  if (!flag("only-transcripts")) { yield* claudeExportSessions(); yield* chatgptExportSessions(); yield* copilotSessions(); }
 }
 
 /**
@@ -846,7 +894,7 @@ const seenLines = new Set(); // v0.10: line identities already counted (a uuid o
 // scan; complete session boundaries preserve signals that depend on earlier turns.
 const manifest = [];
 for(const session of sessions())manifest.push(sessionDigest(session));
-exportConversations = 0; copilotSessionCount = 0; codexRolloutCount = 0; antigravityCount = 0; skippedDirs.length = 0; countedDirs.length = 0; skippedConversations.length = 0;
+exportConversations = 0; chatgptConversations = 0; copilotSessionCount = 0; codexRolloutCount = 0; antigravityCount = 0; skippedDirs.length = 0; countedDirs.length = 0; skippedConversations.length = 0;
 const checkpoint = flag("no-checkpoint") || flag("stretch-signals") || LABEL_OUT ? null : checkpointStore(
   value("checkpoint") ?? join(homedir(), ".worktrust", "counter-checkpoint.json"),
   fingerprint({code:readFileSync(new URL(import.meta.url)),version:ANALYZER_VERSION,months:MONTHS_BACK,thisMonth,exclude:EXCLUDE,leaveOut:LEAVE_OUT,exports:EXPORTS}),manifest);
@@ -1229,6 +1277,7 @@ if (!codexLines) console.log(" codex and antigravity: not read (transcript-reade
 if (antigravityCount > 0) console.log(` antigravity conversations read: ${antigravityCount} (~/.gemini/antigravity*, this machine; clocks and the person's turns, no tokens recorded)`);
 if (codexRolloutCount > 0) console.log(` codex rollouts read: ${codexRolloutCount} (~/.codex/sessions, this machine; tokens once per response, the person's turns only)`);
 if (EXPORTS.length > 0) console.log(` claude.ai export: ${exportConversations} conversation(s) counted${skippedConversations.length ? ` · excluded, never read: ${skippedConversations.length}` : ""}`);
+if (CHATGPT_EXPORTS.length > 0) console.log(` ChatGPT export: ${chatgptConversations} conversation(s) counted (the kept branch of each; no tokens, the export carries none)`);
 if (skippedDirs.length > 0) console.log(` excluded, never read: ${skippedDirs.join(", ")}`);
 for (const month of months) {
   const bucket = byMonth.get(month);

@@ -74,7 +74,7 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.8";
+const CLI_VERSION = "0.10.9";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -656,6 +656,8 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   }
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
   if (!has("history") && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust@latest"); return; }
+  // Marked unfinished before the first batch leaves (0.10.9): a send stopped halfway (Ctrl+C, a closed lid) is finished by the next run.
+  historyDone(false);
   const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : [])], token, true, env);
   historyDone(sent.code === 0);
   if (rebuild) say(sent.code === 0 ? "  ✓ Rebuilt. This computer's earlier lines for those days were replaced; the record shows each replacement." : "  Not all of it arrived. Run npx worktrust@latest again: it finishes what did not arrive, a day already rebuilt is counted once.");
@@ -691,7 +693,9 @@ const HISTORY_STATE = join(HOME_DIR, "history.json");
 function historyDone(complete) {
   try { ensureHome(); writeFileSync(HISTORY_STATE, JSON.stringify({ version: CLI_VERSION, at: new Date().toISOString(), complete }), { mode: 0o600 }); } catch { /* the next run asks again */ }
 }
-const historyComplete = () => { try { return JSON.parse(readFileSync(HISTORY_STATE, "utf8")).complete === true; } catch { return false; } };
+/** Complete AND measured by this very CLI (0.10.9): a run stopped after the update, before the history, leaves the history
+ *  measured by an older version, and the next run must offer it again rather than read "complete" as done. */
+const historyComplete = () => { try { const state = JSON.parse(readFileSync(HISTORY_STATE, "utf8")); return state.complete === true && state.version === CLI_VERSION; } catch { return false; } };
 
 /**
  * THE SAME COMMAND AGAIN DOES WHAT IS LEFT (0.10.5). On a computer already coupled, `npx worktrust@latest` brings it onto
@@ -704,7 +708,7 @@ async function again() {
   if (before && before !== CLI_VERSION) { await update(); return; }
   if (!historyComplete()) {
     const key = await freshKey();
-    if (key) { say(); say("  Your earlier sessions have not all reached WorkTrust from this computer yet. This finishes them."); await offerHistory(await scripts(), key.token, key.device ?? null, key.url, true); }
+    if (key) { say(); say(`  Your earlier sessions are not yet measured by worktrust ${CLI_VERSION} in WorkTrust, or did not all arrive. This finishes them.`); await offerHistory(await scripts(), key.token, key.device ?? null, key.url, true); }
   }
   say();
   await status();

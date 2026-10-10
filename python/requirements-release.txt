@@ -1,0 +1,5 @@
+# Build/test tools only; the published launcher has no Python dependencies.
+build==1.6.1
+setuptools==84.0.0
+uv==0.13.0
+pipx==1.17.13

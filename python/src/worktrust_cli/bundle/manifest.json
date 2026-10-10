@@ -1,0 +1,18 @@
+{
+  "version": "0.10.12",
+  "files": {
+    "chat-exports.mjs": "11c8c1f9f774916d79b768b88f07731dcc7e7771a885036851b9f93856185631",
+    "config-edits.mjs": "0eba2f176ef6f7afba071d6e00de0ff19ba2b283180a801dfd957aa38c1edd94",
+    "count-behaviour.mjs": "20dd35059c0cf74183a0bfbca0962811324e2aac85cac199ed437002461de377",
+    "log-session.mjs": "7485d155ab229991df5c22bd21ca0c67259596b12c551b85e1860f05d82fa419",
+    "preserve-lines.mjs": "794572f4de73f4a63715e9671999013a17f7494b923f81455a009b4064af7e38",
+    "preserve-summary.mjs": "568feae7f3246c075fba14d54f580fac9ee6a54cee91864ed02672b298ae5d37",
+    "preserve.mjs": "38f83bd933853a986fef61f4e452c27d4a3adc6000f5c9201ef70f270b404eac",
+    "session-databases.mjs": "543fd3b82d28d96d789be0a1dc9186c5fafa783e98b87e5b3b17b211542e2b4d",
+    "setup-mcp.mjs": "70f63b61cf1e28fb2b7471e7768d596b0cf166ccdc9d1ce859ee58d29b2ecabc",
+    "stack-rules.mjs": "b23c56e72ec56ba02b17ed895f869172d988c468a697e8d6026b0e268f61e489",
+    "stretch-evidence.mjs": "5b31a6f29b785d277e92257532f3c7cee366a79759decc7a75cfbaec2686ee13",
+    "transcript-readers.mjs": "31da49f8d68abb94ec222bd57c03b6b4febe0b3fe531152a67500b2424d5ac88",
+    "worktrust.mjs": "0a92fc1805e512cb4b832f734f5e9b8270f2c11865468119f5bc3e0161c68559"
+  }
+}

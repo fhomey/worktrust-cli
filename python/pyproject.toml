@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worktrust"
+dynamic = ["version"]
+description = "The WorkTrust CLI, using the same measurement engine as npm"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+
+[project.scripts]
+worktrust = "worktrust_cli:main"
+
+[project.urls]
+Homepage = "https://worktrust.io"
+Source = "https://github.com/fhomey/worktrust-cli"
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+worktrust_cli = ["bundle/*.mjs", "bundle/manifest.json"]

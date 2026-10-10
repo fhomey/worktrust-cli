@@ -198,7 +198,10 @@ export function archiveEntries(dir, ownKey) {
       let line; try { line = JSON.parse(text); } catch { continue; }
       if (line.supplements) continue; // a supplement adds fields to a stretch, it is no stretch of its own
       const proof = read(join(dir, "proofs", `${line.day}.json`));
-      if (!ownKey || !proof || typeof proof.signature !== "string" || proof.public_key !== ownKey) continue;
+      // SIGNED BY THIS COMPUTER'S KEY, OR NOT (owner, 2026-10-10, one rule): every stretch is answered, with whether the day's
+      // root carries this computer's device key's signature; the hook sends a signed day as it was measured and every other day
+      // (unsigned, a local archive key's, another computer's) as reconstructed. Before this, an unsigned day was not answered.
+      const signed = Boolean(ownKey && proof && typeof proof.signature === "string" && proof.public_key === ownKey);
       const entry = {
         title: line.layer ? `AI-assisted work · ${line.layer}` : "AI-assisted work",
         ...(line.kind ? { kind: line.kind } : {}), ...(line.layer ? { layer: line.layer } : {}), ...(line.layers ? { layers: line.layers } : {}),
@@ -206,7 +209,7 @@ export function archiveEntries(dir, ownKey) {
         ...Object.fromEntries(["tokens_in", "tokens_out", "token_basis", "tokens_cache_read", "tokens_cache_write", "exchanges", "turn_basis", "model", "steered_from", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak", "interrupts", "steers", "utc_offset"].filter((key) => line[key] !== undefined).map((key) => [key, line[key]])),
         stretch_ref: line.stretch_ref, started_at: line.started_at, at: line.ended_at, from_archive: true,
       };
-      out.push({ entry, client: line.client ?? "claude" });
+      out.push({ entry, client: line.client ?? "claude", signed });
     }
   }
   return out;

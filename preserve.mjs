@@ -24,8 +24,8 @@
  * (~/.worktrust/key.json) when there is one. Today waits for the next run. Nothing leaves this computer.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, verify } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -193,9 +193,37 @@ function deviceKey() {
   try {
     const key = JSON.parse(Buffer.from(readFileSync(home(".worktrust", "key.json"), "utf8"), "base64").toString("utf8"));
     const privateKey = createPrivateKey(key.device);
-    return { privateKey, publicX: createPublicKey(privateKey).export({ format: "jwk" }).x };
+    return { privateKey, publicX: createPublicKey(privateKey).export({ format: "jwk" }).x, kind: "device" };
   } catch { return null; }
 }
+/**
+ * THE LOCAL ARCHIVE KEY (owner, 2026-10-10): a computer that is not coupled still signs its archive, with an Ed25519 key made
+ * here (~/.worktrust/archive-key.json, mode 600, folder 700), so a day's root can be told from an edit and the chain stays one
+ * computer's when it is coupled later. It needs no account and no network and never leaves this computer. It is CONTINUITY,
+ * not proof of time: a day it signed is sent as reconstructed, never as measured; only the coupled device key's signature
+ * counts as this computer witnessing a day. It is never offered as the device key at pairing: a private key that lived on
+ * disk before the pairing would weaken the fresh proof of possession the pairing binds, for nothing the record would gain.
+ */
+const ARCHIVE_KEY_FILE = home(".worktrust", "archive-key.json");
+function archiveKey(create = false) {
+  try {
+    const kept = JSON.parse(readFileSync(ARCHIVE_KEY_FILE, "utf8"));
+    const privateKey = createPrivateKey(kept.private);
+    return { privateKey, publicX: createPublicKey(privateKey).export({ format: "jwk" }).x, kind: "archive", made: false };
+  } catch { /* none yet, or unreadable */ }
+  if (!create) return null;
+  try {
+    const pair = generateKeyPairSync("ed25519");
+    const privatePem = pair.privateKey.export({ format: "pem", type: "pkcs8" }), publicX = pair.publicKey.export({ format: "jwk" }).x;
+    mkdirSync(home(".worktrust"), { recursive: true, mode: 0o700 });
+    try { chmodSync(home(".worktrust"), 0o700); } catch { /* Windows */ }
+    writeFileSync(ARCHIVE_KEY_FILE, `${JSON.stringify({ format: "worktrust-archive-key/1", public: publicX, private: privatePem, created: new Date().toISOString() }, null, 1)}\n`, { mode: 0o600, flag: "wx" });
+    try { chmodSync(ARCHIVE_KEY_FILE, 0o600); } catch { /* Windows */ }
+    return { privateKey: pair.privateKey, publicX, kind: "archive", made: true };
+  } catch { return archiveKey(false); }
+}
+/** This computer's keys for the archive: the device key when coupled, else the local archive key; both are "ours" for sealing. */
+const ownKeys = () => [deviceKey(), archiveKey(false)].filter(Boolean);
 
 /** Every line of an archive, where it lives, parsed or not. */
 function readArchive(dir) {
@@ -233,8 +261,8 @@ function check(dir) {
   if (manifest && typeof manifest.signature === "string" && !signedBy(manifest)) return broken("manifest.json", "its signature does not verify with the key named in it (the count or the last line was changed)");
   const days = new Map();
   for (const line of lines) days.set(line.day, [...(days.get(line.day) ?? []), line]);
-  const mine = deviceKey()?.publicX ?? null;
-  let signed = 0, ours = 0;
+  const mine = deviceKey()?.publicX ?? null, local = archiveKey(false)?.publicX ?? null;
+  let signed = 0, ours = 0, archived = 0;
   for (const name of readdirSafe(join(dir, "proofs"))) if (!days.has(name.replace(/\.json$/, ""))) return broken(`proofs/${name}`, "a proof for a day with no lines");
   for (const [day, ofDay] of days) {
     const where = `proofs/${day}.json`;
@@ -245,8 +273,9 @@ function check(dir) {
     if (!signedBy(proof)) return broken(where, "the signature does not verify with the key named in it");
     signed += 1;
     if (proof.public_key === mine) ours += 1;
+    else if (local && proof.public_key === local) archived += 1;
   }
-  return { lines, days, signed, ours, manifest, proofs: new Map([...days.keys()].map((day) => [day, readJson(join(dir, "proofs", `${day}.json`)).value])) };
+  return { lines, days, signed, ours, archived, manifest, proofs: new Map([...days.keys()].map((day) => [day, readJson(join(dir, "proofs", `${day}.json`)).value])) };
 }
 /** Whether a signed body (a day's proof, the manifest) verifies under the key it names. */
 function signedBy(document) {
@@ -295,8 +324,11 @@ function archive(dir) {
   // A day that gained lines gets its root again over all of its lines; the lines themselves are never rewritten.
   // THIS KEY SIGNS ONLY ITS OWN LINES (0.6.18, audit S7): a day is signed when every earlier line of it was already under
   // this key's signature (or there were none); a day that came into the folder from elsewhere keeps an unsigned root.
-  const key = deviceKey();
-  const ours = (document) => !document || (key && typeof document.signature === "string" && document.public_key === key.publicX);
+  // THE SIGNING KEY (owner, 2026-10-10): the device key when this computer is coupled, else the local archive key, made now when
+  // there is none. A day or a manifest either of this computer's keys sealed is this computer's to seal again.
+  const key = deviceKey() ?? archiveKey(true);
+  const mineX = new Set(ownKeys().map((own) => own.publicX));
+  const ours = (document) => !document || (key && typeof document.signature === "string" && mineX.has(document.public_key));
   mkdirSync(join(dir, "proofs"), { recursive: true });
   for (const day of new Set([...fresh, ...additions].map((line) => line.day))) {
     const own = !existing.days?.has(day) || ours(existing.proofs?.get(day));
@@ -308,7 +340,8 @@ function archive(dir) {
   if (fresh.length + additions.length > 0 || !existing.manifest) writeFileSync(join(dir, "manifest.json"), `${JSON.stringify(sealed({ format: "worktrust-ai-evidence/1", collector_version: COLLECTOR, created: existing.manifest?.created ?? new Date().toISOString(), updated: new Date().toISOString(), clients: [...new Set(all.map((line) => line.client))].sort(), ...IDS, count: all.length, head: prev, ...(manifestKey ? { public_key: manifestKey.publicX } : {}) }, manifestKey), null, 1)}\n`);
   say();
   const stretches = all.filter((line) => !line.supplements).length;
-  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${stretches}, the session hook measures ${measured.size} finished ones here now${key ? ", each day's root signed with this computer's device key" : ", unsigned (no device key on this computer)"}.`);
+  say(`  ✓ ${fresh.length} new day-stretch${fresh.length === 1 ? "" : "es"} archived in ${dir}: it holds ${stretches}, the session hook measures ${measured.size} finished ones here now${key?.kind === "device" ? ", each day's root signed with this computer's device key" : key ? ", each day's root signed with this computer's local archive key" : ", unsigned (no key could be made on this computer)"}.`);
+  if (key?.kind === "archive") say(`    ${key.made ? "A local archive key was made" : "The local archive key"} in ${ARCHIVE_KEY_FILE} (only you can read it): it signs this archive so a day can be told from an edit; it never leaves this computer, needs no account, and is no proof of time (such days reach WorkTrust as reconstructed, never as verified hours).`);
   if (additions.length > 0) say(`    ${additions.length} stretch${additions.length === 1 ? "" : "es"} already here gained the newer measurements, each in a supplement line; nothing earlier was rewritten.`);
   if (waiting > 0) say(`    ${waiting} of today wait for tomorrow's run: a day is archived once it is over.`);
   say("    Metadata only: clocks, counts, model names, a hash of each project's name. Nothing was sent.");
@@ -318,8 +351,9 @@ function verifyArchive(dir) {
   const result = check(dir);
   if (result.broken) { say(`  BROKEN  ${result.broken}`); process.exit(1); }
   if (result.lines.length === 0) { say(`  Nothing to verify in ${dir}.`); return; }
-  const daySeal = result.signed === 0 ? "no day signed" : result.ours === result.signed ? `${result.signed} signed by this computer's key` : `${result.signed} signed (${result.ours} by this computer's key, ${result.signed - result.ours} by another key named in them)`;
-  const seal = typeof result.manifest?.signature !== "string" ? "manifest unsigned" : result.manifest.public_key === deviceKey()?.publicX ? "manifest signed by this computer's key" : "manifest signed by another key named in it";
+  const others = result.signed - result.ours - result.archived;
+  const daySeal = result.signed === 0 ? "no day signed" : result.ours === result.signed ? `${result.signed} signed by this computer's key` : result.archived === result.signed ? `${result.signed} signed by this computer's local archive key (continuity, no proof of time)` : `${result.signed} signed (${result.ours} by this computer's key, ${result.archived} by its local archive key, ${others} by another key named in them)`;
+  const seal = typeof result.manifest?.signature !== "string" ? "manifest unsigned" : result.manifest.public_key === deviceKey()?.publicX ? "manifest signed by this computer's key" : result.manifest.public_key === archiveKey(false)?.publicX ? "manifest signed by this computer's local archive key" : "manifest signed by another key named in it";
   const added = result.lines.filter((line) => line.supplements).length;
   say(`  OK  ${result.lines.length - added} stretches${added ? ` (and ${added} supplement${added === 1 ? "" : "s"})` : ""} · ${result.days.size} days · the chain is whole · every day's root matches · ${daySeal} · ${seal}`);
 }

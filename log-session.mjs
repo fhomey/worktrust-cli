@@ -25,6 +25,17 @@
  *   node log-session.mjs --history [--dry-run] send the months already on this machine, as HISTORY
  *   node log-session.mjs --history --rebuild   the same, re-measured: the door REPLACES this computer's earlier lines, day by day
  *   node log-session.mjs --history --summary   one JSON line: sessions, hours, first and last month, per client (sends nothing)
+ *   node log-session.mjs --history --export <path>  a ChatGPT or Claude data export (zip, folder or conversations.json) as
+ *                                              HISTORY: hours RECONSTRUCTED from its clocks, never measured, never tokens;
+ *                                              the door withdraws the product's earlier connector lines on its days (the
+ *                                              export replaces, 2026-10-10); `--withdraw-unknown` (after the person's yes)
+ *                                              also withdraws the AI-app lines under no product on exactly those days
+ *   node log-session.mjs --find-exports [dir]  the exports lying in a folder (default ~/Downloads), and which were sent
+ *   node log-session.mjs --history --from-folder <dir>  a person's own COPY of an AI app's session folder (a backed-up
+ *                                              ~/.claude/projects or ~/.codex/sessions), read with the same readers and
+ *                                              clock, never the live folders: days the live folders lack, RECONSTRUCTED
+ *   node log-session.mjs --history --from-archive [dir]  the archive's stretches no longer in any AI app here: a day this
+ *                                              computer's device key signed as measured, every other day reconstructed
  *   (as a hook)                                reads the hook's JSON on stdin, logs, exits
  *   (from Codex)                               notify = ["node", "~/.worktrust/log-session.mjs", "--codex-notify"]
  *                                              in ~/.codex/config.toml: Codex calls it at every turn's end and
@@ -57,7 +68,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 
@@ -260,9 +271,13 @@ const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/
 // context and routing, for the local archive only. A copy without the module still measures and sends exactly as before.
 const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null, resultOf = (block) => ({ id: block.tool_use_id, failed: block.is_error === true, refusal: null }) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
+// A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10): chat-exports.mjs reads a ChatGPT or Claude export (the counter
+// imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
+const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, readExport = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
+const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
-const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs"]; // 0.7.4: the derived record travels with the hook
+const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {
   let installed = true;
@@ -699,24 +714,56 @@ function payloadFor(stretch) {
  * exactly what landed. `announce` because one caller is a person watching a terminal and the other
  * is a hook holding a session's exit open.
  */
-async function sendHistory(door, entries, announce = false, rebuild = false) {
+/**
+ * THE BATCHES: at most two hundred lines each. `byDay` (an export, 2026-10-10) never splits a UTC day across two batches unless
+ * one day alone exceeds the cap: the door's receipt counts per day what it replaced and how many AI-app lines lie there, and a
+ * day in two batches would be counted twice.
+ */
+function batchesOf(group, byDay) {
+  if (!byDay) { const out = []; for (let i = 0; i < group.length; i += 200) out.push(group.slice(i, i + 200)); return out; }
+  const days = new Map();
+  for (const entry of group) { const day = String(entry.at).slice(0, 10); days.set(day, [...(days.get(day) ?? []), entry]); }
+  const out = []; let current = [];
+  for (const ofDay of days.values()) {
+    if (ofDay.length > 200) { if (current.length) { out.push(current); current = []; } for (let i = 0; i < ofDay.length; i += 200) out.push(ofDay.slice(i, i + 200)); continue; }
+    if (current.length + ofDay.length > 200) { out.push(current); current = []; }
+    current.push(...ofDay);
+  }
+  if (current.length) out.push(current);
+  return out;
+}
+/** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
+const RECEIPTS = { superseded: 0, unknownOnDays: 0, unknownWithdrawn: 0 };
+const noteReceipt = (answer) => {
+  try {
+    const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
+    const receipt = JSON.parse(json?.result?.content?.[0]?.text ?? "{}");
+    for (const key of Object.keys(RECEIPTS)) RECEIPTS[key] += Number(receipt[key]) || 0;
+  } catch { /* a receipt unread leaves the counts short, never the send */ }
+};
+async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
   let accepted = 0;
   // A Codex entry goes through Codex's own coupling where one exists (see codexDoor), the rest
   // through the door given: the record files a line under the coupling that sent it. Antigravity's
   // go apart too, so their batch can name the client (clientOf).
-  for (const [source, group] of [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])]) {
+  // An export's lines go as their own group too (0.10.10), so the record names the product (ChatGPT, Claude on the web).
+  for (const [source, group] of [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS, ...EXPORT_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])]) {
   const target = source === "codex" ? codexDoor ?? door : door;
   if (group.length === 0 || !target) continue;
-  for (let i = 0; i < group.length; i += 200) {
-    const batch = group.slice(i, i + 200);
+  let number = 0;
+  for (const batch of batchesOf(group, byDay)) {
+    number += 1;
     // History carries no shas: an imported line forms no session, and the join is the live route's. REBUILD (owner, 2026-10-07): `rebuild: true`
     // tells the door to replace this computer's earlier lines on the days and for the client the batch carries, and every group names its client.
-    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), entries: batch.map((entry) => { const { commits, ...rest } = entry; void commits; return rest; }) } } });
-    const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild), ...proofFor(target.url, body) }, body });
+    // WITHDRAW UNKNOWN (owner, 2026-10-10): with an export, after the person's yes, `withdraw_unknown: true` also withdraws the AI-app lines on its days.
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map((entry) => { const { commits, ...rest } = entry; void commits; return rest; }) } } });
+    // `named` (0.10.10): a copied folder's lines name their client too, so the record says which app the copy came from.
+    const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild || named), ...proofFor(target.url, body) }, body });
     const text = await response.text();
-    if (announce) console.log(`batch ${Math.floor(i / 200) + 1}: ${response.status} ${text.slice(0, 200).replace(/\\n/g, " ")}`);
+    if (announce) console.log(`batch ${number}: ${response.status} ${text.slice(0, 200).replace(/\\n/g, " ")}`);
     if (!response.ok) break;
     accepted += batch.length;
+    noteReceipt(text);
   }
   }
   return accepted;
@@ -749,7 +796,7 @@ const proofFor = (url, body) => {
  * on this computer, and the door names a coupling's clients by the user-agent it hears (mcp_identify's
  * agents_seen). An Antigravity line names Antigravity: the product name, nothing of the work.
  */
-const clientOf = (source, always = false) => (always || source === "antigravity" || DATABASE_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)` } : {});
+const clientOf = (source, always = false) => (always || source === "antigravity" || DATABASE_CLIENTS.includes(source) || EXPORT_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)` } : {});
 
 async function send(door, payload) {
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "log_work", arguments: payload } });
@@ -808,6 +855,113 @@ function historyEntries(floor = null, all = false) {
   }
   const seen = new Set(); // ONE SESSION FILE IN TWO PROJECT FOLDERS (a copied folder) IS ONE STRETCH (0.6.16, audit M6), as live and preserve count it
   return entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/**
+ * A DATA EXPORT'S CONVERSATIONS AS HISTORY (0.10.10, owner 2026-10-10: "hours from an export count as reconstructed, shown,
+ * never in verified hours"). The same clock cuts them (a day, gaps capped at IDLE_CAP) and the same measure counts the
+ * person's own turns and the model, but the line says `reconstructed`: the file can be edited before it is read and no
+ * device key witnessed it. No tokens (the export carries none and none are estimated), no layers, no evidence; the
+ * title names the product and never the conversation; the stretch's name is the vendor, the conversation's id and the
+ * day, so the same export sent twice is each line once. The database keeps a reconstructed stretch inside eight hours
+ * (20261009170000), so the line is cut there before it leaves.
+ */
+const RECONSTRUCTED_MAX = 28800;
+const EXPORTS_STATE = join(homedir(), ".worktrust", "exports.json"); // per export digest: sent, or offered and declined; nothing of a conversation
+const readExportsState = () => { try { return JSON.parse(readFileSync(EXPORTS_STATE, "utf8")); } catch { return {}; } };
+const rememberExport = (digest, note) => { const state = readExportsState(); state[digest] = { ...(state[digest] ?? {}), ...note }; mkdirSync(dirname(EXPORTS_STATE), { recursive: true }); writeFileSync(EXPORTS_STATE, JSON.stringify(state, null, 1)); };
+function exportEntries() {
+  if (!exportSessions) throw Error("chat-exports.mjs is not beside this file: a data export cannot be read");
+  const entries = [], reports = [];
+  for (const given of EXPORT_PATHS) {
+    const read = readExport(given);
+    const report = { path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations.length, days: new Set(), seconds: 0 };
+    for (const { id, lines } of exportSessions(read, { excluded })) {
+      const messages = [];
+      for (const line of lines) { const at = line.timestamp ? Date.parse(line.timestamp) : NaN; if (Number.isFinite(at)) messages.push(messageOf(line, at)); }
+      messages.sort((a, b) => a.at - b.at);
+      for (const [day, ofDay] of byDayOf(messages)) {
+        if (ofDay.length === 0) continue;
+        const stretch = measure(null, ofDay), ref = exportRef(read.vendor, id, day);
+        const entry = {
+          title: EXPORT_TITLES[read.vendor], kind: "researched",
+          ...(stretch.seconds !== null ? { seconds: Math.min(RECONSTRUCTED_MAX, stretch.seconds), duration_basis: "reconstructed" } : {}),
+          ...(stretch.exchanges > 0 ? { exchanges: stretch.exchanges, turn_basis: "humanOnly" } : {}),
+          ...(stretch.model ? { model: stretch.model } : {}),
+          stretch_ref: ref, source_event_id: `exp_${ref}`,
+          started_at: new Date(stretch.from).toISOString(), utc_offset: stretch.offset, at: new Date(stretch.to).toISOString(),
+        };
+        entrySource.set(entry, read.vendor);
+        entryFile.set(entry, { file: `${read.vendor}:${id}`, from: stretch.from, folder: null });
+        report.days.add(day); report.seconds += entry.seconds ?? 0; entries.push(entry);
+      }
+    }
+    const days = [...report.days].sort();
+    reports.push({ ...report, days: days.length, hours: Math.round(report.seconds / 360) / 10, first: days[0] ?? null, last: days.at(-1) ?? null });
+  }
+  const seen = new Set();
+  return { entries: entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at)), reports };
+}
+
+/**
+ * A PERSON'S OWN COPY OF AN AI APP'S SESSION FOLDER (owner, 2026-10-10, one rule): a backed-up ~/.claude/projects, ~/.codex/sessions
+ * or an Antigravity brain folder, read with the same readers and the same clock as the live folders, never the live folders
+ * themselves (a copy of one of them, or one holding them, is refused by name). Each day is named exactly as the live folder
+ * would name it (the session file's name and the day), so a stretch the live folders already hold, or an earlier send of the
+ * same copy, is skipped: the live folders win. What travels is RECONSTRUCTED: no device key witnessed the copy, and a copy can
+ * be edited. The counts a transcript carries (tokens, turns, the model, the evidence) travel; the hours in layers, which say
+ * what a MEASURED day's seconds were, do not. The title says where the line came from.
+ */
+function folderEntries(given) {
+  const dir = given.replace(/^~(?=\/|$)/, homedir());
+  let stat; try { stat = statSync(dir); } catch { throw Error(`no session files: ${given} does not exist`); }
+  if (!stat.isDirectory()) throw Error(`no session files: ${given} is not a folder`);
+  const here = resolve(dir), live = [claudeRoot(), codexRoot(), ...antigravityRoots(value("antigravity-root"))].filter(Boolean).map((root) => resolve(root));
+  if (live.some((root) => here === root || here.startsWith(root + sep) || root.startsWith(here + sep))) throw Error(`${given} is an AI app's own session folder on this computer, or holds one: the hook measures those itself; a copy lives elsewhere`);
+  const files = [];
+  const walk = (at, depth) => {
+    if (depth > 12) return;
+    let names = []; try { names = readdirSync(at, { withFileTypes: true }); } catch { return; }
+    for (const entry of names.sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(at, entry.name);
+      if (entry.isDirectory()) { if (entry.name !== "subagents" && !excluded(entry.name)) walk(path, depth + 1); }
+      else if (entry.name.endsWith(".jsonl")) files.push(path);
+    }
+  };
+  walk(here, 0);
+  if (files.length === 0) throw Error(`no session files under ${given} (Claude Code transcripts, Codex rollouts or Antigravity transcripts, as .jsonl)`);
+  const present = new Set(historyEntries(null, true).map((entry) => entry.stretch_ref)), seen = new Set();
+  const entries = [], report = { stretches: 0, skipped: 0, days: new Set(), seconds: 0 };
+  for (const file of files) {
+    const client = CODEX_ROLLOUT.test(file) ? "codex" : ANTIGRAVITY_TRANSCRIPT.test(file) ? "antigravity" : "claude";
+    const lines = parsedLines(file);
+    if (!lines) continue;
+    let cwd = null;
+    const read = [];
+    for (const line of lines) {
+      if (typeof line.cwd === "string") cwd = line.cwd;
+      if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
+      const at = Date.parse(line.timestamp);
+      if (Number.isFinite(at)) read.push(messageOf(line, at));
+    }
+    read.sort((a, b) => a.at - b.at);
+    for (const [day, messages] of byDayOf(read)) {
+      if (messages.length === 0) continue;
+      const ref = stretchRef(file, day);
+      report.stretches += 1;
+      if (present.has(ref) || seen.has(ref)) { report.skipped += 1; continue; }
+      seen.add(ref);
+      const measured = payloadFor({ ...measure(cwd, messages), ref, steered: null, agents: null });
+      const { model_seconds, tool_seconds, human_seconds, idle_seconds, agent_runs, agent_seconds, agent_peak, ...rest } = measured;
+      void model_seconds; void tool_seconds; void human_seconds; void idle_seconds; void agent_runs; void agent_seconds; void agent_peak;
+      const entry = { ...rest, title: rest.layer ? `AI-assisted work from a copied session folder · ${rest.layer}` : "AI-assisted work from a copied session folder", ...(typeof rest.seconds === "number" ? { seconds: Math.min(RECONSTRUCTED_MAX, rest.seconds), duration_basis: "reconstructed" } : {}) };
+      if (client !== "claude") entrySource.set(entry, client);
+      entryFile.set(entry, { file, from: firstOf(messages), folder: null });
+      report.days.add(day); report.seconds += entry.seconds ?? 0; entries.push(entry);
+    }
+  }
+  const days = [...report.days].sort();
+  return { entries: entries.sort((a, b) => a.at.localeCompare(b.at)), report: { stretches: report.stretches, skipped: report.skipped, days: days.length, hours: Math.round(report.seconds / 360) / 10, first: days[0] ?? null, last: days.at(-1) ?? null } };
 }
 
 /** Every transcript this machine holds, excluded projects skipped before a file is opened. */
@@ -1013,6 +1167,10 @@ if (flag("evidence-summary")) {
   await exitFlushed(0);
 }
 if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
+// THE EXPORTS IN A FOLDER (0.10.10, for the bare `npx worktrust`): which lie there, by vendor and digest, and which this computer
+// already sent or was asked about; reads, prints one JSON line, sends nothing. `--export-offered <digest>` records a No.
+if (flag("find-exports")) { const named = value("find-exports"), state = readExportsState(); const found = (findExports ? findExports(named && !named.startsWith("--") ? named : undefined) : []).map((one) => ({ ...one, sent: state[one.digest]?.sent === true, offered: Boolean(state[one.digest]) })); process.stdout.write(`${JSON.stringify(found)}\n`); await exitFlushed(0); }
+if (value("export-offered")) { rememberExport(value("export-offered"), { offered: new Date().toISOString() }); await exitFlushed(0); }
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
 
 /**
@@ -1025,17 +1183,25 @@ if (flag("history") && flag("from-archive")) {
   const named = value("from-archive"), dir = named && !named.startsWith("--") ? named.replace(/^~(?=\/|$)/, homedir()) : join(homedir(), "AI-Evidence");
   const say = (text) => console.log(text);
   const pem = process.env.WORKTRUST_DEVICE_KEY;
+  // ONE RULE (owner, 2026-10-10): VERIFIED is what this computer's coupled key witnessed. A day the device key signed goes as it was
+  // measured; a day unsigned, signed by the local archive key, or by another computer's key goes too, as RECONSTRUCTED, inside the
+  // database's ceiling for an unmeasured stretch. No device key is no longer a refusal: it means every day is reconstructed. The
+  // archive must still verify whole, and only stretches no longer in any AI app here travel.
   let ownKey = null;
   try { ownKey = pem ? createPublicKey(createPrivateKey(pem)).export({ format: "jwk" }).x : null; } catch { ownKey = null; }
-  if (!ownKey) { say("No device key on this computer: only lines this computer signed can be sent from its archive. Nothing was sent."); await exitFlushed(1); }
   const verified = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "preserve.mjs"), "--verify", dir], { encoding: "utf8" });
   if (verified.status !== 0) { say(`The archive in ${dir} does not verify, so nothing was sent: ${(verified.stdout || verified.stderr || "").trim().split("\n").pop()}`); await exitFlushed(1); }
   const { archiveEntries = null } = (await import("./preserve-lines.mjs").catch(() => null)) ?? {};
   if (!archiveEntries) { say("preserve-lines.mjs is not beside this file. Nothing was sent."); await exitFlushed(1); }
   const present = new Set(historyEntries(null, true).map((entry) => entry.stretch_ref));
-  const signed = archiveEntries(dir, ownKey), gone = signed.filter(({ entry }) => !present.has(entry.stretch_ref));
-  const entries = gone.map(({ entry, client }) => { if (client !== "claude") entrySource.set(entry, client); return entry; });
-  say(`${signed.length} stretches in the archive signed by this computer · ${entries.length} of them no longer in any AI app here`);
+  const all = archiveEntries(dir, ownKey), gone = all.filter(({ entry }) => !present.has(entry.stretch_ref));
+  const entries = gone.map(({ entry, client, signed }) => {
+    if (client !== "claude") entrySource.set(entry, client);
+    if (!signed && typeof entry.seconds === "number") { entry.seconds = Math.min(RECONSTRUCTED_MAX, entry.seconds); entry.duration_basis = "reconstructed"; }
+    return entry;
+  });
+  const signedCount = all.filter(({ signed }) => signed).length;
+  say(`${all.length} stretches in the archive · ${signedCount} signed by this computer's key (verified) · ${all.length - signedCount} unsigned or signed by another key (reconstructed) · ${entries.length} of them no longer in any AI app here`);
   if (DRY || entries.length === 0) { if (entries[0]) say(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`); say(entries.length === 0 ? "Nothing to send." : "\ndry run — nothing sent."); await exitFlushed(0); }
   if (!(await doorKnowsArchive(door))) { say("WorkTrust does not accept history from an archive yet (the door does not know the mark). Nothing was sent."); await exitFlushed(1); }
   await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
@@ -1043,13 +1209,26 @@ if (flag("history") && flag("from-archive")) {
 
 if (flag("history")) {
   const historyFloor = floorOf(readState(), "__historyFloor");
-  const entries = historyEntries(historyFloor);
+  // AN EXPORT IS ITS OWN HISTORY (0.10.10): its lines alone, reconstructed, and never a rebuild (a rebuild replaces this computer's own measured days).
+  let fromExports = null, fromFolder = null;
+  if (EXPORT_PATHS.length > 0) { try { fromExports = exportEntries(); } catch (error) { console.log(`export: ${error.message}`); await exitFlushed(1); } }
+  // A COPIED SESSION FOLDER (0.10.10): its own history, reconstructed, the live folders' stretches skipped; never a rebuild.
+  if (flag("from-folder")) {
+    const given = value("from-folder");
+    if (!given || given.startsWith("--")) { console.log("folder: --from-folder needs the copied folder's path"); await exitFlushed(1); }
+    try { fromFolder = folderEntries(given); } catch (error) { console.log(`folder: ${error.message}`); await exitFlushed(1); }
+  }
+  if ((fromExports || fromFolder) && flag("rebuild")) { console.log("An export or a copied folder is never a rebuild: its hours are reconstructed and replace nothing. Run it without --rebuild."); await exitFlushed(1); }
+  // THE EXPORT REPLACES (owner, 2026-10-10): the door withdraws the product's earlier connector lines on the export's days by itself; the AI-app
+  // lines under no product go only with `--withdraw-unknown`, which the command sends after the person's yes, with an export alone.
+  if (flag("withdraw-unknown") && !fromExports) { console.log("--withdraw-unknown goes with --export alone: it withdraws, on the days an export covers, the earlier lines an AI app reported under no product."); await exitFlushed(1); }
+  const entries = fromExports ? fromExports.entries : fromFolder ? fromFolder.entries : historyEntries(historyFloor);
   const hours = entries.reduce((sum, entry) => sum + (entry.seconds ?? 0), 0) / 3600;
   const months = [...new Set(entries.map((entry) => entry.at.slice(0, 7)))].sort();
   // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, hours, first and last month; per client its days and hours (the rebuild's plan, 2026-10-07); nothing sent.
   const clients = [...entries.reduce((map, entry) => { const client = entrySource.get(entry) ?? "claude", row = map.get(client) ?? { client, days: new Set(), seconds: 0 }; row.days.add(entry.at.slice(0, 10)); row.seconds += entry.seconds ?? 0; return map.set(client, row); }, new Map()).values()].map((row) => ({ client: row.client, days: row.days.size, hours: Math.round(row.seconds / 360) / 10, first: [...row.days].sort()[0], last: [...row.days].sort().at(-1) }));
-  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null, clients })); await exitFlushed(0); }
-  console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} measured hours · ${months.join(", ")}${flag("rebuild") ? " · rebuild: this computer's earlier lines for these days and clients are replaced at the door" : ""}`);
+  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients })); await exitFlushed(0); }
+  console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} ${fromExports || fromFolder ? "reconstructed" : "measured"} hours · ${months.join(", ")}${flag("rebuild") ? " · rebuild: this computer's earlier lines for these days and clients are replaced at the door" : ""}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.
     if (entries[0]) console.log(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`);
@@ -1057,7 +1236,12 @@ if (flag("history")) {
     await exitFlushed(0);
   }
   // A batch the door refused is a failure the caller must see, not a quiet zero.
-  await exitFlushed((await sendHistory(door, entries, true, flag("rebuild"))) === entries.length ? 0 : 1);
+  const accepted = await sendHistory(door, entries, true, flag("rebuild"), Boolean(fromFolder), fromExports ? { byDay: true, withdrawUnknown: flag("withdraw-unknown") } : {});
+  // An export that arrived whole is remembered by its digest (never by a conversation), so the bare command offers it no more.
+  if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
+  // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
+  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS }));
+  await exitFlushed(accepted === entries.length ? 0 : 1);
 }
 
 const input = hookInput();

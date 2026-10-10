@@ -8,15 +8,24 @@
  *   npx worktrust --dry-run             show the plan only; nothing is written, nothing is sent
  *   npx worktrust --yes                 no question (for scripts); the computer is still approved in the app
  *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
- *   npx worktrust@latest connect               couple again, also on a computer already coupled
- *   npx worktrust@latest update                this computer onto the newest CLI, same key, no new pairing
- *   npx worktrust@latest history               send this computer's earlier sessions as history (asks first)
- *   npx worktrust@latest history --rebuild     the same as history (0.10.5: history always re-measures); WorkTrust replaces this computer's
+ *   npx worktrust connect                      couple again, also on a computer already coupled
+ *   npx worktrust update                       this computer onto the newest CLI, same key, no new pairing
+ *   npx worktrust history                      send this computer's earlier sessions as history (asks first)
+ *   npx worktrust history --rebuild            the same as history (0.10.5: history always re-measures); WorkTrust replaces this computer's
  *                                              earlier lines day by day, never counting a day twice (shows the plan, asks first)
- *   npx worktrust@latest history --from-archive [dir]   send what your local archive holds of sessions your AI apps have
- *                                              already deleted, marked as from your archive (shows the plan, asks first)
- *   npx worktrust@latest disconnect            show what comes out, ask, take it out again
- *   npx worktrust@latest status                what is coupled here
+ *   npx worktrust history --from-archive [dir]   send what your local archive holds of sessions your AI apps have
+ *                                              already deleted, marked as from your archive (shows the plan, asks first):
+ *                                              a day this computer's device key signed as measured, every other day
+ *                                              (unsigned, the local archive key's, another computer's) as reconstructed
+ *   npx worktrust history --from-folder <dir>  your own copy of an AI app's session folder (a backed-up ~/.claude/projects,
+ *                                              ~/.codex/sessions): the days this computer's own sessions lack, reconstructed,
+ *                                              never verified hours (shows the plan, asks first; 0.10.10)
+ *   npx worktrust history --export <path>      a ChatGPT or Claude data export (the zip, its folder or conversations.json)
+ *                                              as history: hours RECONSTRUCTED from its clocks, shown with their origin,
+ *                                              never verified hours (shows the plan, asks first; 0.10.10). The bare
+ *                                              command on a coupled computer offers an export lying in ~/Downloads once.
+ *   npx worktrust disconnect                   show what comes out, ask, take it out again
+ *   npx worktrust status                       what is coupled here
  *   npx worktrust@latest preserve              how long each AI app here keeps its sessions (--apply keeps them,
  *                                       --archive [dir] a local metadata-only record, --verify [dir] checks it,
  *                                       --summary [dir] counts hours, tokens and parallel sessions from it);
@@ -69,19 +78,19 @@ import { createInterface as lines } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
-const VALUED = ["--name", "--origin", "--url"];
+const VALUED = ["--name", "--origin", "--url", "--export", "--from-folder"];
 const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALUED.includes(args[at - 1]))) ?? (args.includes("--help") ? "help" : "default");
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.9";
+const CLI_VERSION = "0.10.10";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs"];
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
-const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs"]);
+const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
@@ -219,7 +228,7 @@ async function pairByBrowser(host, extra) {
   const exchange = await post("/api/cli/token", { device_code: secret, code, code_verifier: verifier }).catch(() => null);
   if (!exchange || exchange.status !== 200 || !exchange.json.token) fail(`the approval could not be exchanged (${exchange?.json?.error ?? "no answer"}). Run \`worktrust connect\` again.`);
   say(`  ✓ Approved as "${exchange.json.label}"${exchange.json.account ? ` for the WorkTrust account ${exchange.json.account}` : ""}`);
-  if (exchange.json.account) say("    Not your account? Run `npx worktrust@latest disconnect` now and revoke it in WorkTrust.");
+  if (exchange.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
   if (extraBound && exchange.json.bound === false) say("  ! WorkTrust did not bind the key to this computer; it works like a key made by hand.");
   return paired(exchange.json);
 }
@@ -248,7 +257,7 @@ async function pairByCode(host, extra) {
     if (!answer) continue;
     if (answer.status === 200 && answer.json.token) {
       say(`  ✓ Approved as "${answer.json.label}"${answer.json.account ? ` for the WorkTrust account ${answer.json.account}` : ""}`);
-      if (answer.json.account) say("    Not your account? Run `npx worktrust@latest disconnect` now and revoke it in WorkTrust.");
+      if (answer.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
       return paired(answer.json);
     }
     if (answer.json.error === "slow_down") wait += 2000;
@@ -375,7 +384,7 @@ async function copiedHere(key) {
     const url = `${new URL(key.url).origin}/api/cli/moved`, body = JSON.stringify(computerIds());
     await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, ...proof(key.device, url, body) }, body });
   } catch { /* offline: it is told next time */ }
-  process.stderr.write("WorkTrust: this key was made on another computer (copied from a backup?). Nothing is sent from here; run `npx worktrust@latest connect` on this computer.\n");
+  process.stderr.write("WorkTrust: this key was made on another computer (copied from a backup?). Nothing is sent from here; run `npx worktrust connect` on this computer.\n");
   return true;
 }
 
@@ -442,7 +451,7 @@ async function bridge() {
     let message;
     try { message = JSON.parse(line); } catch { continue; }
     if (message.method === "initialize" && message.params?.clientInfo?.name) agent = `${message.params.clientInfo.name}/${message.params.clientInfo.version ?? "0"} (worktrust-bridge) worktrust-cli/${CLI_VERSION}`;
-    if (!key) { if (message.id !== undefined) answer(message.id, "WorkTrust is not connected on this computer: run `npx worktrust@latest connect`."); continue; }
+    if (!key) { if (message.id !== undefined) answer(message.id, "WorkTrust is not connected on this computer: run `npx worktrust connect`."); continue; }
     try {
       const response = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
       session = response.headers.get("mcp-session-id") ?? session;
@@ -455,7 +464,7 @@ async function bridge() {
           const again = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
           if (again.status !== 401) { const text = await again.text(); const parts = (again.headers.get("content-type") ?? "").includes("event-stream") ? text.split("\n").filter((part) => part.startsWith("data:")).map((part) => part.slice(5).trim()) : [text.trim()]; for (const part of parts.filter(Boolean)) process.stdout.write(`${part}\n`); continue; }
         }
-        answer(message.id, "WorkTrust did not accept this computer's key: run `npx worktrust@latest connect` again.");
+        answer(message.id, "WorkTrust did not accept this computer's key: run `npx worktrust connect` again.");
         continue;
       }
       const text = await response.text();
@@ -521,7 +530,7 @@ async function sessionEnd() {
  */
 async function update() {
   const key = await freshKey();
-  if (!key) fail("this computer has no WorkTrust key file yet. Run npx worktrust@latest connect.");
+  if (!key) fail("this computer has no WorkTrust key file yet. Run npx worktrust connect.");
   say();
   say(`  WorkTrust · update ${hostname().replace(/\.local$/i, "")} to ${CLI_VERSION}`);
   say();
@@ -655,13 +664,13 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
     say("  never deleted, so a day is counted once. Other computers, web sources and days not listed are not touched.");
   }
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
-  if (!has("history") && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust@latest"); return; }
+  if (!has("history") && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust"); return; }
   // Marked unfinished before the first batch leaves (0.10.9): a send stopped halfway (Ctrl+C, a closed lid) is finished by the next run.
   historyDone(false);
   const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : [])], token, true, env);
   historyDone(sent.code === 0);
-  if (rebuild) say(sent.code === 0 ? "  ✓ Rebuilt. This computer's earlier lines for those days were replaced; the record shows each replacement." : "  Not all of it arrived. Run npx worktrust@latest again: it finishes what did not arrive, a day already rebuilt is counted once.");
-  else say(sent.code === 0 ? "  ✓ Sent as history. Measured sessions count toward your verified hours; a day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust@latest history again: a line already received is kept once.");
+  if (rebuild) say(sent.code === 0 ? "  ✓ Rebuilt. This computer's earlier lines for those days were replaced; the record shows each replacement." : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
+  else say(sent.code === 0 ? "  ✓ Sent as history. Measured sessions count toward your verified hours; a day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
 }
 
 /** The version stamped in the stable copy in ~/.worktrust, the CLI this computer ran before an update; null without one. */
@@ -680,7 +689,7 @@ async function offerRebuild(previousVersion, paths, key) {
   say("  differently (each answer's tokens counted once, nothing lost at midnight, when each stretch began, how you steered");
   say("  the agent, what the seconds were, more AI apps). You can re-measure the");
   say("  sessions still on this computer and have WorkTrust replace this computer's earlier lines, day by day, never counting");
-  say("  a day twice. Later: npx worktrust@latest");
+  say("  a day twice. Later: npx worktrust");
   if (!(await ask("Show the plan and rebuild now?", false))) { say("  Not now."); return; }
   await offerHistory(paths, key.token, key.device ?? null, key.url, true);
 }
@@ -710,16 +719,20 @@ async function again() {
     const key = await freshKey();
     if (key) { say(); say(`  Your earlier sessions are not yet measured by worktrust ${CLI_VERSION} in WorkTrust, or did not all arrive. This finishes them.`); await offerHistory(await scripts(), key.token, key.device ?? null, key.url, true); }
   }
+  // A WEB CHAT'S EXPORT LYING IN DOWNLOADS (0.10.10): offered once, Enter is No.
+  { const key = await freshKey(); if (key) await offerDownloads(await scripts(), key); }
   say();
   await status();
   say();
-  say("  This computer is coupled. `npx worktrust@latest connect` couples it again; `npx worktrust@latest disconnect` takes it out.");
+  say("  This computer is coupled. `npx worktrust connect` couples it again; `npx worktrust disconnect` takes it out.");
 }
 
 async function history() {
   const key = await freshKey();
   if (!key) fail("this computer is not coupled through the key file. Run npx worktrust first.");
   if (has("from-archive")) return offerArchive(await scripts(), key);
+  if (has("export")) { if (!flag("export") || flag("export").startsWith("--")) fail("--export needs the export's path: the zip, its folder, or conversations.json"); await offerExport(await scripts(), key, flag("export")); return; }
+  if (has("from-folder")) { if (!flag("from-folder") || flag("from-folder").startsWith("--")) fail("--from-folder needs the copied folder's path"); await offerFolder(await scripts(), key, flag("from-folder")); return; }
   // ONE PATH (0.10.5): sending is re-measuring. On a computer WorkTrust has never heard from nothing is replaced, so it is a
   // plain send; after a failure, a merge or an older CLI, the same command replaces day by day. `--rebuild` still reads.
   await offerHistory(await scripts(), key.token, key.device ?? null, key.url, true);
@@ -740,6 +753,94 @@ async function offerArchive(paths, key) {
   if (!(await ask("Send them as history, marked as from your archive?", false))) { say("  Not sent."); return; }
   const sent = await run(paths["log-session.mjs"], ["--history", "--from-archive", ...dir], key.token, true, env);
   say(sent.code === 0 ? "  ✓ Sent as history from your archive. It shows in WorkTrust as earlier work, marked as such, never as verified hours." : `  Not sent: ${sent.out.trim().split("\n").pop()}`);
+}
+
+/**
+ * A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10). ChatGPT's and Claude's exports (the zip, its folder, or
+ * conversations.json) go through the history door as RECONSTRUCTED hours: shown with their origin, never verified
+ * hours, because the file can be edited before it is read and no device key witnessed it. Nothing of a conversation
+ * leaves: not its title, not a message; the hook reads the clocks, the person's own turns and the model's name. The
+ * plan first (the product, conversations, days, hours, first and last month), then one question; Enter is No;
+ * `--dry-run` stops before it; `--history` says yes in advance. Answers whether the export arrived whole.
+ */
+const EXPORT_PRODUCT = { chatgpt: "ChatGPT", "claude-web": "Claude on the web" };
+async function offerExport(paths, key, path) {
+  const env = { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) };
+  const counted = await run(paths["log-session.mjs"], ["--history", "--export", path, "--dry-run", "--summary"], key.token, true, env);
+  let found = null;
+  try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: the export could not be read */ }
+  const report = found?.exports?.[0];
+  say();
+  if (counted.code !== 0 || !report) { say(`  ${counted.out.trim().split("\n").filter(Boolean).pop() ?? "export: it could not be read"}. Nothing was sent.`); return false; }
+  const product = EXPORT_PRODUCT[report.vendor] ?? report.vendor;
+  if (!report.days) { say(`  ${product} export · ${report.conversations} conversations, none with a clock to place: nothing to send.`); return true; }
+  say(`  ${product} export · ${report.conversations} conversations · ${report.days} days · ${report.hours} reconstructed hours · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}`);
+  say("  Hours reconstructed from the export's own clocks: shown with their origin, never verified hours. Never a title or a message.");
+  if (has("dry-run")) { say("  Dry run: nothing was sent."); return false; }
+  if (!has("history") && !(await ask("Send it as history (reconstructed hours per day; never text)?", false))) { say(`  Not sent. Send it later with: npx worktrust history --export ${path}`); return false; }
+  const sent = await run(paths["log-session.mjs"], ["--history", "--export", path], key.token, true, env);
+  say(sent.code === 0 ? `  ✓ Sent as history. It shows in WorkTrust as ${product}, reconstructed, never as verified hours; a line already received is kept once.` : `  Not all of it arrived. Run npx worktrust history --export ${path} again: a line already received is kept once.`);
+  if (sent.code !== 0) return false;
+  // THE EXPORT REPLACES (owner, 2026-10-10): the door withdrew the product's earlier connector lines on the export's days by itself and
+  // says so; the lines an AI app reported under no product on those days may describe the same conversations, and go only on a yes.
+  const counts = lastCounts(sent.out);
+  if (counts.superseded > 0) say(`  ${counts.superseded} earlier line${counts.superseded === 1 ? "" : "s"} of ${product} on those days, brought in by a connector, ${counts.superseded === 1 ? "is" : "are"} withdrawn and kept (each with a correction row): the export's lines count, a day counts once.`);
+  if (counts.unknownOnDays > 0) {
+    const n = counts.unknownOnDays;
+    say(`  ${n} earlier line${n === 1 ? "" : "s"} an AI app reported for these days, under no product, may describe the same conversations.`);
+    if (has("withdraw-unknown") || (await ask(`Also withdraw ${n} earlier line${n === 1 ? "" : "s"} an AI app reported for these days?`, false))) {
+      const again = await run(paths["log-session.mjs"], ["--history", "--export", path, "--withdraw-unknown"], key.token, true, env);
+      const done = lastCounts(again.out);
+      say(again.code === 0 ? `  ✓ Withdrawn and kept: ${done.unknownWithdrawn} earlier line${done.unknownWithdrawn === 1 ? "" : "s"}, each with a correction row; never deleted.` : `  Not withdrawn: ${again.out.trim().split("\n").pop()}`);
+    } else say(`  Kept. Later: npx worktrust history --export ${path} --withdraw-unknown`);
+  }
+  return true;
+}
+/** The hook's last line of counts after an export send (superseded, unknownOnDays, unknownWithdrawn); zeros when there is none. */
+function lastCounts(out) {
+  try { const line = out.trim().split("\n").filter((text) => text.startsWith("{")).pop(); const json = JSON.parse(line ?? "{}"); return { superseded: Number(json.superseded) || 0, unknownOnDays: Number(json.unknownOnDays) || 0, unknownWithdrawn: Number(json.unknownWithdrawn) || 0 }; } catch { return { superseded: 0, unknownOnDays: 0, unknownWithdrawn: 0 }; }
+}
+
+/**
+ * THE EXPORT LYING IN DOWNLOADS (0.10.10): on a coupled computer the bare command looks in ~/Downloads, its top level
+ * only, for a ChatGPT or Claude export it has neither sent nor asked about, and offers each once by the same path as
+ * `history --export`; a No is remembered by the file's digest (never a conversation), and the command to send it later is
+ * said. A dry run remembers nothing.
+ */
+async function offerDownloads(paths, key) {
+  const found = await run(paths["log-session.mjs"], ["--find-exports"], "", true, { WORKTRUST_MCP_URL: "" });
+  let exports = [];
+  try { exports = JSON.parse(found.out.trim().split("\n").pop()); } catch { return; }
+  for (const one of Array.isArray(exports) ? exports : []) {
+    if (one.sent || one.offered) continue;
+    say();
+    say(`  A ${EXPORT_PRODUCT[one.vendor] ?? one.vendor} export lies in your Downloads folder: ${one.path}`);
+    const sent = await offerExport(paths, key, one.path);
+    if (!sent && !has("dry-run")) await run(paths["log-session.mjs"], ["--export-offered", one.digest], "", true, { WORKTRUST_MCP_URL: "" });
+  }
+}
+
+/**
+ * A COPIED SESSION FOLDER AS HISTORY (owner, 2026-10-10, one rule): a person's own backup of ~/.claude/projects, ~/.codex/sessions
+ * or an Antigravity brain folder, read by the hook with the same readers and clock as the live folders (never those), its days
+ * RECONSTRUCTED and titled as from a copied folder; a stretch the live folders already hold is skipped (they win). The plan
+ * first, then one question; Enter is No; `--dry-run` stops before it; `--history` says yes in advance.
+ */
+async function offerFolder(paths, key, dir) {
+  const env = { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) };
+  const counted = await run(paths["log-session.mjs"], ["--history", "--from-folder", dir, "--dry-run", "--summary"], key.token, true, env);
+  let found = null;
+  try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: the folder could not be read */ }
+  const report = found?.folder;
+  say();
+  if (counted.code !== 0 || !report) { say(`  ${counted.out.trim().split("\n").filter(Boolean).pop() ?? "folder: it could not be read"}. Nothing was sent.`); return; }
+  say(`  Copied session folder · ${report.stretches} stretch${report.stretches === 1 ? "" : "es"} (${report.skipped} already among this computer's own sessions, skipped) · ${report.days} day${report.days === 1 ? "" : "s"} · ${report.hours} reconstructed hours${report.first ? ` · ${report.first} … ${report.last}` : ""}`);
+  if (!report.days) { say("  Nothing to send: every day of the copy is already among this computer's own sessions."); return; }
+  say("  Hours reconstructed from the copy's own clocks: shown with their origin, never verified hours. Never text.");
+  if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
+  if (!has("history") && !(await ask("Send it as history (reconstructed hours per day; never text)?", false))) { say(`  Not sent. Send it later with: npx worktrust history --from-folder ${dir}`); return; }
+  const sent = await run(paths["log-session.mjs"], ["--history", "--from-folder", dir], key.token, true, env);
+  say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as reconstructed, from a copied session folder, never as verified hours; a line already received is kept once." : `  Not all of it arrived. Run npx worktrust history --from-folder ${dir} again: a line already received is kept once.`);
 }
 
 /**
@@ -791,7 +892,7 @@ async function offerCodex() {
   say("  Codex can wake the session hook at the end of every turn, so Codex work arrives without Claude Code running:");
   say(`    ${found.text ? "↻" : "+"} ${CODEX_CONFIG} → ${want}`);
   if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
-  if (!has("codex") && !(await ask("Let Codex wake the session hook?", false))) { say("  Not set. npx worktrust@latest update asks again."); return; }
+  if (!has("codex") && !(await ask("Let Codex wake the session hook?", false))) { say("  Not set. npx worktrust update asks again."); return; }
   const rows = [...found.rows];
   if (found.text) rows.splice(found.at, found.end - found.at + 1, want);
   else rows.splice(found.insert, 0, ...(found.insert < rows.length && rows[found.insert] !== "" ? [want, ""] : [want]));
@@ -832,7 +933,7 @@ async function offerAntigravity() {
   say("  Antigravity can wake the session hook when its agent stops, so Antigravity work arrives without Claude Code running:");
   say(`    ${hooks.worktrust ? "↻" : "+"} ${AGY_HOOKS} → worktrust: Stop runs ${want.Stop[0].command}`);
   if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
-  if (!has("antigravity") && !(await ask("Let Antigravity wake the session hook?", false))) { say("  Not set. npx worktrust@latest update asks again."); return; }
+  if (!has("antigravity") && !(await ask("Let Antigravity wake the session hook?", false))) { say("  Not set. npx worktrust update asks again."); return; }
   writeAgyHooks({ ...hooks, worktrust: want });
   say(`  ✓ Antigravity wakes the session hook. Restart Antigravity to pick it up${existsSync(`${AGY_HOOKS}.worktrust-backup`) ? "; the earlier file is kept as hooks.json.worktrust-backup" : ""}.`);
 }
@@ -890,16 +991,16 @@ async function status() {
     for (const project of Object.values(config.projects ?? {})) Object.assign(servers, project.mcpServers ?? {});
   } catch { /* no Claude Code here */ }
   const door = Object.entries(servers).find(([name, server]) => /worktrust/i.test(`${name} ${server?.url ?? ""} ${(server?.args ?? []).join(" ")}`));
-  say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust@latest connect`.");
+  say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust connect`.");
   const key = keyStore.load();
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
-  if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust@latest connect` records it)");
+  if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
   let hook = false;
   try { hook = /log-session|worktrust\.mjs\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
   say(hook ? "  Session hook: installed" : "  Session hook: not installed");
-  if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust@latest update asks)"); }
-  if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust\.mjs\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust@latest update writes it)"); }
-  if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust@latest update asks)");
+  if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust update asks)"); }
+  if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust\.mjs\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust update writes it)"); }
+  if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust update asks)");
   say(existsSync(join(HOME_DIR, "pinned")) ? "  Counter: from the package, pinned" : existsSync(join(HOME_DIR, "count-behaviour.mjs")) ? "  Counter: follows the site" : "  Counter: not installed");
   await measuredHere();
 }
@@ -918,7 +1019,7 @@ async function measuredHere() {
   if (!m || !m.stretches) { say("  Measured here, last 30 days: no finished work stretch yet."); return; }
   const of = (part, whole, unit) => `${part} of ${whole} ${unit}`;
   say();
-  say(`  Measured here, last 30 days: ${m.stretches} work stretches · ${m.hours} h`);
+  say(`  Measured here, last 30 days: ${m.stretches} work stretch${m.stretches === 1 ? "" : "es"} · ${m.hours >= 1 ? `${m.hours} h` : "under 1 h"}`);
   if (m.delivered) say(`    verified before delivery   ${of(m.verified_first, m.delivered, "stretches that delivered")}`);
   if (m.failures) say(`    recovered failures         ${of(m.recovered, m.failures, "failed tool calls")} (${m.blind_retries} retried unchanged)`);
   if (m.steers) say(`    steering that worked       ${of(m.effective_steers, m.steers, "times you stepped in")}`);
@@ -964,7 +1065,14 @@ function help() {
   say("    --rebuild            re-measure them with the current rules; WorkTrust replaces this computer's earlier lines,");
   say("                         day by day, never counting a day twice (shows the plan per AI app, asks first; --dry-run: the plan only)");
   say("    --from-archive [dir] send what your archive (preserve --archive) holds of sessions your AI apps already deleted,");
-  say("                         only days this computer signed, marked as from your archive (shows the plan, asks first)");
+  say("                         marked as from your archive: a day this computer's key signed as measured, every other day");
+  say("                         as reconstructed, never verified hours (shows the plan, asks first)");
+  say("    --export <path>      a ChatGPT or Claude data export (the zip, its folder or conversations.json) as history:");
+  say("                         hours reconstructed from its clocks, shown with their origin, never verified hours (asks first);");
+  say("                         on its days the export replaces the product's earlier connector lines (withdrawn, kept)");
+  say("    --withdraw-unknown   with --export: yes in advance to withdrawing the earlier lines an AI app reported for those days");
+  say("    --from-folder <dir>  your own copy of an AI app's session folder (a backed-up ~/.claude/projects, ~/.codex/sessions):");
+  say("                         days this computer's own sessions lack, reconstructed, never verified hours (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
   say("  worktrust preserve     keep your AI history: the report, then the settings and a local archive, each on your yes");

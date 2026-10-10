@@ -85,7 +85,12 @@ npx worktrust@latest history       send this computer's earlier sessions later (
 npx worktrust@latest history --rebuild   re-measure them with the current rules; WorkTrust replaces this computer's
                                    earlier lines day by day, never counting a day twice (shows the plan, asks first)
 npx worktrust@latest history --from-archive [dir]   send what your local archive holds of sessions your AI apps
-                                   already deleted, marked as from your archive (shows the plan, asks first)
+                                   already deleted, marked as from your archive: a day this computer's key signed as
+                                   measured, every other day as reconstructed (shows the plan, asks first)
+npx worktrust@latest history --export <path>   a ChatGPT or Claude data export (the zip, its folder or conversations.json)
+                                   as history: hours reconstructed from its clocks, never verified (shows the plan, asks first)
+npx worktrust@latest history --from-folder <dir>   your own copy of an AI app's session folder (a backed-up ~/.claude/projects,
+                                   ~/.codex/sessions): the days this computer's sessions lack, reconstructed (asks first)
 npx worktrust codex         let Codex wake the session hook (asks first)
 npx worktrust antigravity   let Antigravity wake the session hook (asks first)
 npx worktrust@latest status        what is coupled here
@@ -226,11 +231,12 @@ sent stand as they were measured then, and sending the sessions again would coun
 does not name its stretch, so WorkTrust cannot tell it from the one that arrives.
 
 `npx worktrust@latest history --from-archive` (0.8.0) is for the sessions an AI app has already deleted (Claude
-Code's default is 30 days). It sends what your local archive (`preserve --archive`) holds of them, and only that: days
-this computer signed with its own key, of sessions no longer on the computer, each line marked as coming from your
-archive. It refuses, and sends nothing, when the computer has no device key, when the archive does not verify, or when
-WorkTrust does not yet accept the mark. It shows the plan first and asks once; Enter is No. Such lines are history,
-like any import: never verified hours.
+Code's default is 30 days). It sends what your local archive (`preserve --archive`) holds of them, and only that:
+days of sessions no longer on the computer, each line marked as coming from your archive. One rule (2026-10-10):
+a day signed by this computer's device key goes as it was measured; every other day (unsigned, signed by the local
+archive key, or by another computer's key) goes as **reconstructed**, and the plan says how many of each. It refuses,
+and sends nothing, when the archive does not verify or when WorkTrust does not yet accept the mark. It shows the plan
+first and asks once; Enter is No. Such lines are history, like any import: never verified hours.
 
 `npx worktrust@latest history --rebuild` re-measures every session still on this computer with the current rules and
 sends them with one difference: WorkTrust **replaces** this computer's earlier lines, day by day.
@@ -253,6 +259,59 @@ sends them with one difference: WorkTrust **replaces** this computer's earlier l
   `~/.worktrust` says which), `npx worktrust@latest update` says so in plain words and offers the rebuild; Enter is No,
   and the same version updated again offers nothing. The command cannot read your record, so it is an offer, not a
   finding.
+
+## A web chat's data export
+
+`npx worktrust@latest history --export <path>` (0.10.10) brings a ChatGPT data export (Settings → Data controls →
+Export data) or a Claude data export (Settings → Privacy → Export data) onto your record as history, so years of
+browser chats appear with their months, days and rhythm. The path is the zip the vendor sent you, the folder it was
+unpacked into, or `conversations.json` itself; the vendor is told by the file's shape. Of the zip only
+`conversations.json` is opened: the profile, memories and files beside it are never inflated.
+
+- **What goes.** Per conversation and day: a neutral line (`A conversation in ChatGPT`, `A conversation in Claude on
+  the web`), the seconds between the messages' clocks counted the way a measured day is (a pause over five minutes is
+  not work; a day is cut at eight hours), your own turns as a count, the model's name where the export carries one, when
+  it began and ended, and a stable name made of the conversation's id and the day, so the same export sent twice, or
+  from two computers, is each line once. Never a title, never a message, never tokens (the export carries none and none
+  are estimated).
+- **What it counts as.** Hours **reconstructed**, shown on your record with their origin and never in your verified
+  hours: an export file can be edited before it is read, and no device key witnessed those hours. WorkTrust holds this
+  at the door and in the database, whatever the sender claims.
+- **How it asks.** The plan first (the product, conversations, days, reconstructed hours, first and last month), then
+  one question; Enter is No; `--dry-run` shows the plan and stops. On a coupled computer the bare `npx worktrust` looks
+  in your Downloads folder (its top level only) for such an export it has not sent, offers it the same way, once, and
+  remembers your answer by the file's digest, never by a conversation.
+- **The export replaces.** On the days the export covers, its lines count and the earlier lines of that product a
+  connector brought in (an AI signed in on the web, which selects what it reports) are withdrawn and kept, each with a
+  correction row, so a day counts once; the command says how many. A connector line that arrives later for a day the
+  export covers is held. Lines an AI app reported earlier under no product may describe the same conversations: the
+  command says how many lie on those days and asks once, `Also withdraw N earlier lines an AI app reported for these
+  days?`; Enter is No, `--yes` keeps No, `--dry-run` sends nothing, and only a typed yes or `--withdraw-unknown` said
+  in advance withdraws exactly those lines on exactly those days, the same way, never deleting. Never touched: another
+  product, your own measured sessions, a private line, a day the export does not cover.
+
+## A copied session folder, and the local archive key
+
+**One rule (2026-10-10).** Verified hours are what this computer's coupled key witnessed: the live session hook, the
+AI apps' own folders read at history time, and an archive day signed by this computer's device key. Everything else
+that carries clocks is **reconstructed**: shown on your record with its origin, never in your verified hours.
+
+`npx worktrust@latest history --from-folder <dir>` brings in your own copy of an AI app's session folder: a backed-up
+`~/.claude/projects`, `~/.codex/sessions`, or an Antigravity brain folder. It is read with the same readers and the
+same clock as the live folders, never the live folders themselves (a path that is, or holds, one of them is refused).
+Each day is named exactly as the live folder would name it, so a stretch this computer's own sessions already hold is
+skipped (they win), and the same copy sent twice is each line once. What travels: the copy's own counts (tokens, your
+turns, the model, the evidence kinds), as reconstructed hours, titled as from a copied session folder; not the hours in
+layers, which say what a measured day's seconds were. The plan first, one question, Enter is No; `--dry-run` sends
+nothing.
+
+`preserve --archive` on a computer that is not coupled now signs each day's root with a **local archive key**
+(`~/.worktrust/archive-key.json`, only you can read it), made once and said in one line. It needs no account and no
+network and never leaves this computer. It is continuity, not proof of time: a day it signed can be told from an edit,
+and the chain stays one computer's when you couple later (the device key then signs new days, and either key may seal
+a day it sealed before), but such a day reaches WorkTrust as reconstructed. It is never offered as the device key at
+pairing: `connect` always mints a fresh pair, because a private key that lived on disk before the pairing would weaken
+the proof of possession the pairing binds, for nothing your record would gain.
 
 ## Where the key lives, and why it only works here
 

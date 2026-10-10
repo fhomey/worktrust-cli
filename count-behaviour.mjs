@@ -616,66 +616,22 @@ const skippedDirs = [];
 const countedDirs = [];
 let exportConversations = 0;
 const skippedConversations = [];
-function* claudeExportSessions() {
-  for (const given of EXPORTS) {
-    let path = given.replace(/^~(?=\/|$)/, homedir());
-    try { if (statSync(path).isDirectory()) path = join(path, "conversations.json"); } catch { throw Error(`claude export not found: ${given}`); }
-    let conversations; try { conversations = JSON.parse(readFileSync(path, "utf8")); } catch { throw Error(`claude export unreadable: ${path}`); }
-    if (!Array.isArray(conversations)) throw Error("claude export must contain an array of conversations");
-    for (const conversation of conversations) {
-      const title = String(conversation?.name ?? "");
-      if (excluded(title)) { skippedConversations.push(title.slice(0, 40)); continue; }
-      const messages = Array.isArray(conversation?.chat_messages) ? conversation.chat_messages : [];
-      if (messages.length === 0) continue;
-      exportConversations += 1;
-      // The export's messages in the transcript's own shape, so one rubric reads both.
-      const lines = messages.map((m) => {
-        const text = typeof m?.text === "string" && m.text.length > 0 ? m.text : (Array.isArray(m?.content) ? m.content.filter((c) => c?.type === "text" && typeof c.text === "string").map((c) => c.text).join("\n") : "");
-        const at = m?.created_at ?? conversation?.created_at ?? null;
-        return { type: m?.sender === "human" ? "user" : "assistant", timestamp: at, message: { content: [{ type: "text", text }] } };
-      });
-      yield { key: `claude.ai:${conversation?.uuid ?? title}`, projectDir: "claude-ai", basename: "claude.ai", lines };
-    }
+/**
+ * THE EXPORT READERS LIVE IN chat-exports.mjs beside this file (0.10.10): the session hook reads the same exports as
+ * history, so one reader serves both. The export's messages arrive in the transcript's own shape, so one rubric reads
+ * both; a vendor's zip is opened for its conversations.json alone. Without the module an export flag is refused by name.
+ */
+const { exportSessions = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
+function* vendorExportSessions(paths, expect) {
+  if (paths.length > 0 && !exportSessions) throw Error("chat-exports.mjs is not beside this file: a data export cannot be read");
+  for (const given of paths) for (const session of exportSessions(given, { expect, excluded, skipped: skippedConversations })) {
+    if (expect === "chatgpt") chatgptConversations += 1; else exportConversations += 1;
+    yield session;
   }
 }
+function* claudeExportSessions() { yield* vendorExportSessions(EXPORTS, "claude-web"); }
 let chatgptConversations = 0;
-/** The kept branch of one ChatGPT conversation, oldest first: from `current_node` up through the parents. */
-function chatgptBranch(conversation) {
-  const mapping = conversation?.mapping && typeof conversation.mapping === "object" ? conversation.mapping : {};
-  const branch = [];
-  const seen = new Set();
-  for (let id = conversation?.current_node; id && mapping[id] && !seen.has(id); id = mapping[id].parent) { seen.add(id); branch.push(mapping[id]); }
-  return branch.reverse();
-}
-function* chatgptExportSessions() {
-  for (const given of CHATGPT_EXPORTS) {
-    let path = given.replace(/^~(?=\/|$)/, homedir());
-    try { if (statSync(path).isDirectory()) path = join(path, "conversations.json"); } catch { throw Error(`chatgpt export not found: ${given}`); }
-    let conversations; try { conversations = JSON.parse(readFileSync(path, "utf8")); } catch { throw Error(`chatgpt export unreadable: ${path}`); }
-    if (!Array.isArray(conversations)) throw Error("chatgpt export must contain an array of conversations");
-    for (const conversation of conversations) {
-      const title = String(conversation?.title ?? "");
-      if (excluded(title)) { skippedConversations.push(title.slice(0, 40)); continue; }
-      const lines = [];
-      for (const node of chatgptBranch(conversation)) {
-        const m = node?.message;
-        const role = m?.author?.role;
-        // The person and the model only: system prompts, tools and what the app hides are neither.
-        if ((role !== "user" && role !== "assistant") || m?.metadata?.is_visually_hidden_from_conversation) continue;
-        const parts = Array.isArray(m?.content?.parts) ? m.content.parts.filter((part) => typeof part === "string") : [];
-        const text = parts.join("\n");
-        if (text.length === 0) continue;
-        const seconds = Number(m?.create_time ?? conversation?.create_time);
-        const at = Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString() : null;
-        const model = typeof m?.metadata?.model_slug === "string" ? m.metadata.model_slug : undefined;
-        lines.push({ type: role === "user" ? "user" : "assistant", timestamp: at, message: { ...(role === "assistant" && model ? { model } : {}), content: [{ type: "text", text }] } });
-      }
-      if (lines.length === 0) continue;
-      chatgptConversations += 1;
-      yield { key: `chatgpt:${conversation?.conversation_id ?? conversation?.id ?? title}`, projectDir: "chatgpt", basename: "chatgpt", lines };
-    }
-  }
-}
+function* chatgptExportSessions() { yield* vendorExportSessions(CHATGPT_EXPORTS, "chatgpt"); }
 /**
  * THE READERS FOR CODEX AND ANTIGRAVITY live in transcript-readers.mjs beside this file (2026-10-04;
  * the session hook imports the same file). Run alone, without it, the counter reads Claude Code,

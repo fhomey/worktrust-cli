@@ -79,11 +79,11 @@ import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const VALUED = ["--name", "--origin", "--url", "--export", "--from-folder"];
-const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALUED.includes(args[at - 1]))) ?? (args.includes("--help") ? "help" : "default");
+const command = args.includes("--help") ? "help" : args.includes("--version") ? "version" : args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALUED.includes(args[at - 1]))) ?? "default";
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.11";
+const CLI_VERSION = "0.10.12";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -346,8 +346,11 @@ function proof(device, url, body) {
 async function accepted(url, token, device) {
   try {
     const body = JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" });
-    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}`, "user-agent": "worktrust-bridge", ...proof(device, url, body) }, body });
-    return response.status !== 401 && response.status !== 403;
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", authorization: `Bearer ${token}`, "user-agent": "worktrust-bridge", ...proof(device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(5000) });
+    if (response.status === 401 || response.status === 403) return false;
+    if (response.status !== 200) return null;
+    const answer = await response.json();
+    return answer?.jsonrpc === "2.0" && answer.id === 0 && !answer.error && Array.isArray(answer.result?.tools) ? true : null;
   } catch { return null; }
 }
 
@@ -402,6 +405,8 @@ async function freshKey() {
       const next = await accepted(value.url, value.pending, value.device);
       if (next === true) { const promoted = { ...value, token: value.pending, renewedAt: new Date().toISOString() }; delete promoted.pending; keyStore.save(promoted); return promoted; }
       if (next === false) { delete value.pending; keyStore.save(value); }
+      // Unknown means the pending token may already be the server's only accepted key. Never replace it on an outage.
+      if (next === null) return value;
     }
     if (value.identified && Date.now() - Date.parse(value.renewedAt ?? 0) < RENEW_EVERY_MS) return value;
     const pending = `wt_${randomBytes(32).toString("base64url")}`;
@@ -410,8 +415,13 @@ async function freshKey() {
       const renewUrl = `${new URL(value.url).origin}/api/cli/renew`;
       const ids = computerIds();
       const body = JSON.stringify({ token_hash: createHash("sha256").update(pending).digest("hex"), token_prefix: pending.slice(0, 11), ...ids });
-      const response = await fetch(renewUrl, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${value.token}`, ...proof(value.device, renewUrl, body) }, body });
-      if (response.ok) { const renewed = { ...value, token: pending, renewedAt: new Date().toISOString(), identified: true, profile: value.profile ?? ids.profile_id }; keyStore.save(renewed); return renewed; }
+      const response = await fetch(renewUrl, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${value.token}`, ...proof(value.device, renewUrl, body) }, body, redirect: "error", signal: AbortSignal.timeout(5000) });
+      if (response.status === 200) {
+        const answer = await response.json();
+        if (typeof answer?.renewed_at === "string" && Number.isFinite(Date.parse(answer.renewed_at))) {
+          const renewed = { ...value, token: pending, renewedAt: new Date().toISOString(), identified: true, profile: value.profile ?? ids.profile_id }; keyStore.save(renewed); return renewed;
+        }
+      }
       // Refused: drop the pending key only if the file still holds the value this renewal read.
       if (response.status === 400 || response.status === 401) { const now = keyStore.load(); if (now?.token === value.token && now?.pending === pending) keyStore.save(value); }
     } catch { /* offline: the pending key is settled next time */ }
@@ -669,7 +679,15 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   historyDone(false);
   const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : [])], token, true, env);
   historyDone(sent.code === 0);
-  if (rebuild) say(sent.code === 0 ? "  ✓ Rebuilt. This computer's earlier lines for those days were replaced; the record shows each replacement." : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
+  // WHAT ACTUALLY HAPPENED, FROM THE DOOR'S RECEIPTS (owner, 2026-10-10): a re-measure in which nothing changed must not say
+  // "replaced". The hook sums the receipts of every batch and prints one line; without it (an older hook) the sentence stays neutral.
+  const did = (() => { try { return JSON.parse(sent.out.trim().split("\n").reverse().find((line) => line.startsWith('{"history_sent"')) ?? "null"); } catch { return null; } })();
+  const n = (value) => Number(value) || 0;
+  const outcome = !did ? "The record shows what changed."
+    : n(did.replaced) > 0 ? `${n(did.replaced)} of this computer's earlier lines were replaced (withdrawn and kept, never deleted)${n(did.new) > 0 ? `, ${n(did.new)} new` : ""}${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}.`
+    : n(did.new) === 0 ? `Nothing changed: the same measurement${n(did.filled) > 0 ? `; ${n(did.filled)} lines gained what was missing (the stack, the tools seen, a layer)` : ""}; ${n(did.alreadyHeld)} lines already held.`
+    : `${n(did.new)} new lines${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}; ${n(did.alreadyHeld)} already held.`;
+  if (rebuild) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
   else say(sent.code === 0 ? "  ✓ Sent as history. Measured sessions count toward your verified hours; a day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
 }
 
@@ -1090,11 +1108,11 @@ function help() {
 // before anything is read or written, --yes included. The hook and the MCP bridge are started by the agent's client
 // itself and stay as they are; `status` only reads.
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
-const PERSON_ONLY = new Set(["connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import"]);
+const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
 if (agentShell && PERSON_ONLY.has(command)) {
   say();
-  say(`  worktrust ${command} is run by the person, in their own terminal, never by an AI agent for them (this shell is an agent's: ${agentShell}).`);
+  say(`  worktrust${command === "default" ? "" : ` ${command}`} is run by the person, in their own terminal, never by an AI agent for them (this shell is an agent's: ${agentShell}).`);
   say("  Nothing was read, sent or changed. See AGENTS.md in the package: https://www.npmjs.com/package/worktrust");
   process.exit(3);
 }
@@ -1134,7 +1152,8 @@ async function relayToNewest() {
 }
 await relayToNewest();
 
-if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
+if (command === "version") say(CLI_VERSION);
+else if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
 else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();

@@ -2,11 +2,8 @@
 /**
  * THE MOMENT OF THE WORK, RECORDED — a Claude Code hook that logs a finished stretch.
  *
- * The record already holds the commits: 3,760 of them on the first record this was built for,
- * with green CI on a third. What it did not hold was that a person and an agent were there while
- * they were made, so a session carried an artefact change and a validation and no AI interaction
- * — and a work unit needs all three. Nine units on seventeen months of work, and the missing half
- * was not judgement. It was presence.
+ * Session observations complement repository and CI evidence with locally recorded AI activity.
+ * They do not establish independent verification or human presence by themselves.
  *
  * IT NEVER LOSES A MEASURED DAY. A session is reported day by day, on whichever run comes first,
  * so a session that stays open for a fortnight is not a fortnight of silence; a machine that was
@@ -57,8 +54,8 @@
  * WHAT IS MEASURED, AND WHAT IS THEREFORE NOT SENT. A stretch's seconds are the sum of the gaps
  * between consecutive messages in the transcript, each gap counted only up to IDLE_CAP: two
  * recorded timestamps at both ends, and a pause longer than the cap is not work. That is what
- * `duration_basis: "measured"` means and it is the only basis this script ever sends — a stretch
- * whose transcript carries no timestamps is skipped rather than estimated. Tokens are what each
+ * `duration_basis: "measured"` means for local sessions; copied/exported history is reconstructed.
+ * A local stretch without timestamps is skipped rather than estimated. Tokens are what each
  * request ADDED (input plus cache creation, cache reads excluded), which the door calls
  * `newInput`.
  *
@@ -736,7 +733,7 @@ function batchesOf(group, byDay) {
   return out;
 }
 /** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
-const RECEIPTS = { superseded: 0, unknownOnDays: 0, unknownWithdrawn: 0 };
+const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, unknownOnDays: 0, unknownWithdrawn: 0 }; // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
 const noteReceipt = (answer) => {
   try {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
@@ -1243,7 +1240,7 @@ if (flag("history")) {
   // An export that arrived whole is remembered by its digest (never by a conversation), so the bare command offers it no more.
   if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
   // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
-  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS }));
+  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: entries.length, ...RECEIPTS })); // the same line for a history send: what the door did with it
   await exitFlushed(accepted === entries.length ? 0 : 1);
 }
 

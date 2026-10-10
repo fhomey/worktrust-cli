@@ -4,7 +4,7 @@
 #  - every action is pinned to a full commit, not a movable tag;
 #  - npm is pinned to one version (trusted publishing needs npm 11.5.1 or later);
 #  - the job runs in the `npm` environment: a person approves every release before it publishes, and
-#    the environment only accepts version tags (v*);
+#    the workflow checks that the release tag matches the package version;
 #  - the job can read the repository and mint its OIDC identity, nothing else.
 name: publish
 on:
@@ -26,6 +26,16 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@11.21.0
+      - name: CLI release only; Git deployments disabled
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const vercel = JSON.parse(readFileSync('vercel.json', 'utf8'));
+          assert.equal(vercel.git?.deploymentEnabled, false);
+          assert.equal(process.env.GITHUB_REF_NAME, `v${pkg.version}`);
+          JS
       - run: node --check worktrust.mjs && node --check setup-mcp.mjs && node --check log-session.mjs && node --check count-behaviour.mjs
       - run: node worktrust.mjs help
       - name: The package carries what this commit carries, and nothing that installs or downloads

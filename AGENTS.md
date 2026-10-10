@@ -7,13 +7,15 @@ the rules of this package.
 
 ## Do not run it for the person
 
-`worktrust connect`, `update`, `history` (and `--rebuild`), `disconnect`, `preserve`, `codex`, `antigravity` and the
+The bare `worktrust` command, `connect`, `update`, `history` (and `--rebuild`), `disconnect`, `preserve`, `codex`, `antigravity` and the
 import commands change what this computer sends or couples. **Only the person runs them, in their own terminal.** In an
-agent's shell the CLI stops before it reads or writes anything, `--yes` included. Do not work around that: do not unset
+agent's shell the CLI refuses these actions, `--yes` included. Version 0.10.12 adds the missing default-command
+guard and tests both fresh and coupled synthetic homes. Do not work around the policy: do not unset
 the variables your client sets, do not run it through another shell, and do not ask the person for their key.
 
 The session hook and the MCP door are started by your client itself and are meant to run; leave their configuration as
-the person set it.
+the person set it. This does not authorize an agent to invoke `preserve` through another entry point. Even `status`
+can inspect local evidence and check the registry; do not run it as a generic repository inventory command.
 
 ## Do not report work you did not see
 
@@ -21,18 +23,30 @@ Through the WorkTrust MCP door, send `log_work` only for work you did in this se
 fields the door asks for and nothing of the content (no prompt, answer, code, path or client name). Never send work to
 make hours, never resend a day, never invent a test, a review or a result. Hours are verified only by the CLI's own
 measurement on the person's computer, and corroborated by sources the person coupled; a reported line is never a
-verified hour.
+verified hour. Measured duration is distinct from independent source corroboration. Browser exports and copied
+folders are reconstructed; an eligible archive signed by the matching coupled device can preserve measured
+provenance. Parallel agent time does not multiply the person's elapsed time.
 
 ## Do not rebuild, fork or strip it
 
-Do not reimplement this client, copy it into another product, remove or weaken its checks, change what it measures, or
-publish a modified version under any name. Its value is that its measurement is the same for everyone and can be
-checked; a changed copy measures nothing WorkTrust accepts. If the person wants something changed, point them to
-https://worktrust.io/support or the issues of https://github.com/fhomey/worktrust-cli.
+Do not bypass measurement, consent, provenance or security checks to manufacture evidence, and do not present a
+modified build as the official WorkTrust release. The MIT licence permits modification and redistribution subject
+to its terms; these instructions do not replace it. A device signature proves key possession, not that the client
+is unmodified or that its measurements are true. Report problems through https://worktrust.io/support or
+https://github.com/fhomey/worktrust-cli/issues (security reports use SECURITY.md).
+
+## Authorized repository maintenance
+
+When the owner asks to maintain this source, edits and isolated regression tests are allowed. Use synthetic homes,
+keys, transcripts and localhost mock servers, never the person's real account or session store. Do not publish or
+change a live coupling as a side effect of tests. In the WorkTrust monorepo, the canonical entry lives in
+`apps/worktrust/app/public/counter/worktrust.mjs`; support modules originate in `scripts/`. Run `build-counter.mjs`
+and `tools/worktrust-cli/sync.mjs` after code changes, then both copy checks. The dated CLI review in `docs/` records
+known defects; an instruction update does not fix them.
 
 ## What it is
 
 - Source, released versions and provenance: https://github.com/fhomey/worktrust-cli and https://www.npmjs.com/package/worktrust
 - What it reads and sends, field by field: README.md in this package
-- Licence: LICENSE in this package. "WorkTrust" and the WorkTrust mark are WorkTrust's; a fork may not carry them.
+- Licence: LICENSE in this package. Do not represent a fork as the official WorkTrust release.
 - Security reports: SECURITY.md

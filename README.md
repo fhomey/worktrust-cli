@@ -339,7 +339,7 @@ which would delete every password on the computer, and many people rightly keep 
 | **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw), and the chats Cursor and Copilot keep (clocks, models and token counts only). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files, the session databases of Hermes, Goose, OpenCode and OpenClaw, and the chats Cursor and Copilot keep, on this computer to measure durations and token counts. |
 | **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`, Hermes's and Goose's `config.yaml`, OpenCode's `opencode.json`, OpenClaw through `openclaw mcp set`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
 | **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. WorkTrust also records the network address the request arrives from, as a security record kept 90 days and seen only by WorkTrust staff (to answer a theft or fraud report). |
-| **Sends, afterwards** | Per measured stretch of work, and nothing else: its durations (`seconds`, `duration_basis`, `model_seconds`, `tool_seconds`, `human_seconds`, `idle_seconds`), token counts (`tokens_in`, `tokens_out`, `tokens_cache_read`, `tokens_cache_write`, `token_basis`), the model's name (`model`), the kind of work and one layer keyword such as frontend or backend (`title`, `kind`, `layer`, `layers`), the technologies the touched files name as keys from WorkTrust's closed list (`stack`, `tools_seen`: a `.tsx` file names TypeScript and React, a `Dockerfile` names Docker; read off the paths with the same rules the record uses, since 0.10.11; never a path), counts of how you work (`exchanges`, `turn_basis`, `agent_runs`, `agent_seconds`, `agent_peak`, `interrupts`, `steers`), when it began and ended and your computer's offset from UTC (`started_at`, `at`, `utc_offset`), what the CLI derived from the stretch as kinds and counts (`evidence`: checks run and failed, delivery steps and whether a check passed first, recoveries, delegation, context, routing, steering, refusals, planning, files and test files changed, the complexity class; never a word, a command or a path; since 0.8.3), a hash of the session and the day (`stretch_ref`), `steered_from` when it ran over SSH, and, so the work can be matched to GitHub, the repository as its remote's owner/name (`repo`, only for a repository on GitHub, GitLab or Bitbucket, the hosts WorkTrust can couple; never one on your own or a client's server) and the hashes of the commits made in the stretch (`commits`, never their messages). |
+| **Sends, afterwards** | Per measured stretch of work, and nothing else: its durations (`seconds`, `duration_basis`, `model_seconds`, `tool_seconds`, `human_seconds`, `idle_seconds`), token counts (`tokens_in`, `tokens_out`, `tokens_cache_read`, `tokens_cache_write`, `token_basis`), the model's name (`model`), the kind of work and one layer keyword such as frontend or backend (`title`, `kind`, `layer`, `layers`), closed technology keys (`stack`) and separate display-only tool keys (`tools_seen`), counts of how you work (`exchanges`, `turn_basis`, `agent_runs`, `agent_seconds`, `agent_peak`, `interrupts`, `steers`), when it began and ended and your computer's offset from UTC (`started_at`, `at`, `utc_offset`), what the CLI derived from the stretch as kinds and counts (`evidence`: checks run and failed, delivery steps and whether a check passed first, recoveries, delegation, context, routing, steering, refusals, planning, files and test files changed, the complexity class; never a word, a command or a path; since 0.8.3), a hash of the session and the day (`stretch_ref`), `steered_from` when it ran over SSH, and, so the work can be matched to GitHub, the repository as its remote's owner/name (`repo`, only for a repository on GitHub, GitLab or Bitbucket, the hosts WorkTrust can couple; never one on your own or a client's server) and the hashes of the commits made in the stretch (`commits`, never their messages). |
 | **Never sends** | Prompts, answers, code, file names or paths, commit messages, branch names, or the name of your local folder (a repository is named only as its remote's owner/name, above). The door has no field for them and refuses a submission that carries them. |
 
 ## Why you can check it
@@ -348,11 +348,12 @@ which would delete every password on the computer, and many people rightly keep 
   in an afternoon: `worktrust.mjs` (this command), `setup-mcp.mjs` (writes the MCP entries),
   `log-session.mjs` (the session hook), `count-behaviour.mjs` (the local counter) and `preserve.mjs`
   (keep your history), with the readers they import.
-- **Nothing is downloaded at run time.** Everything that runs is in the package. The counter is
-  pinned: it is not replaced from the network; a new one comes with a new version of this package.
-- **Provenance.** Every version is built and published from a public repository by GitHub Actions
-  with npm provenance: the npm page links each version to the exact commit it was built from,
-  signed through Sigstore. `npm audit signatures` checks it on your machine.
+- **Bundled measurement modules.** The npm package includes its counter and readers. Interactive
+  commands can check the registry and relay through `npx` to a newer package; that can download code.
+  The standalone bootstrap can also download support modules. See SECURITY.md for the distinction.
+- **Provenance.** The release workflow requests npm provenance from the public source repository.
+  Verify the actual version's attestation and contents before relying on that origin; the manifest
+  setting alone does not establish it. `npm audit signatures` checks an installed dependency tree.
 - **Read it before you run it:** `npm pack worktrust` downloads the package as a file without
   running anything.
 - **The key** never appears on a command line a process list could show: it is written to its file
@@ -376,14 +377,19 @@ which would delete every password on the computer, and many people rightly keep 
 ## Undo
 
 `npx worktrust@latest disconnect` removes the WorkTrust entries (Hermes's hook with them), the hook (and Codex's `notify` line and
-Antigravity's `worktrust` hook when WorkTrust set them) and the key file, and empties
-`~/.worktrust` but for one small note of which account it fed (masked), so that a later coupling by
-another account offers none of this computer's earlier work.
+Antigravity's `worktrust` hook when WorkTrust set them), the key file and installed bridge scripts.
+A small note of the previous account (masked) remains so that a later coupling by another account
+does not offer its earlier work. Other retained files and your local evidence archive are not an
+automatic server or archive erasure.
 Then revoke the key in WorkTrust: Sources → Devices → this computer → Revoke.
 
 ## Requirements
 
-Node 18 or later. macOS, Linux or Windows.
+Node 18 or later for the base CLI. SQLite session readers require Node 22.5 or later with `node:sqlite`;
+without it, those clients are not read. macOS, Linux or Windows; available readers depend on the local client format.
+
+See [SECURITY.md](SECURITY.md) for the credential-file threat model, network/update behaviour and known
+trust limits. A local signature proves possession of a key, not independent observation of the work.
 
 Security reports: see [SECURITY.md](SECURITY.md).
 

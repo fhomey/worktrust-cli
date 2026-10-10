@@ -274,10 +274,11 @@ const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions 
 // A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10): chat-exports.mjs reads a ChatGPT or Claude export (the counter
 // imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
 const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, readExport = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
+const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await import("./stack-rules.mjs").catch(() => null)) ?? {}; // 0.10.11: core's stack rules and the display-only keys (tools_seen), generated (build-stack-rules --check); absent → nothing named, never a guess
 const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
-const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader
+const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {
   let installed = true;
@@ -657,7 +658,7 @@ function payloadFor(stretch) {
   const cwd = stretch.cwd && existsSync(stretch.cwd) ? stretch.cwd : null;
   const repo = cwd ? repoOf(cwd) : null;
   const touched = cwd ? pathsTouched(cwd, new Date(stretch.from).toISOString(), new Date(stretch.to).toISOString()) : { paths: [], committed: false, shas: [] };
-  const { layer, layers } = layersOf(touched.paths);
+  const { layer, layers } = layersOf(touched.paths), stack = stackOfFiles(touched.paths), toolsSeen = displayStackOfFiles(touched.paths); // 0.10.11: the stack and the tools seen, from the same paths, keys only, two fields
   // The seventh kind, used as it is defined: a stretch that changed no artefact is knowing
   // something, not building something, and it earns neither an artefact's nor a validation's credit.
   const kind = touched.paths.length === 0 ? "researched" : touched.committed ? "changed" : "built";
@@ -673,6 +674,8 @@ function payloadFor(stretch) {
     kind,
     ...(layer ? { layer } : {}),
     ...(layers.length > 1 ? { layers } : {}),
+    ...(stack.length > 0 ? { stack } : {}),
+    ...(toolsSeen.length > 0 ? { tools_seen: toolsSeen } : {}), // its own line: the payload allowlist (hook-presence) reads the key here
     // Both, or neither: seconds without a basis is exactly the ambiguity the record is trying to
     // lose, and a basis without seconds says nothing.
     ...(stretch.seconds !== null ? { seconds: stretch.seconds, duration_basis: "measured" } : {}),

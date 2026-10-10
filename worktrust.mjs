@@ -83,14 +83,14 @@ const command = args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALU
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.10";
+const CLI_VERSION = "0.10.11";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs"];
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
-const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs"]);
+const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
@@ -1017,15 +1017,15 @@ async function measuredHere() {
   let m = null;
   try { m = JSON.parse(read.out.trim().split("\n").filter((text) => text.startsWith("{")).pop()); } catch { return; }
   if (!m || !m.stretches) { say("  Measured here, last 30 days: no finished work stretch yet."); return; }
-  const of = (part, whole, unit) => `${part} of ${whole} ${unit}`;
+  const of = (part, whole, one, many) => `${part} of ${whole} ${whole === 1 ? one : many}`;
   say();
   say(`  Measured here, last 30 days: ${m.stretches} work stretch${m.stretches === 1 ? "" : "es"} · ${m.hours >= 1 ? `${m.hours} h` : "under 1 h"}`);
-  if (m.delivered) say(`    verified before delivery   ${of(m.verified_first, m.delivered, "stretches that delivered")}`);
-  if (m.failures) say(`    recovered failures         ${of(m.recovered, m.failures, "failed tool calls")} (${m.blind_retries} retried unchanged)`);
-  if (m.steers) say(`    steering that worked       ${of(m.effective_steers, m.steers, "times you stepped in")}`);
+  if (m.delivered) say(`    verified before delivery   ${of(m.verified_first, m.delivered, "stretch that delivered", "stretches that delivered")}`);
+  if (m.failures) say(`    recovered failures         ${of(m.recovered, m.failures, "failed tool call", "failed tool calls")} (${m.blind_retries} retried unchanged)`);
+  if (m.steers) say(`    steering that worked       ${of(m.effective_steers, m.steers, "time you stepped in", "times you stepped in")}`);
   if (m.refused || m.guard_denied) say(`    refused                    ${m.refused} by you · ${m.guard_denied} by a guard`);
-  if (m.planned) say(`    planned                    ${m.planned} stretches with a to-do list`);
-  if (m.files) say(`    tests among changed files  ${of(m.test_files, m.files, "files")}`);
+  if (m.planned) say(`    planned                    ${m.planned} stretch${m.planned === 1 ? "" : "es"} with a to-do list`);
+  if (m.files) say(`    tests among changed files  ${of(m.test_files, m.files, "file", "files")}`);
   const tiers = Object.entries(m.complexity ?? {}).sort();
   if (tiers.length) say(`    task complexity            ${tiers.map(([tier, n]) => `${tier} ${n}`).join(" · ")}`);
   say("  Sent with each stretch as kinds and counts, never text. Keep your own copy: npx worktrust@latest preserve");

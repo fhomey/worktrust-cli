@@ -39,11 +39,13 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(installed)
         entrypoints = archive.read(next(n for n in archive.namelist() if n.endswith("entry_points.txt"))).decode()
+        metadata = archive.read(next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))).decode()
         check("worktrust = worktrust_cli:main" in entrypoints, "wheel console entrypoint")
     env["PYTHONPATH"] = str(installed)
     bundle = installed / "worktrust_cli/bundle"
     manifest = json.loads((bundle/"manifest.json").read_text())
     npm = json.loads((CLI/"package.json").read_text())
+    check(f"Version: {npm['version']}" in metadata.splitlines(), "wheel metadata matches the CLI release version")
     check(manifest["version"] == npm["version"], "same release version")
     check(set(manifest["files"]) == {n for n in npm["files"] if n.endswith(".mjs")}, "same modules")
     for name, digest in manifest["files"].items():

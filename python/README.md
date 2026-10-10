@@ -26,14 +26,25 @@ local session files and can change retention settings or create local metadata a
 only the person runs it. Existing WorkTrust agent safeguards and consent prompts remain.
 Other commands can contact WorkTrust. Package installation itself can contact registries.
 
+After PyPI publication, explicitly request the latest published package when needed:
+
+```sh
+uvx worktrust@latest preserve
+pipx run --no-cache worktrust preserve
+```
+
+For persistent installations, use `uv tool upgrade worktrust` or `pipx upgrade worktrust`.
+An existing cache or version constraint can otherwise keep an older release. `worktrust update`
+refreshes the computer coupling using the selected package; it does not upgrade the Python package.
+
 Runtime bundle hashes detect missing or changed files; they are not hardware attestation or
 independent proof of authenticity. Request and archive signatures retain the existing CLI's
 software-key threat model. See the npm package SECURITY.md and README.md for the data contract.
 
 ## Maintainers
 
-Run `node scripts/build-python-cli.mjs` from the monorepo after the canonical counter and npm
-package have been synchronized. `--check` refuses drift. Then run
+Running `node tools/worktrust-cli/sync.mjs` from the monorepo also regenerates the Python bundle
+and version. `node scripts/build-python-cli.mjs --check` refuses drift. Then run
 `python -m build tools/worktrust-python` and `node scripts/test-python-cli.mjs` with a Python
 interpreter containing `build` (select it with `WORKTRUST_TEST_PYTHON`). Tests use synthetic
 homes and locally installed wheels, never an owner's credentials or session data.
@@ -52,7 +63,11 @@ The build-only GitHub workflow runs on Linux and macOS. Native Windows validatio
 
 The inactive `release-pypi.yml.example` targets this public layout. Its intended active filename
 is `.github/workflows/release-pypi.yml`, using the protected `pypi` environment and PyPI Trusted
-Publishing. npm and PyPI have separate workflows; neither invokes a Vercel deployment.
+Publishing. Once activated, the same GitHub release triggers both registries; manual execution
+supports the initial Python publication and retries. npm also requires the Linux/macOS Python
+artifact/parity tests before publishing. Both channels use the same version and module bytes.
+Approvals and registry failures remain separate; confirm both publications before announcing a
+release as available on both channels. Neither workflow invokes a Vercel deployment.
 
 Do not edit generated `bundle/`, `VERSION` or `LICENSE`. Publication requires confirmed
 PyPI ownership and a configured Trusted Publisher; source readiness does not grant that.

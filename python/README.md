@@ -2,8 +2,15 @@
 
 This package launches the same JavaScript measurement engine shipped in the WorkTrust npm
 package. It does not implement another measurement engine or a Python instrumentation SDK.
-Python 3.10+ and an existing **Node.js 22.5+** installation are required. The launcher never
-installs Node or npm, and does not silently switch to another CLI version.
+Python 3.10+ is required. Supported platform wheels include **Node.js 22.23.3**; no separate
+Node or npm installation is needed. The launcher uses that bundled runtime, never downloads a
+runtime when invoked, and does not silently switch to another CLI version.
+
+Wheels target macOS 11+ (Intel and Apple Silicon), Linux with glibc 2.28+ (x64 and arm64), and
+Windows 10+ (x64 and arm64). Linux also requires the Node-supported system C++ runtime
+(GLIBCXX_3.4.25 or newer). Alpine/musl, 32-bit systems and other platforms are not supported.
+A source distribution cannot fetch Node automatically: a source build requires the explicit
+maintainer preparation step below. Supported users should install the matching wheel.
 
 After publication under a verified WorkTrust-owned PyPI project, the intended commands are:
 
@@ -16,12 +23,12 @@ These public commands are not a claim that this package has already been publish
 reviewed local wheel first:
 
 ```sh
-uvx --from /absolute/path/worktrust-VERSION-py3-none-any.whl worktrust --help
-pipx run --spec /absolute/path/worktrust-VERSION-py3-none-any.whl worktrust --help
+uvx --from /absolute/path/worktrust-VERSION-py3-none-PLATFORM.whl worktrust --help
+pipx run --spec /absolute/path/worktrust-VERSION-py3-none-PLATFORM.whl worktrust --help
 ```
 
 Use your package manager to choose and update the installed version. The package contains
-the CLI modules, so `preserve` itself needs no network after installation. It reads supported
+the CLI modules and Node runtime, so `preserve` itself needs no network after installation. It reads supported
 local session files and can change retention settings or create local metadata archives;
 only the person runs it. Existing WorkTrust agent safeguards and consent prompts remain.
 Other commands can contact WorkTrust. Package installation itself can contact registries.
@@ -43,31 +50,49 @@ software-key threat model. See the npm package SECURITY.md and README.md for the
 
 ## Maintainers
 
-Running `node tools/worktrust-cli/sync.mjs` from the monorepo also regenerates the Python bundle
-and version. `node scripts/build-python-cli.mjs --check` refuses drift. Then run
-`python -m build tools/worktrust-python` and `node scripts/test-python-cli.mjs` with a Python
-interpreter containing `build` (select it with `WORKTRUST_TEST_PYTHON`). Tests use synthetic
-homes and locally installed wheels, never an owner's credentials or session data.
-Set `WORKTRUST_REQUIRE_TOOL_RUNNERS=1` in release checks to require both `uv` and `pipx`
-beside the test interpreter. Set `WORKTRUST_TEST_ARTIFACT_DIR` to a fresh output directory
-to retain the exact tested wheel and sdist; existing artifact files are never overwritten.
-Canonical module bytes are identical across channels; bit-for-bit reproducibility of whole
-wheel or sdist archives is not asserted.
+Running `node tools/worktrust-cli/sync.mjs` from the monorepo also regenerates the Python JavaScript
+bundle and version. `node scripts/build-python-cli.mjs --check` refuses drift. The native runtime
+is a separate build artifact, excluded from Git and sdists. Explicitly prepare it before building:
 
-The public `fhomey/worktrust-cli` repository carries this package under `python/`, alongside
-the npm package at its root. There, use `python -m pip install -r python/requirements-release.txt`
-and run `python python/tests/test_distribution.py` with `WORKTRUST_TEST_CLI_SOURCE` set to
-the repository's absolute path, `WORKTRUST_TEST_NODE` set to the Node executable's absolute path,
-and `WORKTRUST_REQUIRE_TOOL_RUNNERS=1`. This checks the built wheel against the root npm modules.
-The build-only GitHub workflow runs on Linux and macOS. Native Windows validation remains open.
+```sh
+python tools/worktrust-python/build_runtime.py
+python -m build --wheel tools/worktrust-python
+python -m build --sdist tools/worktrust-python
+```
+
+`build_runtime.py` downloads one official Node archive from nodejs.org at build time, verifies its
+committed SHA256 from `runtime-lock.json`, and extracts only the executable and complete LICENSE.
+It accepts `--target` for a reviewed target and `--cache` for a build cache. Platform wheel tags
+follow the selected runtime. Never label these wheels `any`. Building a wheel from the sdist
+fails closed until this explicit preparation step has been performed; no install hook downloads code.
+
+Run `python tools/worktrust-python/tests/test_runtime_build.py`, then
+`node scripts/test-python-cli.mjs` with a Python containing the build requirements (select it with
+`WORKTRUST_TEST_PYTHON`). Tests build and exercise a real wheel using its own runtime with no Node
+on PATH; they use synthetic homes and metadata only. Native execution must pass independently on
+all six claimed OS/architecture combinations before release. Cross-building alone is not that proof.
+Set `WORKTRUST_REQUIRE_TOOL_RUNNERS=1` to require actual uv and pipx wheel smoke tests, and
+`WORKTRUST_TEST_ARTIFACT_DIR` to a fresh directory to retain the exact tested wheel and sdist.
+Existing artifacts are never overwritten. Canonical module bytes match across channels;
+bit-for-bit reproducibility of whole wheel or sdist archives is not asserted.
+
+The public `fhomey/worktrust-cli` repository carries this package under `python/`, alongside the
+npm package at its root. There, install `python/requirements-release.txt`, run
+`python python/build_runtime.py`, then `python python/tests/test_distribution.py` with
+`WORKTRUST_TEST_CLI_SOURCE` set to the repository's absolute path and
+`WORKTRUST_REQUIRE_TOOL_RUNNERS=1`. The test derives Node from the built wheel; it does not require
+a system Node installation. Keep build-only workflow results distinct from successful publication.
 
 The inactive `release-pypi.yml.example` targets this public layout. Its intended active filename
 is `.github/workflows/release-pypi.yml`, using the protected `pypi` environment and PyPI Trusted
 Publishing. Once activated, the same GitHub release triggers both registries; manual execution
-supports the initial Python publication and retries. npm also requires the Linux/macOS Python
+supports the initial Python publication and retries. npm also requires the supported-platform Python
 artifact/parity tests before publishing. Both channels use the same version and module bytes.
 Approvals and registry failures remain separate; confirm both publications before announcing a
 release as available on both channels. Neither workflow invokes a Vercel deployment.
 
 Do not edit generated `bundle/`, `VERSION` or `LICENSE`. Publication requires confirmed
 PyPI ownership and a configured Trusted Publisher; source readiness does not grant that.
+
+Official runtime platform requirements: https://github.com/nodejs/node/blob/v22.23.3/BUILDING.md
+Pinned upstream archive checksums: https://nodejs.org/dist/v22.23.3/SHASUMS256.txt

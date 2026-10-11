@@ -7,7 +7,7 @@ record of the work you do with AI without anyone reading that work: it receives 
 npx worktrust@latest
 ```
 
-**The only official package** is `worktrust`, published by the npm account **worktrustio** with
+**The official npm package** is `worktrust`, published by the npm account **worktrustio** with
 provenance from this repository (github.com/fhomey/worktrust-cli). Check it on npmjs.com before you run
 it; a package of another name or from another publisher is not ours. Without npm, the same script runs
 from WorkTrust's own site:
@@ -15,6 +15,18 @@ from WorkTrust's own site:
 ```
 curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
 ```
+
+**Python tool runners:** this repository also builds `worktrust` for `uvx` and `pipx` from the
+same measurement modules. Version 0.10.13's native wheels include a pinned official Node runtime,
+so that route needs no separate Node/npm installation. See the
+[Python distribution](https://github.com/fhomey/worktrust-cli/tree/main/python) for supported
+platforms, release status and installation commands. npm and Python versions are checked together.
+
+Connecting through the Python package installs the runtime and engine in an immutable directory
+under `~/.worktrust/installations/`; client hooks use that persistent path, so clearing a tool-runner
+cache does not break the coupling. Updates retain older installations for running clients.
+Run `worktrust disconnect` before removing an installed Python tool if you also want to remove its
+WorkTrust coupling. Disconnect removes the key and client wiring; it leaves runtime files in place.
 
 **No account? Keep your history anyway.** Claude Code and Gemini CLI delete their sessions after 30
 days by default, and a deleted session can never be measured again. `npx worktrust@latest preserve` shows what

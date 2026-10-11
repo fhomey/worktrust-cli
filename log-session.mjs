@@ -1080,7 +1080,7 @@ if (flag("install")) {
   const settings = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   // `--via <worktrust.mjs>`: the key lives in ~/.worktrust/key.json, so Claude Code runs the wrapper, which reads it and starts this hook.
   const via = args.indexOf("--via") >= 0 ? args[args.indexOf("--via") + 1] : null;
-  const command = via ? `"${process.env.WORKTRUST_NODE || process.execPath}" "${via}" hook` : `node ${home}`;
+  const command = `"${process.env.WORKTRUST_NODE || process.execPath}" "${via ?? home}"${via ? " hook" : ""}`;
   settings.hooks ??= {};
   for (const event of HOOK_EVENTS) settings.hooks[event] ??= [];
   // A WIRING THAT POINTS SOMEWHERE ELSE IS REPAIRED, NOT LEFT. An earlier install wired whatever

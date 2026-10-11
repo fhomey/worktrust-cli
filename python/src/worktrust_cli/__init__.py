@@ -2,9 +2,9 @@
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 
@@ -31,20 +31,41 @@ def verified_entry():
     return root / "worktrust.mjs"
 
 
+def verified_runtime():
+    root = Path(__file__).resolve().parent / "runtime"
+    descriptor = root / "runtime.json"
+    if root.is_symlink() or descriptor.is_symlink():
+        raise ValueError("bundled runtime must not use symlinks")
+    metadata = json.loads(descriptor.read_text(encoding="utf-8"))
+    if set(metadata) != {"version","platform","executable","archive_sha256","files"}:
+        raise ValueError("invalid bundled runtime descriptor")
+    system = {"Darwin":"darwin","Linux":"linux","Windows":"win"}.get(platform.system())
+    arch = {"x86_64":"x64","amd64":"x64","aarch64":"arm64","arm64":"arm64"}.get(platform.machine().lower())
+    if metadata["platform"] != f"{system}-{arch}":
+        raise ValueError("bundled runtime does not support this OS/architecture")
+    executable = "node.exe" if os.name == "nt" else "node"
+    if metadata["executable"] != executable or set(metadata["files"]) != {executable,"LICENSE"}:
+        raise ValueError("invalid bundled runtime file list")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", metadata["version"]) or not re.fullmatch(r"[a-f0-9]{64}", metadata["archive_sha256"]):
+        raise ValueError("invalid bundled runtime identity")
+    if {path.name for path in root.iterdir()} != {executable,"LICENSE","runtime.json"}:
+        raise ValueError("bundled runtime file list mismatch")
+    for name,digest in metadata["files"].items():
+        path = root/name
+        if path.is_symlink() or not path.is_file() or not re.fullmatch(r"[a-f0-9]{64}",digest) or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError("bundled runtime integrity check failed")
+    return root/executable
+
+
 def main():
     try:
         entry = verified_entry()
-        node = shutil.which("node")
-        if not node:
-            raise ValueError("Node.js 22.5 or newer is required; install Node.js separately")
-        probe = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=5, check=True)
-        match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)\s*", probe.stdout)
-        if not match or tuple(map(int, match.groups())) < (22, 5, 0):
-            raise ValueError("Node.js 22.5 or newer is required")
+        node = verified_runtime()
         env = dict(os.environ)
         # Package-manager selection is authoritative. This does not disable agent detection.
         env["WORKTRUST_RELAYED"] = "1"
-        argv = [node, str(entry), *sys.argv[1:]]
+        env["WORKTRUST_BUNDLED_RUNTIME_DIR"] = str(node.parent)
+        argv = [str(node), str(entry), *sys.argv[1:]]
         if os.name != "nt":
             os.execve(node, argv, env)
         child = subprocess.Popen(argv, env=env)

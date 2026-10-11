@@ -8,11 +8,11 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import tarfile
 from datetime import datetime, timedelta, timezone
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CLI = Path(os.environ.get("WORKTRUST_TEST_CLI_SOURCE", PACKAGE.parent / "worktrust-cli")).resolve()
-NODE = os.environ["WORKTRUST_TEST_NODE"]
 count = 0
 
 
@@ -31,13 +31,19 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     # A new, explicitly synthetic environment, not a filtered owner session.
     env = {"HOME":str(home), "USERPROFILE":str(home), "PATH":str(binaries),
            "WORKTRUST_RELAYED":"1", "PYTHONUTF8":"1"}
+    if os.name == "nt":
+        env.update({key:os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP") if key in os.environ})
     buildenv = dict(env, PATH=os.environ.get("PATH", ""))
-    build = subprocess.run([sys.executable,"-m","build","--no-isolation","--outdir",str(scratch/"dist"),str(PACKAGE)],env=buildenv,capture_output=True,text=True)
-    check(build.returncode == 0, build.stdout + build.stderr)
+    for kind in ("--wheel", "--sdist"):
+        build = subprocess.run([sys.executable,"-m","build",kind,"--no-isolation","--outdir",str(scratch/"dist"),str(PACKAGE)],env=buildenv,capture_output=True,text=True)
+        check(build.returncode == 0, build.stdout + build.stderr)
     wheel = next((scratch/"dist").glob("*.whl"))
     installed = scratch / "installed"
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(installed)
+        for member in archive.infolist():
+            if member.filename.endswith("/runtime/node"):
+                (installed/member.filename).chmod(0o755)
         entrypoints = archive.read(next(n for n in archive.namelist() if n.endswith("entry_points.txt"))).decode()
         metadata = archive.read(next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))).decode()
         check("worktrust = worktrust_cli:main" in entrypoints, "wheel console entrypoint")
@@ -55,23 +61,40 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     def run(args=(), changes=None):
         return subprocess.run([sys.executable,"-m","worktrust_cli",*args],env=dict(env,**(changes or {})),cwd=scratch,capture_output=True,text=True,timeout=45)
 
-    result = run(["--help"])
-    check(result.returncode == 1 and "Node.js 22.5" in result.stderr,"missing Node is explicit")
-    fake = binaries / "node"
-    if os.name == "nt":
-        raise RuntimeError("Windows fixture requires a real node.exe fixture; run native Windows matrix before release")
-    fake.write_text(f"#!{sys.executable}\nimport sys\nprint('v20.0.0')\n")
-    fake.chmod(0o755)
-    result = run(["--help"])
-    check(result.returncode == 1 and "22.5" in result.stderr,"old Node refused")
-    fake.write_text(f"#!{sys.executable}\nimport sys,json,os\nif sys.argv[1:] == ['--version']:\n print('v22.5.0');sys.exit(0)\nprint(json.dumps({{'args':sys.argv[2:], 'agent':os.environ.get('CLAUDECODE'), 'relay':os.environ.get('WORKTRUST_RELAYED')}}))\nprint('synthetic stderr',file=sys.stderr)\nsys.exit(7)\n")
+    runtime_dir = installed/"worktrust_cli/runtime"
+    runtime_metadata = json.loads((runtime_dir/"runtime.json").read_text())
+    NODE = str(runtime_dir/runtime_metadata["executable"])
+    lock = json.loads((PACKAGE/"runtime-lock.json").read_text())
+    check(runtime_metadata["version"] == lock["version"], "pinned Node release")
+    check(wheel.name.endswith(lock["targets"][runtime_metadata["platform"]]["wheel_tag"]+".whl"), "correct native wheel tag")
+    check("none-any" not in wheel.name, "native runtime never mislabeled universal")
+    check(not shutil.which("node",path=env["PATH"]), "no Node installed on test PATH")
+    check("Node.js" in (runtime_dir/"LICENSE").read_text(), "full Node license shipped")
+    node_version = subprocess.run([NODE,"--version"],env=env,capture_output=True,text=True)
+    check(node_version.returncode == 0 and node_version.stdout.strip() == "v"+lock["version"], "actual bundled runtime version matches pin")
+    sqlite = subprocess.run([NODE,"--input-type=module","-e","import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync(':memory:'); console.log(db.prepare('select 42 as n').get().n); db.close();"],env=env,capture_output=True,text=True)
+    check(sqlite.returncode == 0 and sqlite.stdout.strip() == "42", "bundled runtime supports SQLite readers")
+    with tarfile.open(next((scratch/"dist").glob("*.tar.gz"))) as source_archive:
+        members = source_archive.getmembers()
+        check(not any("/runtime/" in member.name for member in members), "sdist contains no platform binary")
+        source_directory = scratch/"source-build"
+        for member in members:
+            if member.isfile():
+                target = source_directory/member.name
+                check(target.resolve().is_relative_to(source_directory.resolve()), "sdist path remains inside extraction")
+                target.parent.mkdir(parents=True,exist_ok=True)
+                target.write_bytes(source_archive.extractfile(member).read())
+    source_root = next(source_directory.iterdir())
+    source_build = subprocess.run([sys.executable,"-m","build","--wheel","--no-isolation",str(source_root)],env=buildenv,capture_output=True,text=True)
+    check(source_build.returncode != 0 and "Bundled runtime is absent" in source_build.stdout+source_build.stderr, "unstaged sdist wheel fails closed without runtime download")
+    # Real Node intercepts argv before core dispatch; no platform-specific fake executable.
+    intercept = scratch/"intercept.mjs"
+    intercept.write_text("console.log(JSON.stringify({args:process.argv.slice(2),agent:process.env.CLAUDECODE,relay:process.env.WORKTRUST_RELAYED}));console.error('synthetic stderr');process.exit(7);\n")
     args = ["literal space", "$(never-run)", "; touch SHOULD_NOT_EXIST", "quote'\""]
-    result = run(args,{"CLAUDECODE":"1"})
+    result = run(args,{"CLAUDECODE":"1","NODE_OPTIONS":f"--import={intercept.as_uri()}"})
     check(result.returncode == 7,"child exit propagated")
     check(json.loads(result.stdout) == {"args":args,"agent":"1","relay":"1"},"literal args and agent environment preserved")
     check(result.stderr.strip() == "synthetic stderr" and not (scratch/"SHOULD_NOT_EXIST").exists(),"stdio preserved without shell")
-    fake.unlink()
-    fake.symlink_to(NODE)
     result = run(["--help"])
     check(result.returncode == 0 and "WorkTrust" in result.stdout,"real engine help")
     check(not list(home.iterdir()),"help does not inspect/create coupling")
@@ -125,11 +148,28 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     (bundle/"stack-rules.mjs").write_bytes(original)
     (bundle/"unexpected.mjs").write_text("")
     check("file list" in run(["--help"]).stderr,"extra bundle refused")
+    (bundle/"unexpected.mjs").unlink()
+    binary = Path(NODE)
+    original_binary = binary.read_bytes()
+    binary.write_bytes(original_binary+b"tampered")
+    check("runtime integrity" in run(["--help"]).stderr,"tampered native runtime refused")
+    binary.unlink()
+    check("runtime file list" in run(["--help"]).stderr,"missing native runtime refused without PATH fallback")
+    binary.write_bytes(original_binary)
+    binary.chmod(0o755)
+
     # Tool-runner smoke uses the built artifact, never a public WorkTrust namespace.
+    if os.name != "nt":
+        for name in ("realpath", "dirname"):
+            helper = shutil.which(name)
+            if helper:
+                (binaries/name).symlink_to(helper)
     for tool, args in (("uv",["tool","run","--offline","--from",str(wheel),"worktrust","--help"]),("pipx",["run","--spec",str(wheel),"worktrust","--help"])):
-        executable = Path(sys.executable).parent/tool
+        command = tool + (".exe" if os.name == "nt" else "")
+        executable = next((candidate for candidate in (Path(sys.executable).parent/command, Path(sys.executable).parent/"Scripts"/command) if candidate.exists()), Path(sys.executable).parent/command)
         if executable.exists():
-            toolenv = dict(env, PATH=os.pathsep.join([str(binaries),str(Path(sys.executable).parent),"/usr/bin","/bin"]), UV_PYTHON=sys.executable, UV_PYTHON_DOWNLOADS="never", UV_CACHE_DIR=str(scratch/"uv-cache"), PIPX_HOME=str(scratch/"pipx"), PIPX_BIN_DIR=str(scratch/"pipx-bin"), PIPX_DEFAULT_PYTHON=sys.executable, PIP_NO_INDEX="1")
+            toolenv = dict(env, PATH=os.pathsep.join([str(binaries)] + ([str(Path(os.environ["SYSTEMROOT"])/"System32")] if os.name == "nt" else [])), UV_PYTHON=sys.executable, UV_PYTHON_DOWNLOADS="never", UV_CACHE_DIR=str(scratch/"uv-cache"), PIPX_HOME=str(scratch/"pipx"), PIPX_BIN_DIR=str(scratch/"pipx-bin"), PIPX_DEFAULT_PYTHON=sys.executable, PIP_NO_INDEX="1")
+            check(shutil.which("node",path=toolenv["PATH"]) is None, f"{tool} runs without Node on PATH")
             toolenv.pop("PYTHONPATH",None)
             result = subprocess.run([str(executable),*args],env=toolenv,cwd=scratch,capture_output=True,text=True,timeout=120)
             check(result.returncode == 0 and "WorkTrust" in result.stdout, f"{tool}: {result.stdout} {result.stderr}")

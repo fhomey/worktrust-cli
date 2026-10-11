@@ -70,7 +70,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, hostname, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -83,14 +83,14 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.12";
+const CLI_VERSION = "0.10.13";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs"];
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
-const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs"]);
+const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
@@ -272,12 +272,28 @@ async function pairByCode(host, extra) {
  * that survives an upgrade), not this process's resolved path, which names one version and breaks
  * with the next `brew upgrade node`.
  */
-const NODE = (process.env.PATH ?? "").split(OS === "windows" ? ";" : ":").map((dir) => join(dir, OS === "windows" ? "node.exe" : "node")).find((path) => existsSync(path)) ?? process.execPath;
+let NODE = process.env.WORKTRUST_BUNDLED_RUNTIME_DIR ? process.execPath : (process.env.PATH ?? "").split(OS === "windows" ? ";" : ":").map((dir) => join(dir, OS === "windows" ? "node.exe" : "node")).find((path) => existsSync(path)) ?? process.execPath;
 const KEY_FILE = join(HOME_DIR, "key.json");
-const STABLE = join(HOME_DIR, "worktrust.mjs");
+const STABLE_FILE = join(HOME_DIR, "worktrust.mjs");
+let STABLE = STABLE_FILE, runtimePrepared = false;
 const RENEW_EVERY_MS = 7 * 24 * 3600_000;
 const KEY_PLACE = "~/.worktrust/key.json (only you can read it)";
 const ensureHome = () => { mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 }); try { chmodSync(HOME_DIR, 0o700); } catch { /* Windows */ } };
+
+/** A tool-runner cache is disposable. Install the whole verified runtime/engine before changing wiring. */
+async function prepareBundledRuntime() {
+  if (!process.env.WORKTRUST_BUNDLED_RUNTIME_DIR || runtimePrepared) return;
+  const { installRuntime } = await import("./runtime-install.mjs");
+  if (existsSync(HOME_DIR) && (!lstatSync(HOME_DIR).isDirectory() || lstatSync(HOME_DIR).isSymbolicLink())) fail("the WorkTrust directory must be a directory, not a symlink.");
+  ensureHome();
+  const installed = installRuntime(process.env.WORKTRUST_BUNDLED_RUNTIME_DIR, HERE, HOME_DIR, ["worktrust.mjs", ...SCRIPTS, "preserve.mjs", "preserve-lines.mjs", "preserve-summary.mjs"]);
+  NODE = installed.executable; STABLE = installed.bridge; runtimePrepared = true;
+}
+function saveStableEntry() {
+  const temporary = `${STABLE_FILE}.${randomBytes(8).toString("hex")}.tmp`;
+  try { writeFileSync(temporary, readFileSync(fileURLToPath(import.meta.url)), { flag: "wx", mode: 0o600 }); renameSync(temporary, STABLE_FILE); }
+  finally { try { rmSync(temporary); } catch { /* already renamed */ } }
+}
 
 /**
  * THE KEY'S PLACE: one file only you can read (mode 600 in a 700 folder), holding the key, its device
@@ -490,7 +506,7 @@ async function hook() {
   if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
   if (!key) process.exit(0);
-  const child = spawn(process.execPath, [join(HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } });
+  const child = spawn(process.execPath, [join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } });
   child.on("exit", (code) => process.exit(code ?? 0));
 }
 
@@ -555,9 +571,10 @@ async function update() {
   say();
   if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
   if (!(await ask("Continue?"))) { say("  Stopped. Nothing was written."); return; }
-  ensureHome();
   const previousVersion = stableVersion();
-  copyFileSync(fileURLToPath(import.meta.url), STABLE);
+  await prepareBundledRuntime();
+  ensureHome();
+  saveStableEntry();
   say(`  ✓ ${STABLE} is now ${CLI_VERSION}`);
   // Out first, then in: an app that held a key of its own (a hand-made entry) moves onto the bridge.
   await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token, true);
@@ -610,6 +627,7 @@ async function connect() {
   say();
   if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
   if (!(await ask("Continue?"))) { say("  Stopped. Nothing was written and nothing was sent."); return; }
+  await prepareBundledRuntime();
 
   // The device key: made here, its private half kept with the key, its public half bound at WorkTrust.
   const device = direct ? null : generateKeyPairSync("ed25519");
@@ -628,7 +646,7 @@ async function connect() {
     keyStore.save({ url: MCP, token, renewedAt: new Date().toISOString(), coupledAt: new Date().toISOString(), identified: true, profile: computerIds().profile_id, account: pairing.account, accountRef: pairing.accountRef, device: device.privateKey.export({ format: "pem", type: "pkcs8" }) });
     previousNote.erase();
     ensureHome();
-    copyFileSync(fileURLToPath(import.meta.url), STABLE);
+    saveStableEntry();
     say(`  ✓ Key kept in ${KEY_PLACE}`);
   }
   if ((await run(paths["setup-mcp.mjs"], direct ? ["--write"] : ["--write", "--bridge", STABLE], token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
@@ -692,7 +710,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
 }
 
 /** The version stamped in the stable copy in ~/.worktrust, the CLI this computer ran before an update; null without one. */
-const stableVersion = () => { try { return /const CLI_VERSION = "([^"]+)";/.exec(readFileSync(STABLE, "utf8"))?.[1] ?? null; } catch { return null; } };
+const stableVersion = () => { try { return /const CLI_VERSION = "([^"]+)";/.exec(readFileSync(STABLE_FILE, "utf8"))?.[1] ?? null; } catch { return null; } };
 
 /**
  * OFFERED ONCE, BY `update`, IN PLAIN WORDS (owner, 2026-10-07): when the computer's earlier lines were made by an earlier CLI
@@ -898,7 +916,8 @@ async function offerCodex() {
   const viaBridge = existsSync(STABLE);
   const hookFile = viaBridge ? STABLE : join(HOME_DIR, "log-session.mjs");
   if (!existsSync(hookFile)) { say("  Couple this computer first: npx worktrust"); return; }
-  const want = `notify = [${(viaBridge ? [NODE, STABLE, "hook", "--codex-notify"] : [NODE, hookFile, "--codex-notify"]).map((part) => JSON.stringify(part)).join(", ")}]`;
+  const desired = () => `notify = [${(viaBridge ? [NODE, STABLE, "hook", "--codex-notify"] : [NODE, hookFile, "--codex-notify"]).map((part) => JSON.stringify(part)).join(", ")}]`;
+  let want = desired();
   const found = codexNotify();
   say();
   if (found.text === want) { say("  ✓ Codex already wakes the session hook at the end of every turn."); return; }
@@ -911,6 +930,7 @@ async function offerCodex() {
   say(`    ${found.text ? "↻" : "+"} ${CODEX_CONFIG} → ${want}`);
   if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
   if (!has("codex") && !(await ask("Let Codex wake the session hook?", false))) { say("  Not set. npx worktrust update asks again."); return; }
+  await prepareBundledRuntime(); want = desired();
   const rows = [...found.rows];
   if (found.text) rows.splice(found.at, found.end - found.at + 1, want);
   else rows.splice(found.insert, 0, ...(found.insert < rows.length && rows[found.insert] !== "" ? [want, ""] : [want]));
@@ -943,7 +963,8 @@ function writeAgyHooks(hooks) {
 async function offerAntigravity() {
   if (!antigravityHere()) { if (command === "antigravity") say("  Antigravity is not on this computer (no ~/.gemini/config or ~/.gemini/antigravity*)."); return; }
   if (!existsSync(STABLE)) { say("  Couple this computer first: npx worktrust"); return; }
-  const want = { enabled: true, Stop: [{ type: "command", command: `"${NODE}" "${STABLE}" hook --antigravity-stop`, timeout: 10 }] };
+  const desired = () => ({ enabled: true, Stop: [{ type: "command", command: `"${NODE}" "${STABLE}" hook --antigravity-stop`, timeout: 10 }] });
+  let want = desired();
   const hooks = agyHooks();
   say();
   if (hooks === null) { say(`  ${AGY_HOOKS} is not readable JSON, so it is left as it is; Antigravity sessions are still sent whenever another hook runs.`); return; }
@@ -952,6 +973,7 @@ async function offerAntigravity() {
   say(`    ${hooks.worktrust ? "↻" : "+"} ${AGY_HOOKS} → worktrust: Stop runs ${want.Stop[0].command}`);
   if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
   if (!has("antigravity") && !(await ask("Let Antigravity wake the session hook?", false))) { say("  Not set. npx worktrust update asks again."); return; }
+  await prepareBundledRuntime(); want = desired();
   writeAgyHooks({ ...hooks, worktrust: want });
   say(`  ✓ Antigravity wakes the session hook. Restart Antigravity to pick it up${existsSync(`${AGY_HOOKS}.worktrust-backup`) ? "; the earlier file is kept as hooks.json.worktrust-backup" : ""}.`);
 }

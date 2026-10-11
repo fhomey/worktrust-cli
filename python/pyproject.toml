@@ -26,4 +26,4 @@ version = {file = "VERSION"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-worktrust_cli = ["bundle/*.mjs", "bundle/manifest.json"]
+worktrust_cli = ["bundle/*.mjs", "bundle/manifest.json", "runtime/*"]

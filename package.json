@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.10.12",
+  "version": "0.10.13",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -20,6 +20,7 @@
     "stretch-evidence.mjs",
     "chat-exports.mjs",
     "stack-rules.mjs",
+    "runtime-install.mjs",
     "README.md",
     "SECURITY.md",
     "LICENSE",

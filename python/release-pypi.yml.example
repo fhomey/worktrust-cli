@@ -1,8 +1,5 @@
-# Inactive: stage this at python/release-pypi.yml.example in fhomey/worktrust-cli.
-# After the owner configures the exact PyPI Pending Publisher and protected pypi
-# environment, activate as .github/workflows/release-pypi.yml in that repository.
-# A GitHub release drives both registries; manual invocation supports the first upload/retry.
-# Publishes the selected commit's tested artifacts, not a rebuild.
+# Stage at .github/workflows/release-pypi.yml after exact Trusted Publisher setup.
+# Builds native platform wheels once and publishes those tested artifacts.
 name: Release WorkTrust Python CLI
 on:
   release:
@@ -15,53 +12,34 @@ on:
 permissions:
   contents: read
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  validate:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '22'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
-      - name: Verify selected version and Git deployment isolation
+      - name: Verify selected version and disabled Vercel deployments
         env:
           RELEASE_VERSION: ${{ inputs.version || github.event.release.tag_name }}
         run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
-          const selected = process.env.RELEASE_VERSION;
-          assert.equal(process.env.GITHUB_EVENT_NAME === 'release' ? `v${pkg.version}` : pkg.version, selected);
-          assert.equal(readFileSync('python/VERSION', 'utf8').trim(), pkg.version);
-          assert.equal(JSON.parse(readFileSync('vercel.json', 'utf8')).git?.deploymentEnabled, false);
-          JS
-      - run: python -m pip install -r python/requirements-release.txt
-      - name: Build and test the distribution to publish
-        env:
-          WORKTRUST_TEST_CLI_SOURCE: ${{ github.workspace }}
-          WORKTRUST_REQUIRE_TOOL_RUNNERS: '1'
-          WORKTRUST_TEST_ARTIFACT_DIR: ${{ github.workspace }}/dist
-        run: |
-          export WORKTRUST_TEST_NODE="$(command -v node)"
-          python python/tests/test_distribution.py
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: matrix.os == 'ubuntu-latest'
-        with:
-          name: python-distributions
-          path: dist/
-          if-no-files-found: error
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = json.loads(Path('package.json').read_text())['version']
+          expected = 'v' + version if os.environ['GITHUB_EVENT_NAME'] == 'release' else version
+          assert os.environ['RELEASE_VERSION'] == expected
+          assert Path('python/VERSION').read_text().strip() == version
+          assert json.loads(Path('vercel.json').read_text())['git']['deploymentEnabled'] is False
+          PY
+  build:
+    needs: validate
+    uses: ./.github/workflows/verify-python.yml
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/p/worktrust
@@ -70,6 +48,16 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: python-distributions
+          pattern: python-*
           path: dist/
+          merge-multiple: true
+      - name: Require all six tested wheels and the source archive
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          files = list(Path('dist').iterdir())
+          assert len(files) == 7
+          assert len(list(Path('dist').glob('*.whl'))) == 6
+          assert len(list(Path('dist').glob('*.tar.gz'))) == 1
+          PY
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33

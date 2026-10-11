@@ -96,7 +96,10 @@ try {
     check(result.status === 0, result.stdout + result.stderr);
   }
   check(!readFileSync(join(home, ".codex", "config.toml"), "utf8").includes(cache), "standalone hook commands do not revert to cache runtime");
-  rmSync(cache, { recursive: true, force: true });
+  // Every fixture child has closed. Windows can briefly retain the exited executable's
+  // file handle; bound the same retries used in cleanup, then prove the cache is gone.
+  rmSync(cache, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  check(!existsSync(cache), "tool-runner cache is completely removed before installed hooks run");
   const hook = await run(firstConfig.command, firstConfig.args[0], ["hook", "--dry-run", "--summary"]);
   check(hook.status === 0, `installed hook survives cache removal: ${hook.stdout}${hook.stderr}`);
   const configuredHook = await runHookCommand(settings.hooks.SessionEnd[0].hooks[0].command);

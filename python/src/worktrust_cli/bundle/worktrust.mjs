@@ -83,14 +83,14 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.13";
+const CLI_VERSION = "0.10.14";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs"];
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
-const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs"]);
+const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
@@ -1115,6 +1115,7 @@ function help() {
   say("                         days this computer's own sessions lack, reconstructed, never verified hours (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
+  say("  worktrust orchestration report --file recording.jsonl   inspect local agent metadata; sends nothing");
   say("  worktrust preserve     keep your AI history: the report, then the settings and a local archive, each on your yes");
   say("    --apply              keep them: asks per change, backs the file up first (--yes: no question)");
   say("    --archive [dir]      a local, metadata-only, hash-chained record of the measured days (~/AI-Evidence)");
@@ -1130,7 +1131,7 @@ function help() {
 // before anything is read or written, --yes included. The hook and the MCP bridge are started by the agent's client
 // itself and stay as they are; `status` only reads.
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
-const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import"]);
+const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
 if (agentShell && PERSON_ONLY.has(command)) {
   say();
@@ -1193,4 +1194,8 @@ else if (command === "antigravity") await offerAntigravity();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") await status();
 else if (command === "preserve") await preserve();
+else if (command === "orchestration") {
+  if (!["orchestration-report.mjs", "orchestration-evidence.mjs", "orchestration-contract.mjs"].every((name) => existsSync(join(HERE, name)))) fail("Local agent reports need the complete WorkTrust npm/Python package or preservation kit. No file was read or sent.");
+  const { reportFile } = await import("./orchestration-report.mjs"); reportFile(args.slice(1));
+}
 else help();

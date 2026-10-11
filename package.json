@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.10.13",
+  "version": "0.10.14",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -25,7 +25,10 @@
     "SECURITY.md",
     "LICENSE",
     "AGENTS.md",
-    "CLAUDE.md"
+    "CLAUDE.md",
+    "orchestration-contract.mjs",
+    "orchestration-evidence.mjs",
+    "orchestration-report.mjs"
   ],
   "engines": {
     "node": ">=18"

@@ -18,6 +18,9 @@ worktrust = "worktrust_cli:main"
 [project.urls]
 Homepage = "https://worktrust.io"
 Source = "https://github.com/fhomey/worktrust-cli"
+Documentation = "https://github.com/fhomey/worktrust-cli/tree/main/python"
+Support = "https://worktrust.io/support"
+Privacy = "https://worktrust.io/privacy"
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}

@@ -16,6 +16,11 @@ the variables your client sets, do not run it through another shell, and do not 
 The session hook and the MCP door are started by your client itself and are meant to run; leave their configuration as
 the person set it. This does not authorize an agent to invoke `preserve` through another entry point. Even `status`
 can inspect local evidence and check the registry; do not run it as a generic repository inventory command.
+The new `orchestration report --file` command reads a person's explicitly selected agent metadata
+and is person-only too. Repository maintenance tests may use synthetic recordings. Python SDK
+events remain application reports: do not manufacture security events, verification or success,
+and do not describe them as independently measured capability. See `docs/AGENT-OBSERVATIONS.md`
+in the monorepo for the contract and the private Sources page.
 
 ## Do not report work you did not see
 

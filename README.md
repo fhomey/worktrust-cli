@@ -17,16 +17,37 @@ curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
 ```
 
 **Python tool runners:** this repository also builds `worktrust` for `uvx` and `pipx` from the
-same measurement modules. Version 0.10.13's native wheels include a pinned official Node runtime,
+same measurement modules. Native wheels (0.10.13+) include a pinned official Node runtime,
 so that route needs no separate Node/npm installation. See the
 [Python distribution](https://github.com/fhomey/worktrust-cli/tree/main/python) for supported
-platforms, release status and installation commands. npm and Python versions are checked together.
+platforms and installation commands, and the official [PyPI project](https://pypi.org/project/worktrust/)
+for published versions. npm and Python versions are checked together.
+
+```sh
+uvx worktrust@latest preserve
+pipx run --no-cache worktrust preserve
+```
+
+Omit `preserve` to connect your computer. These runners install and invoke the same CLI;
+they do not automatically instrument Python applications or measure different activity.
 
 Connecting through the Python package installs the runtime and engine in an immutable directory
 under `~/.worktrust/installations/`; client hooks use that persistent path, so clearing a tool-runner
 cache does not break the coupling. Updates retain older installations for running clients.
 Run `worktrust disconnect` before removing an installed Python tool if you also want to remove its
 WorkTrust coupling. Disconnect removes the key and client wiring; it leaves runtime files in place.
+
+**Agent observations (requires 0.10.14+):** the optional Python
+`worktrust_cli.telemetry` SDK lets an application explicitly record parent/child runs, its own
+token counters, token budgets, checks and security events in a local file. The shared engine
+inspects it with `worktrust orchestration report --file agent-events.jsonl`, without uploading.
+The private platform import is Sources → Agent teams when that platform change is deployed.
+These are application reports, not human hours or independently verified outcomes. Installing
+through npm, uvx or pipx alone does not instrument agents. See the Python README for the opt-in
+SDK, fixed metadata fields, consent and local deletion. Install `worktrust>=0.10.14` in the
+agent application's own Python environment to import the SDK; a uvx/pipx tool environment
+is separate. Check the registry for availability: a GitHub release awaiting approval is not
+a completed npm or PyPI publication.
 
 **No account? Keep your history anyway.** Claude Code and Gemini CLI delete their sessions after 30
 days by default, and a deleted session can never be measured again. `npx worktrust@latest preserve` shows what

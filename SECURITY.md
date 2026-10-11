@@ -71,3 +71,29 @@ Check the particular published version's attestation and compare its contents to
 relying on those properties. A manifest flag or matching version string alone is not proof that an
 artifact was built from reviewed source. `npm audit signatures` can inspect an installed dependency
 tree; verification coverage and failures must be reported for that actual installation.
+
+
+## Python distribution and explicit agent observations
+
+The official [PyPI package](https://pypi.org/project/worktrust/) runs the same measurement
+modules as npm. Supported wheels include the pinned Node runtime; invocation does not download
+Node, fall back to PATH or relay to a newer npm version. Package-manager installation and
+upgrades can contact registries. Use the README for platform requirements and update commands.
+
+From 0.10.14, the optional Python recorder writes explicitly supplied UUIDs, dates, fixed event
+categories and counts to a newly chosen local file, with `consent=True`. It makes no network
+requests and does not discover agents or inspect their prompts, outputs, model names or code.
+The local `orchestration report --file` command also sends nothing. Recordings are bounded;
+existing files and symlink paths are refused. The requested file mode is 0600; Windows folder
+ACLs and other processes running as the same user remain outside that protection.
+
+These observations are application reports, including reported checks and security events.
+They do not independently establish successful outcomes, prompt-injection resistance, human
+hours or capability. Parent/child elapsed time includes waiting and must not be summed as
+human work. Missing token coverage remains unknown; providers must supply exclusive deltas.
+
+The separate private platform import requires a deployed platform feature and explicit browser
+selection and consent. It is not an automatic SDK upload or an MCP submission. Deleting a local
+recording does not erase a separately imported copy; delete that copy through the private app.
+See the service [privacy policy](https://worktrust.io/privacy) and
+[support](https://worktrust.io/support) for account data requests.

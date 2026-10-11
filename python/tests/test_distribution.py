@@ -72,6 +72,10 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     check("Node.js" in (runtime_dir/"LICENSE").read_text(), "full Node license shipped")
     node_version = subprocess.run([NODE,"--version"],env=env,capture_output=True,text=True)
     check(node_version.returncode == 0 and node_version.stdout.strip() == "v"+lock["version"], "actual bundled runtime version matches pin")
+    telemetry = subprocess.run([sys.executable, str(PACKAGE/"tests/test_telemetry.py"), "--installed"],
+                               env=dict(env, WORKTRUST_TEST_NODE=NODE, WORKTRUST_TEST_CLI_SOURCE=str(bundle)),
+                               cwd=scratch, capture_output=True, text=True, timeout=60)
+    check(telemetry.returncode == 0, "installed SDK/shared engine parity: " + telemetry.stdout + telemetry.stderr)
     sqlite = subprocess.run([NODE,"--input-type=module","-e","import {DatabaseSync} from 'node:sqlite'; const db=new DatabaseSync(':memory:'); console.log(db.prepare('select 42 as n').get().n); db.close();"],env=env,capture_output=True,text=True)
     check(sqlite.returncode == 0 and sqlite.stdout.strip() == "42", "bundled runtime supports SQLite readers")
     with tarfile.open(next((scratch/"dist").glob("*.tar.gz"))) as source_archive:

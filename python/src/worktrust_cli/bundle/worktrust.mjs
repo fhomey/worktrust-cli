@@ -75,7 +75,7 @@ import { homedir, hostname, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { createInterface as lines } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const args = process.argv.slice(2);
 const VALUED = ["--name", "--origin", "--url", "--export", "--from-folder"];
@@ -83,12 +83,12 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.14";
+const CLI_VERSION = "0.10.15";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"];
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -1012,6 +1012,8 @@ async function disconnect() {
   if (!(await ask("Continue?"))) { say("  Stopped. Nothing was changed."); return; }
   await run(paths["setup-mcp.mjs"], ["--remove", "--write"], PLACEHOLDER);
   await run(paths["log-session.mjs"], ["--uninstall", "--purge"], PLACEHOLDER);
+  // 0.10.15: the WorkTrust mod goes with the coupling, and what it counted with it.
+  try { const mod = await import(pathToFileURL(paths["claude-mod.mjs"]).href); if (mod.modInstalled()) { mod.uninstallMod(); say("  ✓ The WorkTrust mod is out of Claude Code, and what it counted is deleted."); } } catch { /* never installed */ }
   if (removeCodexNotify()) say("  ✓ Codex no longer wakes the session hook.");
   if (removeAntigravityHook()) say("  ✓ Antigravity no longer wakes the session hook.");
   previousNote.save(keyStore.load());
@@ -1021,6 +1023,47 @@ async function disconnect() {
   try { rmSync(HOME_DIR, { recursive: false }); } catch { /* not empty, or gone */ }
   say();
   say("  Done. Revoke the key in WorkTrust to finish.");
+}
+
+/**
+ * THE WORKTRUST MOD FOR CLAUDE CODE (0.10.15, owner 2026-10-16; claude-mod.mjs, docs/CLAUDE-CODE-MOD.md). The person turns
+ * it on and off here; nothing else installs it. On: Claude Code (2.1.287 or later) loads it in every session, and it
+ * counts, per session and day, what a transcript cannot show. Its counts stay in ~/.worktrust/claude-mod-counts until
+ * the session hook reports that session's stretch, beside the rest; they reach the person's own mirror, never a score.
+ */
+async function mod() {
+  const paths = await scripts();
+  const kit = await import(pathToFileURL(paths["claude-mod.mjs"]).href);
+  const sub = args[1] ?? "status";
+  const on = kit.modInstalled();
+  say();
+  say(`  WorkTrust mod for Claude Code · ${on ? "on" : "off"}`);
+  say();
+  if (sub === "install") {
+    say("  It runs inside Claude Code and counts, per session and day, what a transcript cannot show:");
+    say("    · permission questions put to you, and how often you said yes or no");
+    say("    · model requests per effort level, the models that answered, requests sent to another model");
+    say("    · the peak context fill and plan-limit use, compactions you asked for or that ran by themselves");
+    say("    · subagents and teammates started, and how many mods, MCP servers and own agent types are active");
+    say("  Counts only: never a prompt, an answer, a command, a file or a name. It sends nothing itself: your session hook");
+    say("  reports the counts with the session, and they show in your own mirror, not on your passport.");
+    say(`  It names ~/.worktrust/claude-mod in ~/.claude/settings.json (CLAUDE_CODE_PLUGIN_DIRS), backed up first. Claude Code ${kit.MIN_CLAUDE_CODE} or later.`);
+    say();
+    if (on && !has("yes")) { kit.installMod(); say("  Already on. Its file is refreshed; nothing else changed."); return; }
+    if (!(await ask("Turn it on?"))) { say("  Stopped. Nothing was changed."); return; }
+    const done = kit.installMod();
+    say(`  ✓ On: ${done.dir}${done.settingsChanged ? " (named in ~/.claude/settings.json)" : ""}. Start a new Claude Code session, or run /reload-plugins in an open one.`);
+    say("    In Claude Code, /plugin then shows: 1 mod active · worktrust-measure.");
+    return;
+  }
+  if (sub === "remove" || sub === "uninstall") {
+    if (!on) { say("  It is not on. Nothing to remove."); return; }
+    if (!(await ask("Turn it off and delete what it counted?"))) { say("  Stopped. Nothing was changed."); return; }
+    kit.uninstallMod();
+    say("  ✓ Off. It is out of ~/.claude/settings.json and its counts are deleted. Counts already reported stay in your mirror.");
+    return;
+  }
+  say(on ? "  On: Claude Code loads it in every new session. `worktrust mod remove` turns it off." : "  Off. `worktrust mod install` shows what it counts and asks first.");
 }
 
 async function status() {
@@ -1116,6 +1159,9 @@ function help() {
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
   say("  worktrust orchestration report --file recording.jsonl   inspect local agent metadata; sends nothing");
+  say("  worktrust mod          the WorkTrust mod for Claude Code: what it counts, and whether it is on");
+  say("    install              turn it on: counts permission answers, effort levels, context peaks and subagents (asks first)");
+  say("    remove               turn it off and delete what it counted");
   say("  worktrust preserve     keep your AI history: the report, then the settings and a local archive, each on your yes");
   say("    --apply              keep them: asks per change, backs the file up first (--yes: no question)");
   say("    --archive [dir]      a local, metadata-only, hash-chained record of the measured days (~/AI-Evidence)");
@@ -1131,7 +1177,7 @@ function help() {
 // before anything is read or written, --yes included. The hook and the MCP bridge are started by the agent's client
 // itself and stay as they are; `status` only reads.
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
-const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration"]);
+const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
 if (agentShell && PERSON_ONLY.has(command)) {
   say();
@@ -1194,6 +1240,7 @@ else if (command === "antigravity") await offerAntigravity();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") await status();
 else if (command === "preserve") await preserve();
+else if (command === "mod") await mod();
 else if (command === "orchestration") {
   if (!["orchestration-report.mjs", "orchestration-evidence.mjs", "orchestration-contract.mjs"].every((name) => existsSync(join(HERE, name)))) fail("Local agent reports need the complete WorkTrust npm/Python package or preservation kit. No file was read or sent.");
   const { reportFile } = await import("./orchestration-report.mjs"); reportFile(args.slice(1));

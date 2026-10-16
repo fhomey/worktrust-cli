@@ -12,7 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const modules = ["worktrust.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "preserve.mjs", "preserve-lines.mjs", "preserve-summary.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"];
+const modules = ["worktrust.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "preserve.mjs", "preserve-lines.mjs", "preserve-summary.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs"];
 const source = (name) => name === "worktrust.mjs" && process.env.WORKTRUST_TEST_CLI_ENTRY ? process.env.WORKTRUST_TEST_CLI_ENTRY : process.env.WORKTRUST_TEST_CLI_SOURCE ? join(process.env.WORKTRUST_TEST_CLI_SOURCE, name) : join(repo, name === "worktrust.mjs" ? "apps/worktrust/app/public/counter" : "scripts", name);
 const scratch = mkdtempSync(join(tmpdir(), "worktrust runtime "));
 const home = join(scratch, "person home"), cache = join(scratch, "disposable cache"), pathDir = join(scratch, "empty PATH");

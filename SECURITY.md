@@ -73,6 +73,21 @@ artifact was built from reviewed source. `npm audit signatures` can inspect an i
 tree; verification coverage and failures must be reported for that actual installation.
 
 
+## The WorkTrust mod for Claude Code (0.10.15, opt-in)
+
+`worktrust mod install` asks, then writes a Claude Code plugin to `~/.worktrust/claude-mod` and names
+that directory in `~/.claude/settings.json` (`env.CLAUDE_CODE_PLUGIN_DIRS`, the file backed up beside
+itself first). Claude Code 2.1.287 or later loads it in every session. It runs inside Claude Code
+with your permissions, as every mod does, and Claude Code's own validator lists what it may do:
+twelve events it observes, and three calls: `fs.write` (its one counts file per session under
+`~/.worktrust/claude-mod-counts`), `session.id` and `tool.list`. It makes no network request, starts
+no process, calls no model, rewrites no prompt or tool call (each hook hands back exactly what Claude
+Code gave it) and keeps no text: only integer counts in a closed list (`claude-mod.mjs`,
+`MOD_FIELDS`). The session hook sends those counts with the session's stretch as `evidence.live`;
+the platform keeps only the listed keys, from a CLI key alone, and shows them to you alone.
+`worktrust mod remove` and `worktrust disconnect` take it out of the settings and delete the plugin
+and its counts.
+
 ## Python distribution and explicit agent observations
 
 The official [PyPI package](https://pypi.org/project/worktrust/) runs the same measurement

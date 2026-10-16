@@ -271,11 +271,13 @@ const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions 
 // A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10): chat-exports.mjs reads a ChatGPT or Claude export (the counter
 // imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
 const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, readExport = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
+const { modCounts = () => null } = (await import("./claude-mod.mjs").catch(() => null)) ?? {}; // 0.10.15: the WorkTrust mod's live counts per Claude Code session and day; absent → no `live` group, never zeros
+const liveOf = (file, day) => modCounts(String(file).split(/[\\/]/).pop().replace(/\.jsonl$/, ""), day);
 const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await import("./stack-rules.mjs").catch(() => null)) ?? {}; // 0.10.11: core's stack rules and the display-only keys (tools_seen), generated (build-stack-rules --check); absent → nothing named, never a guess
 const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
-const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules
+const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {
   let installed = true;
@@ -415,7 +417,7 @@ function stretchesOf(file, since) {
   messages.sort((a, b) => a.at - b.at);
   const byDay = byDayOf(messages);
   const agents = agentsByDay(file, since);
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null }; }).filter(Boolean);
+  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
 }
 
 /**
@@ -666,6 +668,7 @@ function payloadFor(stretch) {
   const coauthored = cwd && touched.shas.length > 0 ? git(cwd, "log", "--no-walk", "--format=%(trailers:key=Co-authored-by,valueonly,separator=%x01)%x00", ...touched.shas.slice(0, 50)).split("\0").filter((entry, index) => index < Math.min(50, touched.shas.length) && AI_COAUTHOR.test(entry)).length : 0;
   const route = { ...(stretch.derived?.route ?? {}), ...(touched.committed ? gitRouteOf(cwd, touched.shas, changed) : {}) };
   const derived = stretch.derived ? { ...stretch.derived, ...(Object.keys(route).length > 0 ? { route } : {}), ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(contextFilesOf(changed) ? { context_files: contextFilesOf(changed) } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) } : null;
+  const evidence = derived || stretch.live ? { ...(derived ?? {}), ...(stretch.live ? { live: stretch.live } : {}) } : null; // 0.10.15: the mod's counts ride as their own group
   const payload = {
     title: layer ? `AI-assisted work · ${layer}` : "AI-assisted work",
     kind,
@@ -698,12 +701,12 @@ function payloadFor(stretch) {
     ...(stretch.steers > 0 ? { steers: Math.min(10000, stretch.steers) } : {}),
     ...(stretch.agents && stretch.agents.runs > 0 ? { agent_runs: Math.min(AGENT_RUNS_MAX, stretch.agents.runs), agent_seconds: Math.min(AGENT_SECONDS_MAX, stretch.agents.seconds), agent_peak: Math.min(AGENT_RUNS_MAX, stretch.agents.peak) } : {}),
     // THE STRETCH'S EVIDENCE (0.8.3): what the CLI derived from it here, kinds and counts only (stretch-evidence.mjs); the door keeps it from a CLI key alone.
-    ...(derived ? { evidence: derived } : {}),
+    ...(evidence ? { evidence } : {}),
     at: new Date(stretch.to).toISOString(),
   };
   // WHAT STAYS ON THIS COMPUTER (0.7.1): the stretch's derived record rides beside the payload for the local archive, never in it.
   // The same record rides beside the payload for the local archive (preserve --archive).
-  if (derived) DERIVED.set(payload, derived);
+  if (evidence) DERIVED.set(payload, evidence);
   return payload;
 }
 
@@ -845,7 +848,7 @@ function historyEntries(floor = null, all = false) {
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
       if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
       // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
-      const entry = payloadFor({ ...measure(cwd, messages), ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null });
+      const entry = payloadFor({ ...measure(cwd, messages), ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null, live: liveOf(file, day) });
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
       if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));

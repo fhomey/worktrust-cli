@@ -120,7 +120,7 @@ npx worktrust@latest history --rebuild   re-measure them with the current rules;
 npx worktrust@latest history --from-archive [dir]   send what your local archive holds of sessions your AI apps
                                    already deleted, marked as from your archive: a day this computer's key signed as
                                    measured, every other day as reconstructed (shows the plan, asks first)
-npx worktrust@latest history --export <path>   a ChatGPT or Claude data export (the zip, its folder or conversations.json)
+npx worktrust@latest history --export <path>   a ChatGPT or Claude data export (the zip, its folder, conversations.json, a conversations part or the manifest)
                                    as history: hours reconstructed from its clocks, never verified (shows the plan, asks first)
 npx worktrust@latest history --from-folder <dir>   your own copy of an AI app's session folder (a backed-up ~/.claude/projects,
                                    ~/.codex/sessions): the days this computer's sessions lack, reconstructed (asks first)
@@ -300,9 +300,17 @@ sends them with one difference: WorkTrust **replaces** this computer's earlier l
 Export data) or a Claude data export (Settings → Privacy → Export data) onto your record as history, so years of
 browser chats appear with their months, days and rhythm. The path is the zip the vendor sent you, the folder it was
 unpacked into, or `conversations.json` itself; the vendor is told by the file's shape. Of the zip only
-`conversations.json` is opened: the profile, memories and files beside it are never inflated.
+`conversations.json` is opened: the profile, memories and files beside it are never inflated. Claude on the web now
+sends a manifest and one zip per category (0.10.17): give a `conversations-000.zip` part, the folder holding the
+`conversations-*.zip` parts (read in part order), or the manifest json, which is read only for the file names of its
+conversations parts lying beside it; its download links are never followed. The other parts (memories, projects,
+artifacts, frames, design chats, the light metadata) are refused by name and never opened.
 
-- **What goes.** Per conversation and day: a neutral line (`A conversation in ChatGPT`, `A conversation in Claude on
+- **What goes.** Per run of activity in a conversation (0.10.17; before, one line per conversation and day): a run
+  ends where two messages lie more than thirty minutes apart, the gap after which the hook calls a stretch finished, so a
+  conversation left open for hours is two windows, not one. Cutting changes the windows and never the total: the five
+  minutes the clock counts after a message stay with the run before the gap. A day of one run keeps the name it had; a
+  cut day replaces the one line an earlier send made of it. Each run: a neutral line (`A conversation in ChatGPT`, `A conversation in Claude on
   the web`), the seconds between the messages' clocks counted the way a measured day is (a pause over five minutes is
   not work; a day is cut at eight hours), your own turns as a count, the model's name where the export carries one, when
   it began and ended, and a stable name made of the conversation's id and the day, so the same export sent twice, or

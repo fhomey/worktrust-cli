@@ -20,7 +20,7 @@
  *   npx worktrust history --from-folder <dir>  your own copy of an AI app's session folder (a backed-up ~/.claude/projects,
  *                                              ~/.codex/sessions): the days this computer's own sessions lack, reconstructed,
  *                                              never verified hours (shows the plan, asks first; 0.10.10)
- *   npx worktrust history --export <path>      a ChatGPT or Claude data export (the zip, its folder or conversations.json)
+ *   npx worktrust history --export <path>      a ChatGPT or Claude data export (the zip, its folder, conversations.json, a conversations part or the manifest)
  *                                              as history: hours RECONSTRUCTED from its clocks, shown with their origin,
  *                                              never verified hours (shows the plan, asks first; 0.10.10). The bare
  *                                              command on a coupled computer offers an export lying in ~/Downloads once.
@@ -83,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.16";
+const CLI_VERSION = "0.10.17";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -767,7 +767,7 @@ async function history() {
   const key = await freshKey();
   if (!key) fail("this computer is not coupled through the key file. Run npx worktrust first.");
   if (has("from-archive")) return offerArchive(await scripts(), key);
-  if (has("export")) { if (!flag("export") || flag("export").startsWith("--")) fail("--export needs the export's path: the zip, its folder, or conversations.json"); await offerExport(await scripts(), key, flag("export")); return; }
+  if (has("export")) { if (!flag("export") || flag("export").startsWith("--")) fail("--export needs the export's path: the zip, its folder, conversations.json, a conversations-000.zip part, or the manifest"); await offerExport(await scripts(), key, flag("export")); return; }
   if (has("from-folder")) { if (!flag("from-folder") || flag("from-folder").startsWith("--")) fail("--from-folder needs the copied folder's path"); await offerFolder(await scripts(), key, flag("from-folder")); return; }
   // ONE PATH (0.10.5): sending is re-measuring. On a computer WorkTrust has never heard from nothing is replaced, so it is a
   // plain send; after a failure, a merge or an older CLI, the same command replaces day by day. `--rebuild` still reads.
@@ -821,6 +821,8 @@ async function offerExport(paths, key, path) {
   // says so; the lines an AI app reported under no product on those days may describe the same conversations, and go only on a yes.
   const counts = lastCounts(sent.out);
   if (counts.superseded > 0) say(`  ${counts.superseded} earlier line${counts.superseded === 1 ? "" : "s"} of ${product} on those days, brought in by a connector, ${counts.superseded === 1 ? "is" : "are"} withdrawn and kept (each with a correction row): the export's lines count, a day counts once.`);
+  // ONE STRETCH PER RUN (0.10.17): a conversation-day sent before as one envelope is now its runs; the door withdrew the envelope.
+  if (counts.recut > 0) say(`  ${counts.recut} earlier line${counts.recut === 1 ? "" : "s"} of this export, one per conversation and day, ${counts.recut === 1 ? "is" : "are"} replaced by one line per run of activity (withdrawn and kept, the same total).`);
   if (counts.unknownOnDays > 0) {
     const n = counts.unknownOnDays;
     say(`  ${n} earlier line${n === 1 ? "" : "s"} an AI app reported for these days, under no product, may describe the same conversations.`);
@@ -1150,7 +1152,7 @@ function help() {
   say("    --from-archive [dir] send what your archive (preserve --archive) holds of sessions your AI apps already deleted,");
   say("                         marked as from your archive: a day this computer's key signed as measured, every other day");
   say("                         as reconstructed, never verified hours (shows the plan, asks first)");
-  say("    --export <path>      a ChatGPT or Claude data export (the zip, its folder or conversations.json) as history:");
+  say("    --export <path>      a ChatGPT or Claude data export (the zip, its folder, conversations.json, a conversations part or the manifest) as history:");
   say("                         hours reconstructed from its clocks, shown with their origin, never verified hours (asks first);");
   say("                         on its days the export replaces the product's earlier connector lines (withdrawn, kept)");
   say("    --withdraw-unknown   with --export: yes in advance to withdrawing the earlier lines an AI app reported for those days");

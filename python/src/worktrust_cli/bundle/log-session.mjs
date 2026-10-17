@@ -270,7 +270,7 @@ const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.nam
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
 // A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10): chat-exports.mjs reads a ChatGPT or Claude export (the counter
 // imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
-const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, readExport = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
+const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, exportRunRef = null, readExport = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
 const { modCounts = () => null } = (await import("./claude-mod.mjs").catch(() => null)) ?? {}; // 0.10.15: the WorkTrust mod's live counts per Claude Code session and day; absent → no `live` group, never zeros
 const liveOf = (file, day) => modCounts(String(file).split(/[\\/]/).pop().replace(/\.jsonl$/, ""), day) ?? codexLive(file, day); // 0.10.16: a Codex rollout's own
 const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await import("./stack-rules.mjs").catch(() => null)) ?? {}; // 0.10.11: core's stack rules and the display-only keys (tools_seen), generated (build-stack-rules --check); absent → nothing named, never a guess
@@ -736,7 +736,7 @@ function batchesOf(group, byDay) {
   return out;
 }
 /** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
-const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, unknownOnDays: 0, unknownWithdrawn: 0 }; // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
+const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0 }; // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
 const noteReceipt = (answer) => {
   try {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
@@ -862,7 +862,8 @@ function historyEntries(floor = null, all = false) {
 
 /**
  * A DATA EXPORT'S CONVERSATIONS AS HISTORY (0.10.10, owner 2026-10-10: "hours from an export count as reconstructed, shown,
- * never in verified hours"). The same clock cuts them (a day, gaps capped at IDLE_CAP) and the same measure counts the
+ * never in verified hours"). Since 0.10.17 one line per RUN of activity in a conversation-day (runsOf, below), no longer one
+ * envelope per conversation and day. The same clock cuts them (a day, gaps capped at IDLE_CAP) and the same measure counts the
  * person's own turns and the model, but the line says `reconstructed`: the file can be edited before it is read and no
  * device key witnessed it. No tokens (the export carries none and none are estimated), no layers, no evidence; the
  * title names the product and never the conversation; the stretch's name is the vendor, the conversation's id and the
@@ -870,11 +871,31 @@ function historyEntries(floor = null, all = false) {
  * (20261009170000), so the line is cut there before it leaves.
  */
 const RECONSTRUCTED_MAX = 28800;
+/**
+ * WHERE A CONVERSATION-DAY IS CUT (CLI 0.10.17, owner 2026-10-17): the hook's own stretch-finished gap, IDLE_BEFORE_SWEEP
+ * (half an hour of quiet says a stretch is finished), never a new constant. Counting is unchanged: every gap between two
+ * messages, the person's or the model's, counts up to IDLE_CAP, and a gap the cut falls in is counted, as it always was,
+ * with the run BEFORE it (the five minutes the clock credits after a message). So the runs' seconds sum to exactly what
+ * the one envelope carried, and only the windows sharpen: a long-idle conversation no longer spans its own gap.
+ */
+const RUN_GAP = IDLE_BEFORE_SWEEP;
+function runsOf(messages) {
+  const runs = [];
+  let current = null;
+  for (let i = 0; i < messages.length; i += 1) {
+    const gap = i === 0 ? null : messages[i].at - messages[i - 1].at;
+    if (current && gap > RUN_GAP) { current.seconds += Math.min(IDLE_CAP, Math.round(gap / 1000)); current = null; }
+    if (!current) { current = { messages: [], seconds: 0 }; runs.push(current); }
+    else current.seconds += Math.min(IDLE_CAP, Math.round(gap / 1000));
+    current.messages.push(messages[i]);
+  }
+  return runs;
+}
 const EXPORTS_STATE = join(homedir(), ".worktrust", "exports.json"); // per export digest: sent, or offered and declined; nothing of a conversation
 const readExportsState = () => { try { return JSON.parse(readFileSync(EXPORTS_STATE, "utf8")); } catch { return {}; } };
 const rememberExport = (digest, note) => { const state = readExportsState(); state[digest] = { ...(state[digest] ?? {}), ...note }; mkdirSync(dirname(EXPORTS_STATE), { recursive: true }); writeFileSync(EXPORTS_STATE, JSON.stringify(state, null, 1)); };
 function exportEntries() {
-  if (!exportSessions) throw Error("chat-exports.mjs is not beside this file: a data export cannot be read");
+  if (!exportSessions || !exportRunRef) throw Error("chat-exports.mjs is not beside this file, or is older than this hook: a data export cannot be read");
   const entries = [], reports = [];
   for (const given of EXPORT_PATHS) {
     const read = readExport(given);
@@ -885,18 +906,28 @@ function exportEntries() {
       messages.sort((a, b) => a.at - b.at);
       for (const [day, ofDay] of byDayOf(messages)) {
         if (ofDay.length === 0) continue;
-        const stretch = measure(null, ofDay), ref = exportRef(read.vendor, id, day);
-        const entry = {
-          title: EXPORT_TITLES[read.vendor], kind: "researched",
-          ...(stretch.seconds !== null ? { seconds: Math.min(RECONSTRUCTED_MAX, stretch.seconds), duration_basis: "reconstructed" } : {}),
-          ...(stretch.exchanges > 0 ? { exchanges: stretch.exchanges, turn_basis: "humanOnly" } : {}),
-          ...(stretch.model ? { model: stretch.model } : {}),
-          stretch_ref: ref, source_event_id: `exp_${ref}`,
-          started_at: new Date(stretch.from).toISOString(), utc_offset: stretch.offset, at: new Date(stretch.to).toISOString(),
-        };
-        entrySource.set(entry, read.vendor);
-        entryFile.set(entry, { file: `${read.vendor}:${id}`, from: stretch.from, folder: null });
-        report.days.add(day); report.seconds += entry.seconds ?? 0; entries.push(entry);
+        // ONE STRETCH PER RUN OF ACTIVITY (0.10.17): the day's messages cut where the hook calls a stretch finished; one run
+        // is the day as before, under the name it always had; several name the one-envelope line they replace.
+        const runs = runsOf(ofDay), whole = measure(null, ofDay), old = exportRef(read.vendor, id, day);
+        runs.forEach(({ messages: run, seconds }, index) => {
+          const stretch = measure(null, run), ref = runs.length === 1 ? old : exportRunRef(read.vendor, id, day, index);
+          // The day as a whole decides whether there is a duration (under a minute is none, as before); a run then carries
+          // its own share of the day's count, and a run with nothing to count carries none.
+          const own = runs.length === 1 ? whole.seconds : whole.seconds !== null && seconds > 0 ? seconds : null;
+          const entry = {
+            title: EXPORT_TITLES[read.vendor], kind: "researched",
+            ...(own !== null ? { seconds: Math.min(RECONSTRUCTED_MAX, own), duration_basis: "reconstructed" } : {}),
+            ...(stretch.exchanges > 0 ? { exchanges: stretch.exchanges, turn_basis: "humanOnly" } : {}),
+            ...(stretch.model ? { model: stretch.model } : {}),
+            stretch_ref: ref, source_event_id: `exp_${ref}`,
+            ...(runs.length > 1 ? { supersedes_ref: old } : {}),
+            started_at: new Date(stretch.from).toISOString(), utc_offset: stretch.offset, at: new Date(stretch.to).toISOString(),
+          };
+          entrySource.set(entry, read.vendor);
+          entryFile.set(entry, { file: `${read.vendor}:${id}`, from: stretch.from, folder: null });
+          report.seconds += entry.seconds ?? 0; entries.push(entry);
+        });
+        report.days.add(day);
       }
     }
     const days = [...report.days].sort();

@@ -102,6 +102,38 @@ export function* codexLines(records) {
   }
 }
 /** Every rollout under a Codex sessions root, in a stable order. */
+/**
+ * WHAT A CODEX ROLLOUT SHOWS OF HOW THE PERSON STEERS (CLI 0.10.16, owner 2026-10-16): the same `live` keys the WorkTrust
+ * mod fills inside Claude Code, read from what Codex itself writes, so nothing is installed. Per UTC day of one rollout:
+ * each turn by its effort level (`turn_context.effort`; per TURN here, per request in Claude Code), the models that
+ * answered, the highest context fill (a request's input tokens over the model's window) and the highest plan-limit use
+ * (`rate_limits.primary`/`secondary.used_percent`), as whole percentages. Compactions and subagents stay out: the rollout
+ * does not say who started them, and a guess is noise. Null when the day shows none of it.
+ */
+const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+export function codexLive(file, day) {
+  if (!CODEX_ROLLOUT.test(String(file)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(day))) return null;
+  let text; try { text = readFileSync(file, "utf8"); } catch { return null; }
+  const out = {}, models = new Set();
+  const peak = (key, value) => { if (Number.isFinite(value)) { const v = Math.max(0, Math.min(100, Math.round(value))); if (v > 0 && (out[key] ?? 0) < v) out[key] = v; } };
+  for (const raw of text.split("\n")) {
+    if (!raw.includes(day)) continue;
+    let record; try { record = JSON.parse(raw); } catch { continue; }
+    if (String(record?.timestamp ?? "").slice(0, 10) !== day) continue;
+    const p = record?.payload && typeof record.payload === "object" ? record.payload : {};
+    if (record.type === "turn_context") {
+      if (typeof p.effort === "string" && EFFORT_LEVELS.has(p.effort)) out[`effort_${p.effort}`] = Math.min(100000, (out[`effort_${p.effort}`] ?? 0) + 1);
+      if (typeof p.model === "string" && p.model) models.add(p.model);
+    } else if (record.type === "event_msg" && p.type === "token_count") {
+      const window = p.info?.model_context_window, input = p.info?.last_token_usage?.input_tokens;
+      if (Number.isFinite(window) && window > 0 && Number.isFinite(input)) peak("context_peak_pct", (input / window) * 100);
+      for (const limit of [p.rate_limits?.primary, p.rate_limits?.secondary]) peak("limit_peak_pct", limit?.used_percent);
+    }
+  }
+  if (models.size > 0) out.models = models.size;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 export function* codexRolloutFiles(root) {
   let entries = []; try { entries = readdirSync(root, { withFileTypes: true }); } catch { return; }
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {

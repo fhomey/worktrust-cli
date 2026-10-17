@@ -263,7 +263,7 @@ const excluded = (path) => excludes.some((text) => text && path.includes(text));
  * reader), the database clients in session-databases.mjs. The install copies both into ~/.worktrust with this hook.
  * Without them this hook still reads Claude Code; the never-matching patterns keep every other client out.
  */
-const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
+const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null, codexLive = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
 // THE STRETCH'S DERIVED RECORD (0.7.4: split from this file): tool calls named by kind, verification, recovery, delegation,
 // context and routing, for the local archive only. A copy without the module still measures and sends exactly as before.
 const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null, resultOf = (block) => ({ id: block.tool_use_id, failed: block.is_error === true, refusal: null }) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
@@ -272,7 +272,7 @@ const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions 
 // imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
 const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, readExport = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
 const { modCounts = () => null } = (await import("./claude-mod.mjs").catch(() => null)) ?? {}; // 0.10.15: the WorkTrust mod's live counts per Claude Code session and day; absent → no `live` group, never zeros
-const liveOf = (file, day) => modCounts(String(file).split(/[\\/]/).pop().replace(/\.jsonl$/, ""), day);
+const liveOf = (file, day) => modCounts(String(file).split(/[\\/]/).pop().replace(/\.jsonl$/, ""), day) ?? codexLive(file, day); // 0.10.16: a Codex rollout's own
 const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await import("./stack-rules.mjs").catch(() => null)) ?? {}; // 0.10.11: core's stack rules and the display-only keys (tools_seen), generated (build-stack-rules --check); absent → nothing named, never a guess
 const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries

@@ -1,21 +1,17 @@
 #!/usr/bin/env node
 /**
  * THE MOMENT OF THE WORK, RECORDED — a Claude Code hook that logs a finished stretch.
- *
  * Session observations complement repository and CI evidence with locally recorded AI activity.
  * They do not establish independent verification or human presence by themselves.
- *
  * IT NEVER LOSES A MEASURED DAY. A session is reported day by day, on whichever run comes first,
  * so a session that stays open for a fortnight is not a fortnight of silence; a machine that was
  * closed for four months hands over its months when it comes back, through the history door; and
  * a day the network refused is sent again on the next run, because the watermark advances over
  * what was accepted and stops at the first refusal.
- *
  * This hook supplies exactly that half, and nothing else. It NEVER decides how good the work was:
  * scoring calls no model, and a stretch reported here is corroborated by the commit and the CI run
  * that land beside it or it counts for nothing. What it sends is what a clock and a token counter
  * recorded.
- *
  *   node log-session.mjs --install            wire it into Claude Code (SessionEnd, SessionStart, PreCompact)
  *   node log-session.mjs --uninstall [--purge] take it out again (--purge also deletes the copies)
  *   node log-session.mjs --dry-run            show what the current transcripts would send
@@ -70,10 +66,11 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 
-const args = process.argv.slice(2);
+async function main() {
+const args = process.argv.slice(2), NODE_FLAGS = process.versions.node === "26.5.0" ? ["--no-concurrent-sparkplug"] : [];
 const flag = (name) => args.includes(`--${name}`), value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; }, DRY = flag("dry-run");
-// Exit once stdout is written: to a pipe it is asynchronous and process.exit drops what is queued (0.6.13 cut --archive-lines).
-const exitFlushed = (code) => new Promise((resolve) => process.stdout.write("", resolve)).then(() => process.exit(code));
+// Return from every terminal branch and drain naturally: forced exit can deadlock Node 26.5 while V8 compiles.
+const exitFlushed = (code) => new Promise((resolve) => process.stdout.write("", resolve)).then(() => { process.exitCode = code; });
 
 /**
  * THE OTHER HALF OF A SESSION: HOW IT WAS ASKED.
@@ -118,8 +115,7 @@ async function refreshCounter(origin, announce) {
 }
 
 /**
- * The live door refuses a stretch older than two days, because it records work AS IT HAPPENS —
- * that rule is what stops a year of invented afternoons walking in through the same door.
+ * The live door refuses stretches older than two days; older work uses the history door.
  *
  * It is not a reason to lose the work. Past this line a measured day is filed through
  * `import_history` instead: the same counted seconds, marked as history, standing as history
@@ -1027,7 +1023,7 @@ if (flag("uninstall")) {
   if (flag("purge")) for (const path of [COUNTER, PINNED, join(homedir(), ".worktrust", "log-session.mjs"), STATE, ...READER_FILES.map((name) => join(homedir(), ".worktrust", name)), join(homedir(), ".worktrust", "antigravity.json")]) { try { rmSync(path); } catch { /* already gone */ } }
   console.log(`${removed ? "removed" : "nothing wired"}: ${file}${flag("purge") ? "\n         purged ~/.worktrust" : ""}`);
   console.log("the coupling itself still exists: end it in the app (Sources → the computer's row → end this coupling)");
-  await exitFlushed(0);
+  return await exitFlushed(0);
 }
 
 if (flag("install")) {
@@ -1106,7 +1102,7 @@ if (flag("install")) {
       } catch (error) { console.log(`counter: could not fetch it (${error.message}) — the hook works without it; fetch /counter/count-behaviour.mjs later`); }
     }
   }
-  if (already && !repaired) { console.log(hookRefreshed ? `hook updated: ${home} now runs the version you downloaded; the wiring was already right (${command})` : `already installed — nothing changed (${command})`); await exitFlushed(0); }
+  if (already && !repaired) { console.log(hookRefreshed ? `hook updated: ${home} now runs the version you downloaded; the wiring was already right (${command})` : `already installed — nothing changed (${command})`); return await exitFlushed(0); }
   for (const event of added) settings.hooks[event].push({ hooks: [{ type: "command", command }] });
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2));
@@ -1117,7 +1113,7 @@ if (flag("install")) {
   // never rewrites: `npx worktrust` asks and writes it (WORKTRUST_CODEX_OFFER, so no hint twice), and
   // without it Codex rollouts are still swept whenever the Claude Code hook runs.
   if (existsSync(join(homedir(), ".codex")) && !process.env.WORKTRUST_CODEX_OFFER) console.log(`codex:      to have Codex wake this hook too, add to ~/.codex/config.toml:\n            notify = ${via ? `["${process.env.WORKTRUST_NODE || process.execPath}", "${via}", "hook", "--codex-notify"]` : `["node", "${home}", "--codex-notify"]`}\n            (its rollouts are swept on every run either way)`);
-  await exitFlushed(0);
+  return await exitFlushed(0);
 }
 
 const door = coupling();
@@ -1148,14 +1144,14 @@ if (flag("evidence-summary")) {
     planned: sum((d) => (d.planning ? 1 : 0)), files: sum((d) => d.changes?.files), test_files: sum((d) => d.changes?.test_files), complexity,
   };
   process.stdout.write(`${JSON.stringify(summary)}\n`);
-  await exitFlushed(0);
+  return await exitFlushed(0);
 }
-if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
+if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); return await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 // THE EXPORTS IN A FOLDER (0.10.10, for the bare `npx worktrust`): which lie there, by vendor and digest, and which this computer
 // already sent or was asked about; reads, prints one JSON line, sends nothing. `--export-offered <digest>` records a No.
-if (flag("find-exports")) { const named = value("find-exports"), state = readExportsState(); const found = (findExports ? await findExports(named && !named.startsWith("--") ? named : undefined) : []).map((one) => ({ ...one, sent: state[one.digest]?.sent === true, offered: Boolean(state[one.digest]) })); process.stdout.write(`${JSON.stringify(found)}\n`); await exitFlushed(0); }
-if (value("export-offered")) { rememberExport(value("export-offered"), { offered: new Date().toISOString() }); await exitFlushed(0); }
-if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
+if (flag("find-exports")) { const named = value("find-exports"), state = readExportsState(); const found = (findExports ? await findExports(named && !named.startsWith("--") ? named : undefined) : []).map((one) => ({ ...one, sent: state[one.digest]?.sent === true, offered: Boolean(state[one.digest]) })); process.stdout.write(`${JSON.stringify(found)}\n`); return await exitFlushed(0); }
+if (value("export-offered")) { rememberExport(value("export-offered"), { offered: new Date().toISOString() }); return await exitFlushed(0); }
+if (!door && !codexDoor && !DRY) { return await exitFlushed(0); } // Not coupled on this machine: nothing to do, quietly.
 
 /**
  * HISTORY FROM THE ARCHIVE (0.8.0; framework §22). When an AI app has deleted its sessions, the stretches this computer
@@ -1173,10 +1169,10 @@ if (flag("history") && flag("from-archive")) {
   // archive must still verify whole, and only stretches no longer in any AI app here travel.
   let ownKey = null;
   try { ownKey = pem ? createPublicKey(createPrivateKey(pem)).export({ format: "jwk" }).x : null; } catch { ownKey = null; }
-  const verified = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "preserve.mjs"), "--verify", dir], { encoding: "utf8" });
-  if (verified.status !== 0) { say(`The archive in ${dir} does not verify, so nothing was sent: ${(verified.stdout || verified.stderr || "").trim().split("\n").pop()}`); await exitFlushed(1); }
+  const verified = spawnSync(process.execPath, [...NODE_FLAGS, join(dirname(fileURLToPath(import.meta.url)), "preserve.mjs"), "--verify", dir], { encoding: "utf8" });
+  if (verified.status !== 0) { say(`The archive in ${dir} does not verify, so nothing was sent: ${(verified.stdout || verified.stderr || "").trim().split("\n").pop()}`); return await exitFlushed(1); }
   const { archiveEntries = null } = (await import("./preserve-lines.mjs").catch(() => null)) ?? {};
-  if (!archiveEntries) { say("preserve-lines.mjs is not beside this file. Nothing was sent."); await exitFlushed(1); }
+  if (!archiveEntries) { say("preserve-lines.mjs is not beside this file. Nothing was sent."); return await exitFlushed(1); }
   const present = new Set(historyEntries(null, true).map((entry) => entry.stretch_ref));
   const all = archiveEntries(dir, ownKey), gone = all.filter(({ entry }) => !present.has(entry.stretch_ref));
   const entries = gone.map(({ entry, client, signed }) => {
@@ -1186,38 +1182,38 @@ if (flag("history") && flag("from-archive")) {
   });
   const signedCount = all.filter(({ signed }) => signed).length;
   say(`${all.length} stretches in the archive · ${signedCount} signed by this computer's key (verified) · ${all.length - signedCount} unsigned or signed by another key (reconstructed) · ${entries.length} of them no longer in any AI app here`);
-  if (DRY || entries.length === 0) { if (entries[0]) say(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`); say(entries.length === 0 ? "Nothing to send." : "\ndry run — nothing sent."); await exitFlushed(0); }
-  if (!(await doorKnowsArchive(door))) { say("WorkTrust does not accept history from an archive yet (the door does not know the mark). Nothing was sent."); await exitFlushed(1); }
-  await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
+  if (DRY || entries.length === 0) { if (entries[0]) say(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`); say(entries.length === 0 ? "Nothing to send." : "\ndry run — nothing sent."); return await exitFlushed(0); }
+  if (!(await doorKnowsArchive(door))) { say("WorkTrust does not accept history from an archive yet (the door does not know the mark). Nothing was sent."); return await exitFlushed(1); }
+  return await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
 }
 
 if (flag("history")) {
   const historyFloor = floorOf(readState(), "__historyFloor");
   // AN EXPORT IS ITS OWN HISTORY (0.10.10): its lines alone, reconstructed, and never a rebuild (a rebuild replaces this computer's own measured days).
   let fromExports = null, fromFolder = null;
-  if (EXPORT_PATHS.length > 0) { try { fromExports = await exportEntries(); } catch (error) { console.log(`export: ${error.message}`); await exitFlushed(1); } }
+  if (EXPORT_PATHS.length > 0) { try { fromExports = await exportEntries(); } catch (error) { console.log(`export: ${error.message}`); return await exitFlushed(1); } }
   // A COPIED SESSION FOLDER (0.10.10): its own history, reconstructed, the live folders' stretches skipped; never a rebuild.
   if (flag("from-folder")) {
     const given = value("from-folder");
-    if (!given || given.startsWith("--")) { console.log("folder: --from-folder needs the copied folder's path"); await exitFlushed(1); }
-    try { fromFolder = folderEntries(given); } catch (error) { console.log(`folder: ${error.message}`); await exitFlushed(1); }
+    if (!given || given.startsWith("--")) { console.log("folder: --from-folder needs the copied folder's path"); return await exitFlushed(1); }
+    try { fromFolder = folderEntries(given); } catch (error) { console.log(`folder: ${error.message}`); return await exitFlushed(1); }
   }
-  if ((fromExports || fromFolder) && flag("rebuild")) { console.log("An export or a copied folder is never a rebuild: its hours are reconstructed and replace nothing. Run it without --rebuild."); await exitFlushed(1); }
+  if ((fromExports || fromFolder) && flag("rebuild")) { console.log("An export or a copied folder is never a rebuild: its hours are reconstructed and replace nothing. Run it without --rebuild."); return await exitFlushed(1); }
   // THE EXPORT REPLACES (owner, 2026-10-10): the door withdraws the product's earlier connector lines on the export's days by itself; the AI-app
   // lines under no product go only with `--withdraw-unknown`, which the command sends after the person's yes, with an export alone.
-  if (flag("withdraw-unknown") && !fromExports) { console.log("--withdraw-unknown goes with --export alone: it withdraws, on the days an export covers, the earlier lines an AI app reported under no product."); await exitFlushed(1); }
+  if (flag("withdraw-unknown") && !fromExports) { console.log("--withdraw-unknown goes with --export alone: it withdraws, on the days an export covers, the earlier lines an AI app reported under no product."); return await exitFlushed(1); }
   const entries = fromExports ? fromExports.entries : fromFolder ? fromFolder.entries : historyEntries(historyFloor);
   const months = [...new Set(entries.map((entry) => entry.at.slice(0, 7)))].sort();
   // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, days, first and last month; per client its days (the rebuild's plan,
   // 2026-10-07); nothing sent. NO HOURS (0.10.20): the hours are WorkTrust's to compute; the receipt after the send carries them.
   const clients = [...entries.reduce((map, entry) => { const client = entrySource.get(entry) ?? "claude", row = map.get(client) ?? { client, days: new Set() }; row.days.add(entry.at.slice(0, 10)); return map.set(client, row); }, new Map()).values()].map((row) => ({ client: row.client, days: row.days.size, first: [...row.days].sort()[0], last: [...row.days].sort().at(-1) }));
-  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients })); await exitFlushed(0); }
+  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients })); return await exitFlushed(0); }
   console.log(`${entries.length} day-stretches · ${fromExports || fromFolder ? "reconstructed" : "measured"} by WorkTrust on arrival · ${months.join(", ")}${flag("rebuild") ? " · rebuild: this computer's earlier lines for these days and clients are replaced at the door" : ""}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.
     if (entries[0]) console.log(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`);
     console.log(`\ndry run — nothing sent. Add --history${flag("rebuild") ? " --rebuild" : ""} without --dry-run to ${flag("rebuild") ? "rebuild" : "import"} them.`);
-    await exitFlushed(0);
+    return await exitFlushed(0);
   }
   // A batch the door refused is a failure the caller must see, not a quiet zero.
   const accepted = await sendHistory(door, entries, true, flag("rebuild"), Boolean(fromFolder), fromExports ? { byDay: true, withdrawUnknown: flag("withdraw-unknown") } : {});
@@ -1225,7 +1221,7 @@ if (flag("history")) {
   if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
   // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
   if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: entries.length, ...RECEIPTS })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
-  await exitFlushed(accepted === entries.length ? 0 : 1);
+  return await exitFlushed(accepted === entries.length ? 0 : 1);
 }
 
 const input = hookInput();
@@ -1304,11 +1300,14 @@ if (!DRY && existsSync(COUNTER)) {
   const last = state.__counter?.at ? Date.parse(state.__counter.at) : 0;
   if (Date.now() - last > COUNTER_EVERY_MS) {
     try {
-      const child = spawn(process.execPath, [COUNTER, "--stage"], { detached: true, stdio: "ignore" });
+      const child = spawn(process.execPath, [...NODE_FLAGS, COUNTER, "--stage"], { detached: true, stdio: "ignore" });
       child.unref();
       state.__counter = { at: new Date().toISOString() };
       writeState(state);
     } catch { /* the counter is a bonus; a hook that fails on it would cost the stretch it just logged */ }
   }
 }
-await exitFlushed(0);
+return await exitFlushed(0);
+
+}
+await main();

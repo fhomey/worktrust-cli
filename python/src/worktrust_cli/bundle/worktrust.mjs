@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
  * WorkTrust on a computer, in one command — like `gh auth login` (2026-10-03).
- *
  *   npx worktrust                       show the plan, ask, approve this computer in the app, couple (0.10.7: a person's
  *                                       command always runs the newest version, whatever npx had cached);
  *                                       on a computer already coupled: what is coupled here
@@ -30,27 +29,23 @@
  *                                       --archive [dir] a local metadata-only record, --verify [dir] checks it,
  *                                       --summary [dir] counts hours, tokens and parallel sessions from it);
  *                                       local only: no account, no key, no network (preserve.mjs)
- *
  * WHAT RUNS. From the npm package, everything that runs is in the package: this file,
  * `setup-mcp.mjs` (gives every AI app here the WorkTrust door), `log-session.mjs` (the session hook)
  * and `count-behaviour.mjs` (the local counter, pinned: never replaced from the network), with
  * `transcript-readers.mjs` (how Codex and Antigravity logs are read, imported by the last two). Nothing
  * is downloaded. Run as a single file from WorkTrust's site instead, it fetches those from that
  * same site, and says so before it asks.
- *
  * HOW THE ACCOUNT IS DECIDED. By default this terminal listens on 127.0.0.1 for one answer and holds
  * a PKCE secret. Your browser opens WorkTrust, you approve this computer there (signed in, second
  * factor), and the browser is sent back to 127.0.0.1 with a one-time code that only this terminal,
  * with its secret, can exchange for the key. Nothing is typed, and a link forwarded to someone else
  * approves nothing they can collect. Without a browser (`--device`, or over SSH) the terminal shows
  * a code that you type yourself at app.worktrust.io/connect/computer.
- *
  * WHERE THE KEY LIVES. In one file only you can read (~/.worktrust/key.json, mode 600, folder 700).
  * No keychain is touched. The AI apps never hold it:
  * each runs `worktrust.mjs mcp`, a small local bridge that reads the key and speaks to WorkTrust for
  * them, and the session hook runs through `worktrust.mjs hook` the same way. `--direct` writes the
  * key into each app's settings instead (for an app that cannot run a local command).
- *
  * THE KEY ONLY WORKS ON THIS COMPUTER. connect makes an Ed25519 key pair; the public half goes to
  * WorkTrust, the private half stays in the key file. Every call the bridge, the hook and
  * the counter make carries a fresh signature (`WorkTrust-Proof`), and WorkTrust refuses a call
@@ -97,7 +92,9 @@ const PLACEHOLDER = `wt_${"0".repeat(43)}`;
 const say = (line = "") => process.stdout.write(`${line}\n`);
 // A reader that closed the pipe (`worktrust status | head`) wants no more: stop quietly, never an EPIPE stack (0.6.16, audit L4).
 process.stdout.on("error", (error) => { if (error?.code === "EPIPE") process.exit(0); throw error; });
-const fail = (line) => { process.stderr.write(`worktrust: ${line}\n`); process.exit(1); };
+class CliFailure extends Error {}
+const fail = (line) => { process.stderr.write(`worktrust: ${line}\n`); throw new CliFailure(); };
+const NODE_FLAGS = process.versions.node === "26.5.0" ? ["--no-concurrent-sparkplug"] : [];
 const OS = { darwin: "macos", win32: "windows", linux: "linux" }[platform()] ?? "other";
 const OS_NAME = { macos: "macOS", windows: "Windows", linux: "Linux", other: "this system" }[OS];
 
@@ -123,8 +120,6 @@ function computerIds() {
   return { device_id: hash(`worktrust-machine|${machine.toLowerCase()}`), profile_id: hash(`worktrust-profile|${machine.toLowerCase()}|${homedir()}`) };
 }
 
-if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or later (fetch is built in from 18).");
-
 async function post(path, body) {
   const response = await fetch(`${ORIGIN}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return { status: response.status, json: await response.json().catch(() => ({})) };
@@ -147,7 +142,7 @@ async function scripts() {
 /** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
 function run(path, scriptArgs, token, collect = false, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_CLI_VERSION: CLI_VERSION, ...extraEnv } });
+    const child = spawn(process.execPath, [...NODE_FLAGS, path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_CLI_VERSION: CLI_VERSION, ...extraEnv } });
     let out = "";
     child.stdout?.on("data", (chunk) => { out += chunk; });
     child.stderr?.on("data", (chunk) => { out += chunk; });
@@ -463,7 +458,7 @@ function sweepAtMostHourly() {
   const stamp = join(HOME_DIR, "bridge-swept-at");
   try { if (Date.now() - Number(readFileSync(stamp, "utf8")) < 3_600_000) return; } catch { /* never swept here */ }
   try { mkdirSync(HOME_DIR, { recursive: true }); writeFileSync(stamp, String(Date.now())); } catch { return; }
-  try { spawn(process.execPath, [fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next start sweeps */ }
+  try { spawn(process.execPath, [...NODE_FLAGS, fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next start sweeps */ }
 }
 
 async function bridge() {
@@ -505,9 +500,9 @@ async function hook() {
   if (has("antigravity-stop")) return antigravityStop();
   if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
-  if (!key) process.exit(0);
-  const child = spawn(process.execPath, [join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
-  child.on("exit", (code) => process.exit(code ?? 0));
+  if (!key) return;
+  const child = spawn(process.execPath, [...NODE_FLAGS, join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
+  process.exitCode = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code) => resolve(code ?? 1)); });
 }
 
 /**
@@ -529,8 +524,8 @@ async function antigravityStop() {
     process.stdin.on("end", () => { clearTimeout(timer); resolve(text); });
     process.stdin.on("error", () => { clearTimeout(timer); resolve(text); });
   });
-  try { spawn(process.execPath, [fileURLToPath(import.meta.url), "hook", "--antigravity"], { detached: true, stdio: "ignore", env: { ...process.env, WORKTRUST_HOOK_INPUT: input.slice(0, 65536) } }).unref(); } catch { /* the next run sweeps it */ }
-  process.exit(0);
+  try { spawn(process.execPath, [...NODE_FLAGS, fileURLToPath(import.meta.url), "hook", "--antigravity"], { detached: true, stdio: "ignore", env: { ...process.env, WORKTRUST_HOOK_INPUT: input.slice(0, 65536) } }).unref(); } catch { /* the next run sweeps it */ }
+  process.stdin.pause(); return;
 }
 
 /**
@@ -543,8 +538,8 @@ async function antigravityStop() {
 async function sessionEnd() {
   writeSync(1, "{}\n");
   if (!process.stdin.isTTY) await new Promise((resolve) => { const timer = setTimeout(resolve, 2000); process.stdin.on("data", () => {}); process.stdin.on("end", () => { clearTimeout(timer); resolve(); }); process.stdin.on("error", () => { clearTimeout(timer); resolve(); }); });
-  try { spawn(process.execPath, [fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
-  process.exit(0);
+  try { spawn(process.execPath, [...NODE_FLAGS, fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
+  process.stdin.pause(); return;
 }
 
 /**
@@ -1136,7 +1131,7 @@ function claudeKeepsDays() {
 async function preserve() {
   const script = join(HERE, "preserve.mjs");
   if (!existsSync(script)) fail("preserve runs from the package: npx worktrust@latest preserve");
-  const child = spawn(process.execPath, [script, ...args.filter((arg) => arg !== "preserve")], { stdio: "inherit", env: { ...process.env, WORKTRUST_COLLECTOR: `worktrust-cli/${CLI_VERSION}` } });
+  const child = spawn(process.execPath, [...NODE_FLAGS, script, ...args.filter((arg) => arg !== "preserve")], { stdio: "inherit", env: { ...process.env, WORKTRUST_COLLECTOR: `worktrust-cli/${CLI_VERSION}` } });
   process.exitCode = await new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
 }
 
@@ -1179,12 +1174,13 @@ function help() {
 }
 
 // THE BARE COMMAND COUPLES (owner, 2026-10-03: "zo kort mogelijk"). `npx worktrust` on a computer
-// without a key here shows the plan and asks, exactly as `connect` does; with one it says what is
-// coupled, so running it twice never re-pairs by surprise.
+// An existing key shows the current coupling; no key starts the pairing plan.
 // AN AGENT DOES NOT RUN WORKTRUST FOR A PERSON (owner, 2026-10-08; AGENTS.md). The commands that change what this
 // computer sends, couples or rebuilds are the person's to run in their own terminal: in an AI agent's shell they stop
 // before anything is read or written, --yes included. The hook and the MCP bridge are started by the agent's client
 // itself and stay as they are; `status` only reads.
+async function main() {
+if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or later (fetch is built in from 18).");
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
 const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
@@ -1192,7 +1188,7 @@ if (agentShell && PERSON_ONLY.has(command)) {
   say();
   say(`  worktrust${command === "default" ? "" : ` ${command}`} is run by the person, in their own terminal, never by an AI agent for them (this shell is an agent's: ${agentShell}).`);
   say("  Nothing was read, sent or changed. See AGENTS.md in the package: https://www.npmjs.com/package/worktrust");
-  process.exit(3);
+  return (process.exitCode = 3);
 }
 
 /**
@@ -1226,9 +1222,9 @@ async function relayToNewest() {
   const child = platform() === "win32" ? spawn(["npx", ...argv].map(quote).join(" "), { stdio: "inherit", env, shell: true }) : spawn("npx", argv, { stdio: "inherit", env });
   const code = await new Promise((done) => { child.on("error", () => done(null)); child.on("close", (exit) => done(exit)); });
   if (code === null) { say("  The newest could not be started; this version runs instead."); return; }
-  process.exit(code);
+  process.exitCode = code; return true;
 }
-await relayToNewest();
+if (await relayToNewest()) return;
 
 if (command === "version") say(CLI_VERSION);
 else if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
@@ -1255,3 +1251,6 @@ else if (command === "orchestration") {
   const { reportFile } = await import("./orchestration-report.mjs"); reportFile(args.slice(1));
 }
 else help();
+
+}
+try { await main(); } catch (error) { if (!(error instanceof CliFailure)) throw error; process.exitCode = 1; }

@@ -1,24 +1,20 @@
 /**
  * THE LOCAL COUNTER — rubric v0.1 (`counter@0.1.0`).
- *
  * Reads this machine's own Claude Code transcripts, its Codex rollouts (2026-09-27), its Antigravity conversations (2026-10-04), its VS Code
  * Copilot chat sessions (2026-09-08) and, when given, a claude.ai export (~/.claude/projects/**​/*.jsonl — transcripts
  * ONLY, never project files), classifies each of the person's OWN messages with the
  * deterministic rules below, and reports COUNTS per month through the WorkTrust MCP door's
  * `log_signals`. The same logs under the same rubric give the same numbers: every count is
  * re-derivable, and a better rubric is a new version that writes beside this one.
- *
  * WHAT CANNOT LEAVE: the door's schema takes vocabulary keys and integers; it has no text
  * field and refuses unknown keys by name. This script builds exactly that payload and nothing
  * else — a password or a .env line has no channel to travel through. Run with --dry-run to see
  * every number before anything is sent.
- *
  *   node count-behaviour.mjs --dry-run
  *   node count-behaviour.mjs --url https://app.worktrust.io/api/mcp --token wt_...
  *   node count-behaviour.mjs --dry-run --exclude client-x --exclude secret
  *   node count-behaviour.mjs --dry-run --claude-export ~/Downloads/claude-export   (a claude.ai data export beside the transcripts)
  *   node count-behaviour.mjs --dry-run --chatgpt-export ~/Downloads/chatgpt-export (a ChatGPT data export, the same way)
- *
  * CONFIDENTIAL PROJECTS stay out BEFORE anything is counted: `--exclude <text>` (repeatable)
  * skips every project directory whose name contains that text, and `.worktrust-counter.json`
  * in your home directory does the same permanently: { "exclude": ["client-x"] }. An excluded
@@ -55,7 +51,6 @@ export const encode = value => JSON.stringify(value, (_, v) => v instanceof Map 
 export const decode = value => JSON.parse(value, (_, v) => v?.$map ? new Map(v.$map) : v?.$set ? new Set(v.$set) : v);
 export function checkpointStore(path, signature, manifest) {
   mkdirSync(dirname(path), {recursive:true,mode:0o700});
-  // A process lock prevents two local runs from replacing each other's checkpoint.
   const lock=path+'.lock';
   try { const fd=openSync(lock,'wx',0o600);writeFileSync(fd,String(process.pid));closeSync(fd); }
   catch(error) {
@@ -409,7 +404,25 @@ function gitCommitsOf(cwd, sinceIso) {
   return commits;
 }
 
+export const isoWeek = (day) => {
+  const date = new Date(`${day}T00:00:00Z`);
+  const thursday = new Date(date); thursday.setUTCDate(date.getUTCDate() + 3 - ((date.getUTCDay() + 6) % 7));
+  const firstThursday = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
+  const week = 1 + Math.round(((thursday - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+};
+export function overlappingSessions(spans) {
+  const ordered=spans.map((span,index)=>({...span,index})).filter(s=>s.end>s.start).sort((a,b)=>a.start-b.start);
+  const found=new Set();let maximumEnd=-Infinity;
+  for(let i=0;i<ordered.length;i++){
+    const a=ordered[i];
+    if(maximumEnd>a.start || (ordered[i+1] && ordered[i+1].start<a.end))found.add(a.index);
+    maximumEnd=Math.max(maximumEnd,a.end);
+  }
+  return found;
+}
 
+async function main() {
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
 const value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -473,7 +486,7 @@ if (flag("classify")) {
     const form = classifyOpening(row.text);
     console.log(JSON.stringify({ form, kind: openingActKind(row.text, form), second: row.second === undefined ? null : classifySecondTurn(row.second), pasted: Math.round(pastedShare(row.text ?? "") * 100) / 100, restated: row.skill === undefined ? null : restatedSentences(row.text, row.skill), gitSide: row.commits === undefined ? null : gitSideCounts(row.commits), testRun: row.command === undefined ? null : { test: isTestCommand(row.command), outcome: row.result === undefined ? null : testOutcomeOf(row.result, row.isError) } }));
   }
-  process.exit(0);
+  return (process.exitCode = 0);
 }
 {
   const i = args.indexOf("--agreement");
@@ -485,7 +498,7 @@ if (flag("classify")) {
     const perLanguage = Object.fromEntries([...byLang.entries()].map(([lang, pairs]) => [lang, { n: pairs.length, kappa: cohenKappa(pairs) }]));
     const passes = rows.length >= 100 && unclassified !== null && unclassified <= UNCLASSIFIED_CEILING && Object.values(perLanguage).every((entry) => entry.kappa !== null && entry.kappa >= KAPPA_FLOOR);
     console.log(JSON.stringify({ n: rows.length, unclassified, perLanguage, floors: { kappa: KAPPA_FLOOR, unclassified: UNCLASSIFIED_CEILING, items: 100 }, counterGrade: passes }));
-    process.exit(passes ? 0 : 1);
+    return (process.exitCode = passes ? 0 : 1);
   }
 }
 /**
@@ -788,13 +801,6 @@ const byMonthContext = new Map(); // month → Map("signal|context" → count)
  * week never straddles two stored months: "2026-09|2026-W36". A count without a day (a
  * month-level aggregate) lands in the month's "U" bucket.
  */
-export const isoWeek = (day) => {
-  const date = new Date(`${day}T00:00:00Z`);
-  const thursday = new Date(date); thursday.setUTCDate(date.getUTCDate() + 3 - ((date.getUTCDay() + 6) % 7));
-  const firstThursday = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
-  const week = 1 + Math.round(((thursday - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
-  return `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
-};
 const byWeek = new Map(); // "month|week" → Map(signal → count)
 /**
  * THE WORK STRETCH (0.7.0, the owner's capability framework v4 §13: "work_stretch_id, the stable unit joining AI
@@ -1175,7 +1181,7 @@ for await (const session of sessions()) {
   checkpoint?.write(sessionIndex,{maps:checkpointMaps,sets:checkpointSets,sessionSpans,messages,files,currentContext,duplicateLines},checkpointDependencies);
   if(++processed>=maxSessions && sessionIndex<manifest.length){
     console.log(`Counter paused at ${sessionIndex}/${manifest.length} sessions; rerun the same command. Nothing sent.`);
-    checkpoint?.close();process.exit(0);
+    checkpoint?.close();return (process.exitCode = 0);
   }
 }
 currentUnit = null; currentDay = null; currentStretchBase = null; // month-level aggregates carry no unit, no day and no stretch
@@ -1198,16 +1204,6 @@ for (const [context, cwd] of contextCwds) {
 }
 currentUnit = null; currentDay = null; currentContext = null;
 // The same strict overlap test in O(n log n), rather than comparing every pair.
-export function overlappingSessions(spans) {
-  const ordered=spans.map((span,index)=>({...span,index})).filter(s=>s.end>s.start).sort((a,b)=>a.start-b.start);
-  const found=new Set();let maximumEnd=-Infinity;
-  for(let i=0;i<ordered.length;i++){
-    const a=ordered[i];
-    if(maximumEnd>a.start || (ordered[i+1] && ordered[i+1].start<a.end))found.add(a.index);
-    maximumEnd=Math.max(maximumEnd,a.end);
-  }
-  return found;
-}
 const overlapping=overlappingSessions(sessionSpans);
 // Parallelism: a session that overlaps any other counted session, once per session.
 for (let i = 0; i < sessionSpans.length; i += 1) {
@@ -1221,7 +1217,7 @@ for (let i = 0; i < sessionSpans.length; i += 1) {
 if (flag("stretch-signals")) {
   const rows = [...byStretch.entries()].sort(([, a], [, b]) => a.day.localeCompare(b.day)).map(([stretch_ref, entry]) => JSON.stringify({ stretch_ref, day: entry.day, analyzer_version: ANALYZER_VERSION, signals: Object.fromEntries(Object.entries(entry.signals).sort().map(([signal, count]) => [signal, Math.min(COUNT_CEILING, count)])) }));
   await new Promise((resolve) => process.stdout.write(`${[...rows, JSON.stringify({ stretch_signals_end: rows.length })].join("\n")}\n`, resolve));
-  process.exit(0);
+  return (process.exitCode = 0);
 }
 
 const months = [...byMonth.keys()].sort();
@@ -1281,10 +1277,10 @@ console.log("");
 if (LABEL_OUT) { writeFileSync(LABEL_OUT, labelRows.map((row) => JSON.stringify(row)).join("\n") + "\n"); console.log(` openings written for labelling: ${labelRows.length} → ${LABEL_OUT} (local file; add "label" per line, then --agreement ${LABEL_OUT})`); }
 if (DRY) {
   console.log(`dry run — nothing sent. Next: run again with --stage — the reading then WAITS in the app (${appOrigin}/behaviour) until the person clicks Import; nothing is counted before that click. (Alternative without the app visit: approval code ${APPROVAL} at ${appOrigin}/behaviour?approve=${APPROVAL}, then --send.)${URL_ && TOKEN ? ` Coupling found (${new URL(URL_).host}).` : " Pass --url and --token (or couple this client) first."}`);
-  process.exit(0);
+  return (process.exitCode = 0);
 }
 if (STAGE) {
-  if (!URL_ || !TOKEN) { console.error("no coupling found: pass --url and --token, or set WORKTRUST_MCP_URL / WORKTRUST_MCP_TOKEN"); process.exit(1); }
+  if (!URL_ || !TOKEN) { console.error("no coupling found: pass --url and --token, or set WORKTRUST_MCP_URL / WORKTRUST_MCP_TOKEN"); return (process.exitCode = 1); }
   const readings = months.map((month) => ({ period: month, stretches: sessionsByMonth.get(month) ?? 0, signals: [...byMonth.get(month).entries()].map(([signal, count]) => ({ signal, count: clampCount(signal, count, month) })), contexts: cellsOf(month), context_names: contextNamesOf(), units: [...(unitsByMonth.get(month)?.values() ?? [])].map(({ unit, signal, induced, day, context }) => ({ unit, signal, induced, ...(day ? { day } : {}), ...(context ? { context } : {}) })) }));
   if (!flag("legacy-stage")) {
     // WHAT THIS MACHINE ALREADY DELIVERED, per month and ISO week, for this coupling and rubric
@@ -1326,7 +1322,7 @@ if (STAGE) {
     const unchanged=new Set(readings.map(r=>r.period)).size-plan.length;
     console.log(` ${plan.length} month(s) with new or changed weeks${unchanged>0?` · ${unchanged} unchanged, not sent`:""}`);
     for(const {reading,changes} of plan)console.log(`   ${reading.period}: ${changes.length?changes.map(c=>`${c.week} ${c.previous===null?"new":c.observations===0?"removed":`${c.previous}→${c.observations}`}`).join(" · "):"per-project cells changed"}`);
-    if(plan.length===0){console.log("Nothing new since the last delivery from this machine. Nothing sent.");process.exit(0);}
+    if(plan.length===0){console.log("Nothing new since the last delivery from this machine. Nothing sent.");return (process.exitCode = 0);}
     // Persist the outbound revision BEFORE sending. A failed HTTP response replays safely.
     let delivery=null;try{delivery=JSON.parse(readFileSync(deliveryPath,"utf8"));}catch{}
     if(delivery?.scope!==scope)delivery=null;
@@ -1356,7 +1352,7 @@ if (STAGE) {
       }
     }
     console.log("Complete months await the owner's Import in /behaviour. Imports replace this coupling's month, including corrections and removals.");
-    process.exit(0);
+    return (process.exitCode = 0);
   }
   // UNDER THE HOST'S CEILING. A serverless request takes about 4.5 MB; a year of unit references
   // does not fit in one. Months are staged in chunks that stay under the ceiling, each with its own
@@ -1378,9 +1374,9 @@ if (STAGE) {
     console.log(` staged ${chunk[0].period}${chunk.length > 1 ? `–${chunk[chunk.length - 1].period}` : ""} → ${text}`);
   }
   console.log(` the person imports ${chunks.length === 1 ? "it" : `each of the ${chunks.length} readings`} at ${appOrigin}/behaviour — one click each; nothing is on the mirror before it.`);
-  process.exit(0);
+  return (process.exitCode = 0);
 }
-if (!URL_ || !TOKEN) { console.error("no coupling found: pass --url and --token, or set WORKTRUST_MCP_URL / WORKTRUST_MCP_TOKEN"); process.exit(1); }
+if (!URL_ || !TOKEN) { console.error("no coupling found: pass --url and --token, or set WORKTRUST_MCP_URL / WORKTRUST_MCP_TOKEN"); return (process.exitCode = 1); }
 console.log(`sending to ${new URL(URL_).host} …`);
 for (const month of months) {
   const bucket = byMonth.get(month);
@@ -1392,3 +1388,6 @@ for (const month of months) {
   const text = answer?.result?.content?.[0]?.text ?? answer?.error?.message ?? `http ${response.status}`;
   console.log(` sent ${month} → ${text}`);
 }
+
+}
+await main();

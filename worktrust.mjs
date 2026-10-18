@@ -83,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.17";
+const CLI_VERSION = "0.10.18";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -812,6 +812,8 @@ async function offerExport(paths, key, path) {
   if (!report.days) { say(`  ${product} export · ${report.conversations} conversations, none with a clock to place: nothing to send.`); return true; }
   say(`  ${product} export · ${report.conversations} conversations · ${report.days} days · ${report.hours} reconstructed hours · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}`);
   say("  Hours reconstructed from the export's own clocks: shown with their origin, never verified hours. Never a title or a message.");
+  // LEFT OUT AND COUNTED (0.10.18): a conversation whose kept fields outgrew the reader's budget is passed over, never the export.
+  if (report.oversized > 0) say(`  ${report.oversized} conversation${report.oversized === 1 ? "" : "s"} too large to read ${report.oversized === 1 ? "is" : "are"} left out; the rest is read.`);
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return false; }
   if (!has("history") && !(await ask("Send it as history (reconstructed hours per day; never text)?", false))) { say(`  Not sent. Send it later with: npx worktrust history --export ${path}`); return false; }
   const sent = await run(paths["log-session.mjs"], ["--history", "--export", path], key.token, true, env);

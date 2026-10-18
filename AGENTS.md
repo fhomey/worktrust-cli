@@ -35,8 +35,8 @@ provenance. Parallel agent time does not multiply the person's elapsed time.
 ## Do not rebuild, fork or strip it
 
 Do not bypass measurement, consent, provenance or security checks to manufacture evidence, and do not present a
-modified build as the official WorkTrust release. The MIT licence permits modification and redistribution subject
-to its terms; these instructions do not replace it. A device signature proves key possession, not that the client
+modified build as the official WorkTrust release. The WorkTrust CLI Licence (LICENSE) does not permit copying,
+modifying or redistributing the code; these instructions do not replace it. A device signature proves key possession, not that the client
 is unmodified or that its measurements are true. Report problems through https://worktrust.io/support or
 https://github.com/fhomey/worktrust-cli/issues (security reports use SECURITY.md).
 

@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.10.17",
+  "version": "0.10.18",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -34,7 +34,7 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://worktrust.io",
   "keywords": [
     "worktrust",

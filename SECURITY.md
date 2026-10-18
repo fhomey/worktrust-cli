@@ -59,10 +59,14 @@ potentially identifying metadata; see the README's complete payload list.
 
 Agent-shell detection is a workflow safeguard, not protection from malicious same-user software.
 Agents must follow AGENTS.md. From 0.10.12 the bare invocation is covered by the same guard as explicit
-person-only commands; help and version are safe informational paths. Export parsing limits ZIP size
-to 2 GiB, directory size to 8 MiB, compressed/decoded JSON to 64 MiB, nesting to 64, structural tokens
-to 1,000,000 and conversations to 50,000. Larger inputs are refused. These are resource bounds,
-not a sandbox or independent validation of the export's truth.
+person-only commands; help and version are safe informational paths. An export is read as a stream
+(0.10.18) through a JSON walk of our own that keeps a fixed set of fields per conversation and skips the
+rest unbuilt; a zip entry is inflated as a stream. Bounds: a file (bare or zip) to 64 GiB, a zip directory
+to 8 MiB, nesting to 64, conversations to 2,000,000, a conversation's kept fields to 8 MiB (the counter's
+text, read locally, to 64 MiB; a conversation past its budget is left out and counted), an export held whole
+to 512 MiB of kept fields; zip64 is refused. Peak memory is bounded by the chunk in flight and one
+conversation's kept fields (`scripts/test-export-memory.mjs` holds it under 200 MiB for a gigabyte). These
+are resource bounds, not a sandbox or independent validation of the export's truth.
 
 ## Verifying a version
 

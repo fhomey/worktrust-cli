@@ -622,16 +622,17 @@ const skippedConversations = [];
  * both; a vendor's zip is opened for its conversations.json alone. Without the module an export flag is refused by name.
  */
 const { exportSessions = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
-function* vendorExportSessions(paths, expect) {
+// 0.10.18: the export streams, one conversation in memory at a time, with its text (`text: true`: this rubric reads it here).
+async function* vendorExportSessions(paths, expect) {
   if (paths.length > 0 && !exportSessions) throw Error("chat-exports.mjs is not beside this file: a data export cannot be read");
-  for (const given of paths) for (const session of exportSessions(given, { expect, excluded, skipped: skippedConversations })) {
+  for (const given of paths) for await (const session of exportSessions(given, { expect, excluded, skipped: skippedConversations, text: true })) {
     if (expect === "chatgpt") chatgptConversations += 1; else exportConversations += 1;
     yield session;
   }
 }
-function* claudeExportSessions() { yield* vendorExportSessions(EXPORTS, "claude-web"); }
+async function* claudeExportSessions() { yield* vendorExportSessions(EXPORTS, "claude-web"); }
 let chatgptConversations = 0;
-function* chatgptExportSessions() { yield* vendorExportSessions(CHATGPT_EXPORTS, "chatgpt"); }
+async function* chatgptExportSessions() { yield* vendorExportSessions(CHATGPT_EXPORTS, "chatgpt"); }
 /**
  * THE READERS FOR CODEX AND ANTIGRAVITY live in transcript-readers.mjs beside this file (2026-10-04;
  * the session hook imports the same file). Run alone, without it, the counter reads Claude Code,
@@ -709,7 +710,7 @@ const decodeLine = (buffer, start, end) => { try { return buffer.toString("utf8"
 /** The digest of a transcript file, streamed: its path and every byte. */
 function fileDigest(path) { const hash = createHash("sha256").update(`file:${path}\n`); for (const _ of fileLines(path, hash)) { /* the bytes are the input */ } return hash.digest("hex"); }
 const sessionDigest = (session) => session.path ? fileDigest(session.path) : fingerprint(session);
-function* sessions() {
+async function* sessions() { // async since 0.10.18: an export streams through it
   for (const file of transcriptFiles()) {
     yield { key: file, projectDir: file.split("/").slice(-2, -1)[0] ?? "", basename: null, path: file };
   }
@@ -849,7 +850,7 @@ const seenLines = new Set(); // v0.10: line identities already counted (a uuid o
 // Validate the processed prefix before reuse. Edited/truncated/deleted sessions restart the
 // scan; complete session boundaries preserve signals that depend on earlier turns.
 const manifest = [];
-for(const session of sessions())manifest.push(sessionDigest(session));
+for await (const session of sessions())manifest.push(sessionDigest(session));
 exportConversations = 0; chatgptConversations = 0; copilotSessionCount = 0; codexRolloutCount = 0; antigravityCount = 0; skippedDirs.length = 0; countedDirs.length = 0; skippedConversations.length = 0;
 const checkpoint = flag("no-checkpoint") || flag("stretch-signals") || LABEL_OUT ? null : checkpointStore(
   value("checkpoint") ?? join(homedir(), ".worktrust", "counter-checkpoint.json"),
@@ -867,7 +868,7 @@ const resumeAt=checkpoint?.saved?.next??0;
 let sessionIndex=0, processed=0;
 const maxSessions=Number(value("batch-sessions")??Number.POSITIVE_INFINITY);
 if (value("batch-sessions") !== undefined && (!Number.isSafeInteger(maxSessions) || maxSessions < 1)) throw Error("batch-sessions must be a positive integer");
-for (const session of sessions()) {
+for await (const session of sessions()) {
   // A file's digest is taken while its lines stream past and compared when the session ends.
   if(!session.path && fingerprint(session)!==manifest[sessionIndex]) throw Error("Source changed during counting; rerun to resume safely");
   if(sessionIndex++<resumeAt)continue;

@@ -146,7 +146,7 @@ export function register(on) {
 }
 `;
 
-export const PLUGIN_JSON = { name: MOD_NAME, version: MOD_VERSION, description: "WorkTrust: counts how you work with Claude Code (permission answers, effort levels, context peaks, subagents), never a word of the session. Counts stay on this computer until the WorkTrust CLI reports a session.", author: { name: "WorkTrust", url: "https://worktrust.io" }, homepage: "https://worktrust.io", license: "MIT" };
+export const PLUGIN_JSON = { name: MOD_NAME, version: MOD_VERSION, description: "WorkTrust: counts how you work with Claude Code (permission answers, effort levels, context peaks, subagents), never a word of the session. Counts stay on this computer until the WorkTrust CLI reports a session.", author: { name: "WorkTrust", url: "https://worktrust.io" }, homepage: "https://worktrust.io", license: "LicenseRef-WorkTrust-CLI" };
 export const HOOKS_JSON = { modules: ["./register.js"] };
 
 const dirs = (home) => ({ plugin: join(home, ".worktrust", "claude-mod"), counts: join(home, ".worktrust", "claude-mod-counts"), settings: join(home, ".claude", "settings.json") });

@@ -306,6 +306,12 @@ sends a manifest and one zip per category (0.10.17): give a `conversations-000.z
 conversations parts lying beside it; its download links are never followed. The other parts (memories, projects,
 artifacts, frames, design chats, the light metadata) are refused by name and never opened.
 
+Any size (0.10.18): the file is read as a stream, a conversation at a time, so a gigabyte export reads in a bounded
+memory; it keeps of each conversation only the clocks, roles, ids and a model name it needs (the counter, the text it
+reads here). Bounds: a file to 64 GB, two million conversations, nesting to 64; a single conversation whose kept
+fields pass 8 MB is left out and counted, never the export. A zip over 4 GB (zip64) is refused by name: unpack it and
+give `conversations.json`. Every 64 MB a line on stderr says how many megabytes and conversations were read, nothing else.
+
 - **What goes.** Per run of activity in a conversation (0.10.17; before, one line per conversation and day): a run
   ends where two messages lie more than thirty minutes apart, the gap after which the hook calls a stretch finished, so a
   conversation left open for hours is two windows, not one. Cutting changes the windows and never the total: the five
@@ -437,5 +443,8 @@ Security reports: see [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-MIT, for this command-line tool only (see LICENSE). The WorkTrust service it couples to is not
-open source.
+Use is allowed under the WorkTrust CLI Licence; copying, modifying or redistributing the code is not. See LICENSE.
+The licence is free of charge. `preserve` (with `--apply`, `--archive`, `--verify` and `--summary`) is for everyone,
+with or without an account; every other feature is for WorkTrust account holders, and without an account the rest may
+only be installed and evaluated. The archives and files the CLI makes from your own data are yours.
+From 0.10.18 on; versions up to and including 0.10.17 were published under the MIT licence and stay under it.

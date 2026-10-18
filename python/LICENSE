@@ -1,21 +1,132 @@
-MIT License
+WorkTrust CLI Licence
 
-Copyright (c) 2026 WorkTrust
+Version 1.0, in force from WorkTrust CLI version 0.10.18 (17 October 2026).
+Status: draft, subject to legal review.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Copyright (c) 2026 Oravtia B.V. (WorkTrust), registered with the Dutch Chamber of
+Commerce (KvK) under number 98076051. All rights reserved.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. What this licence covers
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+"The Software" means the WorkTrust command-line tool in every form in which
+Oravtia B.V. distributes it: the "worktrust" package on npm, the "worktrust"
+package on PyPI, the scripts served from worktrust.io, the WorkTrust preservation
+kit, and the files these install on a computer (including the WorkTrust mod for
+Claude Code), together with their documentation. "You" means the person or
+organisation that installs or runs the Software.
+
+2. What you may do
+
+Oravtia B.V. grants the licences below free of charge. Each is non-exclusive,
+non-transferable, non-sublicensable and revocable, and covers installing and
+running the unmodified Software on computers you own or control.
+
+  a. Preserve, for everyone. Anyone, with or without a WorkTrust account, may use
+     the Software's "preserve" feature: the local, signed archive of their own AI
+     history on their own computer, together with its options (such as --apply,
+     --archive, --verify and --summary).
+
+  b. Every other feature, for WorkTrust account holders. A person or organisation
+     holding a WorkTrust account may, for as long as they hold it, use every other
+     feature the Software ships with the WorkTrust service, including:
+       - connecting the computer to their own WorkTrust account ("connect");
+       - the counter and the hooks it installs in their AI tools, and the reports
+         they send to their own account;
+       - importing their own history and data exports to WorkTrust ("history" and
+         export import); and
+       - anything else in the Software that talks to the WorkTrust service.
+
+  c. Without a WorkTrust account, beyond preserve, you may only install the
+     Software and run it to evaluate it.
+
+You may make the copies needed to install and run the Software and a reasonable
+number of backup copies. You may read the source code to understand and check
+what the Software does on your computer, and you may test it on your own computer
+to report a security problem as described in SECURITY.md. Being able to read the
+source code gives you no other right.
+
+3. What you may not do
+
+Except as section 2 allows or mandatory law permits, you may not:
+
+  a. copy the Software or any part of it;
+  b. modify, adapt, translate or create derivative works of the Software or any
+     part of it;
+  c. decompile, disassemble or reverse-engineer the Software;
+  d. sublicense, sell, rent, lend, redistribute, publish or otherwise make the
+     Software or any part of it available to anyone else;
+  e. use the Software, its code or any part of it in another product or service,
+     or to build, train or improve a product or service that competes with
+     WorkTrust;
+  f. remove or change any copyright notice, this licence or any other notice in
+     the Software; or
+  g. present a modified or rebuilt copy as the Software or as an official
+     WorkTrust release.
+
+Nothing in this licence restricts what mandatory law allows a lawful user of a
+computer program to do, including the acts permitted by Articles 5 and 6 of
+Directive 2009/24/EC as implemented in the Dutch Copyright Act (Auteurswet).
+
+4. Ownership and all rights reserved
+
+The Software is licensed, not sold. Oravtia B.V. (WorkTrust) retains all right,
+title and interest in the Software and keeps all rights that this licence does
+not expressly grant. This licence grants no right to the name WorkTrust, its
+logos or other marks.
+
+The archives, reports and other files the Software produces from your own data
+belong to you. This licence gives Oravtia B.V. no right to them; what you send to
+the WorkTrust service is governed by the service's terms and privacy statement.
+
+5. Earlier versions
+
+Versions of the Software up to and including 0.10.17 were published under the MIT
+licence. Those versions remain available under that licence for those versions
+only. This licence applies to version 0.10.18 and every later version.
+
+6. Third-party components
+
+The npm package contains no third-party code and has no dependencies.
+
+The PyPI package's platform wheels include a Node.js runtime (the "node" or
+"node.exe" executable) under the Node.js licence, shipped beside it as
+worktrust_cli/runtime/LICENSE. The WorkTrust preservation kit includes the
+WorkTrust AI evidence agent kit in its "agent" folder, under the licence shipped
+as agent/LICENSE. Those components remain under their own licences, and this
+licence does not limit the rights those licences give you.
+
+7. The WorkTrust service
+
+Using the WorkTrust service is governed by its own terms at
+https://worktrust.io/eula and its privacy statement at
+https://worktrust.io/privacy. This licence grants no right to the service.
+
+8. Termination
+
+This licence ends automatically if you breach it. Oravtia B.V. may also end it by
+notice, for example when it ends the WorkTrust service. When it ends, you must
+stop using the Software and delete every copy you hold. Sections 3, 4, 9, 10 and
+11 survive termination.
+
+9. No warranty
+
+The Software is provided "as is" and "as available", without warranty of any
+kind, express or implied, including any warranty of merchantability, fitness for
+a particular purpose, non-infringement, or that it is free of errors or will run
+without interruption.
+
+10. Limitation of liability
+
+To the fullest extent the law allows, Oravtia B.V. is not liable for any damage
+arising from or in connection with the Software or its use, whether in contract,
+tort or otherwise, including loss of data, profit or business. This does not
+limit liability for intent or deliberate recklessness, or any liability that
+cannot be limited under mandatory law, including consumer protection law.
+
+11. Governing law
+
+This licence is governed by the laws of the Netherlands. Disputes are submitted
+to the competent court in the Netherlands, without limiting any mandatory right
+a consumer has to bring proceedings in, or rely on the law of, their own country.
+
+Contact: hello@worktrust.io

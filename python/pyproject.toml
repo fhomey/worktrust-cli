@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "The WorkTrust CLI, using the same measurement engine as npm"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "LicenseRef-WorkTrust-CLI"
 license-files = ["LICENSE"]
 dependencies = []
 

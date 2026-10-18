@@ -270,7 +270,7 @@ const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.nam
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
 // A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10): chat-exports.mjs reads a ChatGPT or Claude export (the counter
 // imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
-const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, exportRunRef = null, readExport = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
+const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, exportRunRef = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
 const { modCounts = () => null } = (await import("./claude-mod.mjs").catch(() => null)) ?? {}; // 0.10.15: the WorkTrust mod's live counts per Claude Code session and day; absent → no `live` group, never zeros
 const liveOf = (file, day) => modCounts(String(file).split(/[\\/]/).pop().replace(/\.jsonl$/, ""), day) ?? codexLive(file, day); // 0.10.16: a Codex rollout's own
 const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await import("./stack-rules.mjs").catch(() => null)) ?? {}; // 0.10.11: core's stack rules and the display-only keys (tools_seen), generated (build-stack-rules --check); absent → nothing named, never a guess
@@ -894,13 +894,12 @@ function runsOf(messages) {
 const EXPORTS_STATE = join(homedir(), ".worktrust", "exports.json"); // per export digest: sent, or offered and declined; nothing of a conversation
 const readExportsState = () => { try { return JSON.parse(readFileSync(EXPORTS_STATE, "utf8")); } catch { return {}; } };
 const rememberExport = (digest, note) => { const state = readExportsState(); state[digest] = { ...(state[digest] ?? {}), ...note }; mkdirSync(dirname(EXPORTS_STATE), { recursive: true }); writeFileSync(EXPORTS_STATE, JSON.stringify(state, null, 1)); };
-function exportEntries() {
+async function exportEntries() {
   if (!exportSessions || !exportRunRef) throw Error("chat-exports.mjs is not beside this file, or is older than this hook: a data export cannot be read");
   const entries = [], reports = [];
   for (const given of EXPORT_PATHS) {
-    const read = readExport(given);
-    const report = { path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations.length, days: new Set(), seconds: 0 };
-    for (const { id, lines } of exportSessions(read, { excluded })) {
+    const read = {}, report = { days: new Set(), seconds: 0 }; // 0.10.18: the reader streams the export and fills `read` as it goes (path and vendor first; digest, count and the conversations left out as too large at the end)
+    for await (const { id, lines } of exportSessions(given, { excluded, report: read })) {
       const messages = [];
       for (const line of lines) { const at = line.timestamp ? Date.parse(line.timestamp) : NaN; if (Number.isFinite(at)) messages.push(messageOf(line, at)); }
       messages.sort((a, b) => a.at - b.at);
@@ -931,7 +930,7 @@ function exportEntries() {
       }
     }
     const days = [...report.days].sort();
-    reports.push({ ...report, days: days.length, hours: Math.round(report.seconds / 360) / 10, first: days[0] ?? null, last: days.at(-1) ?? null });
+    reports.push({ path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations, days: days.length, seconds: report.seconds, hours: Math.round(report.seconds / 360) / 10, first: days[0] ?? null, last: days.at(-1) ?? null, oversized: read.oversized });
   }
   const seen = new Set();
   return { entries: entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at)), reports };
@@ -1203,7 +1202,7 @@ if (flag("evidence-summary")) {
 if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 // THE EXPORTS IN A FOLDER (0.10.10, for the bare `npx worktrust`): which lie there, by vendor and digest, and which this computer
 // already sent or was asked about; reads, prints one JSON line, sends nothing. `--export-offered <digest>` records a No.
-if (flag("find-exports")) { const named = value("find-exports"), state = readExportsState(); const found = (findExports ? findExports(named && !named.startsWith("--") ? named : undefined) : []).map((one) => ({ ...one, sent: state[one.digest]?.sent === true, offered: Boolean(state[one.digest]) })); process.stdout.write(`${JSON.stringify(found)}\n`); await exitFlushed(0); }
+if (flag("find-exports")) { const named = value("find-exports"), state = readExportsState(); const found = (findExports ? await findExports(named && !named.startsWith("--") ? named : undefined) : []).map((one) => ({ ...one, sent: state[one.digest]?.sent === true, offered: Boolean(state[one.digest]) })); process.stdout.write(`${JSON.stringify(found)}\n`); await exitFlushed(0); }
 if (value("export-offered")) { rememberExport(value("export-offered"), { offered: new Date().toISOString() }); await exitFlushed(0); }
 if (!door && !codexDoor && !DRY) { process.exit(0); } // Not coupled on this machine: nothing to do, quietly.
 
@@ -1245,7 +1244,7 @@ if (flag("history")) {
   const historyFloor = floorOf(readState(), "__historyFloor");
   // AN EXPORT IS ITS OWN HISTORY (0.10.10): its lines alone, reconstructed, and never a rebuild (a rebuild replaces this computer's own measured days).
   let fromExports = null, fromFolder = null;
-  if (EXPORT_PATHS.length > 0) { try { fromExports = exportEntries(); } catch (error) { console.log(`export: ${error.message}`); await exitFlushed(1); } }
+  if (EXPORT_PATHS.length > 0) { try { fromExports = await exportEntries(); } catch (error) { console.log(`export: ${error.message}`); await exitFlushed(1); } }
   // A COPIED SESSION FOLDER (0.10.10): its own history, reconstructed, the live folders' stretches skipped; never a rebuild.
   if (flag("from-folder")) {
     const given = value("from-folder");

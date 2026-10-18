@@ -329,14 +329,17 @@ give `conversations.json`. Every 64 MB a line on stderr says how many megabytes 
   one question; Enter is No; `--dry-run` shows the plan and stops. On a coupled computer the bare `npx worktrust` looks
   in your Downloads folder (its top level only) for such an export it has not sent, offers it the same way, once, and
   remembers your answer by the file's digest, never by a conversation.
-- **The export replaces.** On the days the export covers, its lines count and the earlier lines of that product a
-  connector brought in (an AI signed in on the web, which selects what it reports) are withdrawn and kept, each with a
-  correction row, so a day counts once; the command says how many. A connector line that arrives later for a day the
-  export covers is held. Lines an AI app reported earlier under no product may describe the same conversations: the
-  command says how many lie on those days and asks once, `Also withdraw N earlier lines an AI app reported for these
-  days?`; Enter is No, `--yes` keeps No, `--dry-run` sends nothing, and only a typed yes or `--withdraw-unknown` said
-  in advance withdraws exactly those lines on exactly those days, the same way, never deleting. Never touched: another
-  product, your own measured sessions, a private line, a day the export does not cover.
+- **The export replaces.** On the days the export covers, its lines count and the earlier lines of that product your
+  connector of the same vendor reported (an AI signed in on the web, which selects what it reports) are withdrawn and
+  kept, each with a correction row, so a day counts once; the command says how many. A connector line that arrives later
+  for a day the export covers is held. Lines that connector reported earlier under no product may describe the same
+  conversations: the command says how many lie on those days and asks once, `Also withdraw N earlier lines your Claude
+  connector reported for these days?`; Enter is No, `--yes` keeps No, `--dry-run` sends nothing, and only a typed yes or
+  `--withdraw-unknown` said in advance withdraws exactly those lines on exactly those days, the same way, never deleting.
+  The count in the question is the door's own, and it is the count the yes withdraws. Never touched, whatever you answer
+  (0.10.19, held on the server): any line a computer of yours wrote (measured sessions, a rebuilt or archived history, an
+  earlier export send), a measured line, a connector of another vendor, another product, a private line, a day the export
+  does not cover.
 
 ## A copied session folder, and the local archive key
 
@@ -387,8 +390,16 @@ which would delete every password on the computer, and many people rightly keep 
 | **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw), and the chats Cursor and Copilot keep (clocks, models and token counts only). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files, the session databases of Hermes, Goose, OpenCode and OpenClaw, and the chats Cursor and Copilot keep, on this computer to measure durations and token counts. |
 | **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`, Hermes's and Goose's `config.yaml`, OpenCode's `opencode.json`, OpenClaw through `openclaw mcp set`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
 | **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. WorkTrust also records the network address the request arrives from, as a security record kept 90 days and seen only by WorkTrust staff (to answer a theft or fraud report). |
-| **Sends, afterwards** | Per measured stretch of work, and nothing else: its durations (`seconds`, `duration_basis`, `model_seconds`, `tool_seconds`, `human_seconds`, `idle_seconds`), token counts (`tokens_in`, `tokens_out`, `tokens_cache_read`, `tokens_cache_write`, `token_basis`), the model's name (`model`), the kind of work and one layer keyword such as frontend or backend (`title`, `kind`, `layer`, `layers`), closed technology keys (`stack`) and separate display-only tool keys (`tools_seen`), counts of how you work (`exchanges`, `turn_basis`, `agent_runs`, `agent_seconds`, `agent_peak`, `interrupts`, `steers`), when it began and ended and your computer's offset from UTC (`started_at`, `at`, `utc_offset`), what the CLI derived from the stretch as kinds and counts (`evidence`: checks run and failed, delivery steps and whether a check passed first, recoveries, delegation, context, routing, steering, refusals, planning, files and test files changed, the complexity class; with the WorkTrust mod on, its `live` counts from inside Claude Code: permission answers, effort levels, context and plan-limit peaks, subagents and setup; never a word, a command or a path; since 0.8.3, `live` since 0.10.15), a hash of the session and the day (`stretch_ref`), `steered_from` when it ran over SSH, and, so the work can be matched to GitHub, the repository as its remote's owner/name (`repo`, only for a repository on GitHub, GitLab or Bitbucket, the hosts WorkTrust can couple; never one on your own or a client's server) and the hashes of the commits made in the stretch (`commits`, never their messages). |
+| **Sends, afterwards** | Per measured stretch of work, and nothing else: its timeline and basis (`timeline`, `duration_basis`: since 0.10.20 the CLI sends no duration and no hours in layers of its own; WorkTrust computes them from the timeline), token counts (`tokens_in`, `tokens_out`, `tokens_cache_read`, `tokens_cache_write`, `token_basis`), the model's name (`model`), the kind of work and one layer keyword such as frontend or backend (`title`, `kind`, `layer`, `layers`), closed technology keys (`stack`) and separate display-only tool keys (`tools_seen`), how the turns are counted (`turn_basis`; the counts themselves WorkTrust reads from the timeline; the subagents' seconds wait for a timeline per run), when it began and ended and your computer's offset from UTC (`started_at`, `at`, `utc_offset`), what the CLI derived from the stretch as kinds and counts (`evidence`: checks run and failed, delivery steps and whether a check passed first, recoveries, delegation, context, routing, steering, refusals, planning, files and test files changed, the complexity class; with the WorkTrust mod on, its `live` counts from inside Claude Code: permission answers, effort levels, context and plan-limit peaks, subagents and setup; never a word, a command or a path; since 0.8.3, `live` since 0.10.15), a hash of the session and the day (`stretch_ref`), `steered_from` when it ran over SSH, the stretch's clock as step kinds and whole seconds so WorkTrust computes the figures itself (`timeline`, since 0.10.20: never a word, a tool name or a path), the CLI's version and a digest of its own files as signals (`cli_version`, `cli_digest`), and, so the work can be matched to GitHub, the repository as its remote's owner/name (`repo`, only for a repository on GitHub, GitLab or Bitbucket, the hosts WorkTrust can couple; never one on your own or a client's server) and the hashes of the commits made in the stretch (`commits`, never their messages). |
 | **Never sends** | Prompts, answers, code, file names or paths, commit messages, branch names, or the name of your local folder (a repository is named only as its remote's owner/name, above). The door has no field for them and refuses a submission that carries them. |
+
+**The clock is WorkTrust's, not this computer's (0.10.20).** A measured stretch travels as its timeline: one step per
+transcript line, as a kind (your turn, the model's answer, a tool call, a tool's result, a question that waited for you, an
+interruption) and the whole seconds since the previous step. Nothing of a message is in it: no word, no tool name, no path.
+This CLI computes no duration and no hours of its own and carries no rule for doing so; WorkTrust computes the seconds, the
+hours in layers and the turns from the timeline when it arrives, and the figures the terminal shows after a send are
+WorkTrust's receipt. The line also names the CLI's version and a digest of its own files, as signals of which code ran,
+never as proof.
 
 ## Why you can check it
 

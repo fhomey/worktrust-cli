@@ -25,7 +25,7 @@ export function summaryLines(lines) {
   }
   const hours = (seconds) => (seconds / 3600).toFixed(1);
   for (const [key, m] of [...months].sort()) {
-    out.push(`  ${key}  ${hours(m.seconds)} h measured`);
+    out.push(`  ${key}  ${m.seconds > 0 ? `${hours(m.seconds)} h measured` : "hours measured by WorkTrust on arrival"}`); // an archive since 0.10.20 carries timelines, not figures
     for (const [model, tokens] of [...m.models].sort((a, b) => b[1] - a[1])) out.push(`    ${model.padEnd(28)} ${tokens.toLocaleString("en")} tokens`);
     if (m.input > 0) out.push(`    cache share of input        ${Math.round((m.cached / m.input) * 100)}%`);
     if (m.delivered > 0) out.push(`    verified before delivery    ${m.verifiedFirst} of ${m.delivered} stretch${m.delivered === 1 ? "" : "es"} that delivered`);

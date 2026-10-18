@@ -36,6 +36,8 @@ export function archiveLine(entry, behaviour = null, { ids = {}, collector, salt
   if (typeof entry?.client !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(entry.client) || !ISO.test(entry.started_at ?? "") || !ISO.test(entry.at ?? "") || !/^[A-Za-z0-9_-]{16,128}$/.test(entry.stretch_ref ?? "")) return null;
   const line = { client: entry.client, day: entry.started_at.slice(0, 10), started_at: entry.started_at, ended_at: entry.at };
   for (const key of COUNTS) if (typeof entry[key] === "number" && Number.isFinite(entry[key]) && entry[key] >= 0) line[key] = entry[key];
+  // THE TIMELINE (0.10.20): the stretch's clock as step kinds and gaps, the shape and nothing else; WorkTrust computes the figures from it when the archive is sent.
+  if (typeof entry.timeline === "string" && entry.timeline.length <= 200000 && /^(G?[HIURATWhiuratw][0-9]{1,6})+$/.test(entry.timeline)) line.timeline = entry.timeline;
   if (typeof entry.model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/ -]{0,63}$/.test(entry.model)) line.model = entry.model;
   for (const key of WORDS) if (typeof entry[key] === "string" && WORD.test(entry[key])) line[key] = entry[key];
   if (Array.isArray(entry.layers) && entry.layers.length > 1 && entry.layers.every((word) => typeof word === "string" && WORD.test(word))) line.layers = entry.layers.slice(0, 8);
@@ -205,8 +207,9 @@ export function archiveEntries(dir, ownKey) {
       const entry = {
         title: line.layer ? `AI-assisted work · ${line.layer}` : "AI-assisted work",
         ...(line.kind ? { kind: line.kind } : {}), ...(line.layer ? { layer: line.layer } : {}), ...(line.layers ? { layers: line.layers } : {}),
-        ...(typeof line.seconds === "number" ? { seconds: line.seconds, duration_basis: line.duration_basis ?? "measured" } : {}),
-        ...Object.fromEntries(["tokens_in", "tokens_out", "token_basis", "tokens_cache_read", "tokens_cache_write", "exchanges", "turn_basis", "model", "steered_from", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak", "interrupts", "steers", "utc_offset"].filter((key) => line[key] !== undefined).map((key) => [key, line[key]])),
+        // An older archive carries the figures it computed (sent as they are, marked client at the door); one since 0.10.20 carries the timeline, and the basis goes with either.
+        ...(typeof line.seconds === "number" ? { seconds: line.seconds, duration_basis: line.duration_basis ?? "measured" } : typeof line.timeline === "string" ? { duration_basis: line.duration_basis ?? "measured" } : {}),
+        ...Object.fromEntries(["timeline", "tokens_in", "tokens_out", "token_basis", "tokens_cache_read", "tokens_cache_write", "exchanges", "turn_basis", "model", "steered_from", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "agent_runs", "agent_seconds", "agent_peak", "interrupts", "steers", "utc_offset"].filter((key) => line[key] !== undefined).map((key) => [key, line[key]])),
         stretch_ref: line.stretch_ref, started_at: line.started_at, at: line.ended_at, from_archive: true,
       };
       out.push({ entry, client: line.client ?? "claude", signed });

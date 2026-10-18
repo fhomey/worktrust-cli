@@ -83,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.18";
+const CLI_VERSION = "0.10.20";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -147,7 +147,7 @@ async function scripts() {
 /** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
 function run(path, scriptArgs, token, collect = false, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, ...extraEnv } });
+    const child = spawn(process.execPath, [path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_CLI_VERSION: CLI_VERSION, ...extraEnv } });
     let out = "";
     child.stdout?.on("data", (chunk) => { out += chunk; });
     child.stderr?.on("data", (chunk) => { out += chunk; });
@@ -506,7 +506,7 @@ async function hook() {
   if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
   if (!key) process.exit(0);
-  const child = spawn(process.execPath, [join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } });
+  const child = spawn(process.execPath, [join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
   child.on("exit", (code) => process.exit(code ?? 0));
 }
 
@@ -683,10 +683,10 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: nothing to offer */ }
   say();
   if (!found?.sessions) { historyDone(true); say(rebuild ? "  Your AI apps hold no earlier sessions on this computer to re-measure." : "  Your AI apps hold no earlier sessions on this computer to send."); return; }
-  say(`  This computer holds ${found.sessions} earlier sessions of your AI apps · ${found.hours} measured hours · ${found.first} … ${found.last}.`);
+  say(`  This computer holds ${found.sessions} earlier sessions of your AI apps · ${found.days} days · ${found.first} … ${found.last}. WorkTrust measures the hours when they arrive.`);
   // REBUILD (owner, 2026-10-07): the plan per AI app, in days and hours, and what it replaces, before the one question. Enter is No.
   if (rebuild) {
-    for (const row of found.clients ?? []) say(`    ${row.client.padEnd(12)} ${String(row.days).padStart(4)} days  ${String(row.hours).padStart(7)} h   ${row.first} … ${row.last}`);
+    for (const row of found.clients ?? []) say(`    ${row.client.padEnd(12)} ${String(row.days).padStart(4)} days   ${row.first} … ${row.last}`);
     say("  Re-measured with the current rules (what the seconds were, your own turns, tokens with the cache, every AI app above).");
     say("  WorkTrust REPLACES this computer's earlier lines for those days and apps: each earlier line is withdrawn and kept,");
     say("  never deleted, so a day is counted once. Other computers, web sources and days not listed are not touched.");
@@ -707,6 +707,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
     : `${n(did.new)} new lines${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}; ${n(did.alreadyHeld)} already held.`;
   if (rebuild) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
   else say(sent.code === 0 ? "  ✓ Sent as history. Measured sessions count toward your verified hours; a day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
+  if (did && Number(did.measuredSeconds) > 0) say(`  Measured by WorkTrust: ${(Number(did.measuredSeconds) / 3600).toFixed(1)} h for what this send stored${n(did.corrected) > 0 ? ` (${n(did.corrected)} lines corrected: a figure sent beside the timeline differed)` : ""}.`);
 }
 
 /** The version stamped in the stable copy in ~/.worktrust, the CLI this computer ran before an update; null without one. */
@@ -800,6 +801,8 @@ async function offerArchive(paths, key) {
  * `--dry-run` stops before it; `--history` says yes in advance. Answers whether the export arrived whole.
  */
 const EXPORT_PRODUCT = { chatgpt: "ChatGPT", "claude-web": "Claude on the web" };
+/** The connector of the export's vendor (0.10.19): the only lines an export may withdraw are the ones this connector reported. */
+const EXPORT_CONNECTOR = { chatgpt: "ChatGPT", "claude-web": "Claude" };
 async function offerExport(paths, key, path) {
   const env = { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) };
   const counted = await run(paths["log-session.mjs"], ["--history", "--export", path, "--dry-run", "--summary"], key.token, true, env);
@@ -808,10 +811,10 @@ async function offerExport(paths, key, path) {
   const report = found?.exports?.[0];
   say();
   if (counted.code !== 0 || !report) { say(`  ${counted.out.trim().split("\n").filter(Boolean).pop() ?? "export: it could not be read"}. Nothing was sent.`); return false; }
-  const product = EXPORT_PRODUCT[report.vendor] ?? report.vendor;
+  const product = EXPORT_PRODUCT[report.vendor] ?? report.vendor, connector = EXPORT_CONNECTOR[report.vendor] ?? report.vendor;
   if (!report.days) { say(`  ${product} export · ${report.conversations} conversations, none with a clock to place: nothing to send.`); return true; }
-  say(`  ${product} export · ${report.conversations} conversations · ${report.days} days · ${report.hours} reconstructed hours · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}`);
-  say("  Hours reconstructed from the export's own clocks: shown with their origin, never verified hours. Never a title or a message.");
+  say(`  ${product} export · ${report.conversations} conversations · ${report.days} days · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}`);
+  say("  WorkTrust reconstructs the hours from the export's own clocks when they arrive: shown with their origin, never verified hours. Never a title or a message.");
   // LEFT OUT AND COUNTED (0.10.18): a conversation whose kept fields outgrew the reader's budget is passed over, never the export.
   if (report.oversized > 0) say(`  ${report.oversized} conversation${report.oversized === 1 ? "" : "s"} too large to read ${report.oversized === 1 ? "is" : "are"} left out; the rest is read.`);
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return false; }
@@ -822,13 +825,15 @@ async function offerExport(paths, key, path) {
   // THE EXPORT REPLACES (owner, 2026-10-10): the door withdrew the product's earlier connector lines on the export's days by itself and
   // says so; the lines an AI app reported under no product on those days may describe the same conversations, and go only on a yes.
   const counts = lastCounts(sent.out);
-  if (counts.superseded > 0) say(`  ${counts.superseded} earlier line${counts.superseded === 1 ? "" : "s"} of ${product} on those days, brought in by a connector, ${counts.superseded === 1 ? "is" : "are"} withdrawn and kept (each with a correction row): the export's lines count, a day counts once.`);
+  // WHAT AN EXPORT MAY WITHDRAW (0.10.19, after the incident of 2026-10-18): lines your connector of the same vendor reported, and nothing a computer of yours wrote;
+  // the door holds the rule, the counts here are the door's own, and the question names exactly what the second send will touch.
+  if (counts.superseded > 0) say(`  ${counts.superseded} earlier line${counts.superseded === 1 ? "" : "s"} of ${product} your ${connector} connector reported for those days ${counts.superseded === 1 ? "is" : "are"} withdrawn and kept (each with a correction row): the export's lines count, a day counts once.`);
   // ONE STRETCH PER RUN (0.10.17): a conversation-day sent before as one envelope is now its runs; the door withdrew the envelope.
   if (counts.recut > 0) say(`  ${counts.recut} earlier line${counts.recut === 1 ? "" : "s"} of this export, one per conversation and day, ${counts.recut === 1 ? "is" : "are"} replaced by one line per run of activity (withdrawn and kept, the same total).`);
   if (counts.unknownOnDays > 0) {
     const n = counts.unknownOnDays;
-    say(`  ${n} earlier line${n === 1 ? "" : "s"} an AI app reported for these days, under no product, may describe the same conversations.`);
-    if (has("withdraw-unknown") || (await ask(`Also withdraw ${n} earlier line${n === 1 ? "" : "s"} an AI app reported for these days?`, false))) {
+    say(`  ${n} earlier line${n === 1 ? "" : "s"} your ${connector} connector reported for these days under no product may describe the same conversations. Your own computers' lines are never touched.`);
+    if (has("withdraw-unknown") || (await ask(`Also withdraw ${n} earlier line${n === 1 ? "" : "s"} your ${connector} connector reported for these days?`, false))) {
       const again = await run(paths["log-session.mjs"], ["--history", "--export", path, "--withdraw-unknown"], key.token, true, env);
       const done = lastCounts(again.out);
       say(again.code === 0 ? `  ✓ Withdrawn and kept: ${done.unknownWithdrawn} earlier line${done.unknownWithdrawn === 1 ? "" : "s"}, each with a correction row; never deleted.` : `  Not withdrawn: ${again.out.trim().split("\n").pop()}`);
@@ -874,7 +879,7 @@ async function offerFolder(paths, key, dir) {
   const report = found?.folder;
   say();
   if (counted.code !== 0 || !report) { say(`  ${counted.out.trim().split("\n").filter(Boolean).pop() ?? "folder: it could not be read"}. Nothing was sent.`); return; }
-  say(`  Copied session folder · ${report.stretches} stretch${report.stretches === 1 ? "" : "es"} (${report.skipped} already among this computer's own sessions, skipped) · ${report.days} day${report.days === 1 ? "" : "s"} · ${report.hours} reconstructed hours${report.first ? ` · ${report.first} … ${report.last}` : ""}`);
+  say(`  Copied session folder · ${report.stretches} stretch${report.stretches === 1 ? "" : "es"} (${report.skipped} already among this computer's own sessions, skipped) · ${report.days} day${report.days === 1 ? "" : "s"} · measured by WorkTrust on arrival${report.first ? ` · ${report.first} … ${report.last}` : ""}`);
   if (!report.days) { say("  Nothing to send: every day of the copy is already among this computer's own sessions."); return; }
   say("  Hours reconstructed from the copy's own clocks: shown with their origin, never verified hours. Never text.");
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
@@ -1106,7 +1111,7 @@ async function measuredHere() {
   if (!m || !m.stretches) { say("  Measured here, last 30 days: no finished work stretch yet."); return; }
   const of = (part, whole, one, many) => `${part} of ${whole} ${whole === 1 ? one : many}`;
   say();
-  say(`  Measured here, last 30 days: ${m.stretches} work stretch${m.stretches === 1 ? "" : "es"} · ${m.hours >= 1 ? `${m.hours} h` : "under 1 h"}`);
+  say(`  Measured here, last 30 days: ${m.stretches} work stretch${m.stretches === 1 ? "" : "es"} (the hours are WorkTrust's: see the app)`);
   if (m.delivered) say(`    verified before delivery   ${of(m.verified_first, m.delivered, "stretch that delivered", "stretches that delivered")}`);
   if (m.failures) say(`    recovered failures         ${of(m.recovered, m.failures, "failed tool call", "failed tool calls")} (${m.blind_retries} retried unchanged)`);
   if (m.steers) say(`    steering that worked       ${of(m.effective_steers, m.steers, "time you stepped in", "times you stepped in")}`);
@@ -1157,7 +1162,7 @@ function help() {
   say("    --export <path>      a ChatGPT or Claude data export (the zip, its folder, conversations.json, a conversations part or the manifest) as history:");
   say("                         hours reconstructed from its clocks, shown with their origin, never verified hours (asks first);");
   say("                         on its days the export replaces the product's earlier connector lines (withdrawn, kept)");
-  say("    --withdraw-unknown   with --export: yes in advance to withdrawing the earlier lines an AI app reported for those days");
+  say("    --withdraw-unknown   with --export: yes in advance to withdrawing the earlier lines your connector of that vendor reported for those days under no product");
   say("    --from-folder <dir>  your own copy of an AI app's session folder (a backed-up ~/.claude/projects, ~/.codex/sessions):");
   say("                         days this computer's own sessions lack, reconstructed, never verified hours (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");

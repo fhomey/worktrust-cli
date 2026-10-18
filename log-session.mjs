@@ -51,13 +51,14 @@
  * answer, no file path, no commit message, no branch, no folder name. File paths ARE read locally to decide one layer keyword,
  * the way the connector reads them to decide an activity class, and only the keyword travels.
  *
- * WHAT IS MEASURED, AND WHAT IS THEREFORE NOT SENT. A stretch's seconds are the sum of the gaps
- * between consecutive messages in the transcript, each gap counted only up to IDLE_CAP: two
- * recorded timestamps at both ends, and a pause longer than the cap is not work. That is what
- * `duration_basis: "measured"` means for local sessions; copied/exported history is reconstructed.
- * A local stretch without timestamps is skipped rather than estimated. Tokens are what each
- * request ADDED (input plus cache creation, cache reads excluded), which the door calls
- * `newInput`.
+ * WHAT IS MEASURED, AND BY WHOM (0.10.20, owner 2026-10-18: "the calculation must be done by our system; we only get
+ * metadata"). This hook sends a stretch's TIMELINE: one step per transcript line, as the kind of line it was and the whole
+ * seconds since the previous step, never a word. WorkTrust computes the seconds and the hours in layers from that timeline
+ * with its own rules; nothing here counts an hour, and no constant in this file decides a figure. `duration_basis:
+ * "measured"` says the timeline was read from the app's own folder on this computer; copied or exported history is
+ * reconstructed. A local stretch without timestamps is skipped rather than estimated. Tokens are what each request ADDED
+ * (input plus cache creation, cache reads excluded), which the door calls `newInput`. The figures the terminal shows come
+ * from WorkTrust's receipts.
  *
  * CONFIDENTIAL PROJECTS never open: `~/.worktrust-counter.json` { "exclude": ["client-x"] } is
  * honoured here too, matched against the transcript's project directory, before a file is read.
@@ -116,8 +117,6 @@ async function refreshCounter(origin, announce) {
   } catch { return false; }
 }
 
-/** A pause longer than this is not work, so it is not counted. Five minutes. */
-const IDLE_CAP = 300;
 /**
  * The live door refuses a stretch older than two days, because it records work AS IT HAPPENS —
  * that rule is what stops a year of invented afternoons walking in through the same door.
@@ -127,21 +126,8 @@ const IDLE_CAP = 300;
  * stands (it corroborates, and it never lifts a level on its own). Late is not the same as untrue.
  */
 const WINDOW_HOURS = 48;
-/** A stretch still being worked in is not finished; half an hour of quiet says it is. */
+/** A stretch still being worked in is not finished; half an hour of quiet says it is. The one timing rule this hook keeps: WHEN to sweep, never how long a stretch was. */
 const IDLE_BEFORE_SWEEP = 30 * 60 * 1000;
-/** Under a minute is not a piece of work. */
-const MIN_SECONDS = 60;
-/**
- * The door's own ceiling for one MEASURED stretch: sixteen hours since 0.10.6 (owner, 2026-10-09; it was eight). Every
- * second of it lies between two messages at most five minutes apart. A day past it is reported SHORT: under-reporting is the
- * safe direction. Stretches are split by DAY, which is a boundary the clock draws — never by
- * guessing where one piece of work ended and the next began.
- */
-const MAX_SECONDS = 57600;
-/** The door's ceilings for the layers (a day) and for a day's subagents: the same bounds its columns check. */
-const DAY_SECONDS = 86400;
-/** A tool gap is tool time up to thirty minutes (proposed, owner 2026-10-06); past that it is a wait, counted as idle. */
-const TOOL_CAP = 1800;
 /** Tools whose result waits for the person: the gap to it is the person's time. Names only; nothing of the call is read. */
 const WAITS_FOR_PERSON = new Set(["AskUserQuestion", "ExitPlanMode"]);
 /**
@@ -189,7 +175,6 @@ const gitRouteOf = (cwd, shas, paths) => {
 };
 /** The derived record of a stretch, kept for the local archive only (see payloadFor). */
 const DERIVED = new WeakMap();
-const AGENT_RUNS_MAX = 10000, AGENT_SECONDS_MAX = 2592000;
 
 /**
  * WHEN THE HOOK RUNS. SessionEnd alone was a bet that sessions end, and a session that stays open
@@ -423,9 +408,9 @@ function stretchesOf(file, since) {
 /**
  * DAYS SPLIT ON THE CLOCK, NOTHING LOST AT MIDNIGHT (0.6.18, audit C14). A stretch is one session's UTC day, and the gap
  * between a day's last message and the next day's first belonged to neither, so a run through the night lost one gap
- * per midnight. A day whose first message follows the last one within the tool cap now opens with a BRIDGE: the message
- * before it, carrying no tokens, no model and no turn, so the gap that crosses midnight is counted once, on the day it
- * ends, under the same caps as any other.
+ * per midnight. A day whose first message follows the last one within the sweep's half hour (the session never went quiet)
+ * now opens with a BRIDGE: the message before it, carrying no tokens, no model and no turn, so the gap that crosses midnight
+ * is in the day's timeline once, on the day it ends, for the server to count as it counts any other gap.
  * Messages must arrive sorted.
  */
 function byDayOf(messages) {
@@ -433,8 +418,8 @@ function byDayOf(messages) {
   let prev = null;
   for (const message of messages) {
     const day = new Date(message.at).toISOString().slice(0, 10);
-    // Only a gap the work could have run through (within the tool cap): a session resumed the next morning opens its day as it always did.
-    if (!byDay.has(day)) byDay.set(day, prev && message.at - prev.at <= TOOL_CAP * 1000 ? [{ ...prev, usage: null, model: null, cumulative: false, bridge: true }] : []);
+    // Only a gap the work could have run through (no half hour of quiet): a session resumed the next morning opens its day as it always did.
+    if (!byDay.has(day)) byDay.set(day, prev && message.at - prev.at <= IDLE_BEFORE_SWEEP ? [{ ...prev, usage: null, model: null, cumulative: false, bridge: true }] : []);
     byDay.get(day).push(message);
     prev = message;
   }
@@ -475,11 +460,10 @@ const messageOf = (line, at) => {
 /**
  * SUBAGENTS AS AGENT TIME, NEVER AS HOURS (owner, 2026-10-06). Claude Code writes each subagent's transcript beside its
  * session (`<session>/subagents/*.jsonl`: 279 of them beside 48 sessions on the computer this was built on), and the
- * sweep read only the sessions, so delegated work was invisible. Now each run is read for its clocks and sent as
- * METADATA beside the parent's day: how many runs started that day, their own measured seconds (the same gap rule, the
- * same cap), and how many were open at once at the busiest moment. None of it enters `seconds`: four agents working an
- * hour are four agent-hours and one hour of the person's, and the record says which is which. Only Claude Code keeps
- * subagents this way; every other client answers an empty map.
+ * sweep read only the sessions, so delegated work was invisible. Each run is read for its clocks: how many runs started
+ * that day and how many were open at once at the busiest moment (read here for the complexity class). Their SECONDS are
+ * not computed here since 0.10.20 (no counting rule ships in this file); until a timeline per run travels, the agent
+ * group is not sent. Only Claude Code keeps subagents this way; every other client answers an empty map.
  */
 function subagentFiles(file) {
   if (!/\.jsonl$/.test(String(file)) || CODEX_ROLLOUT.test(file) || ANTIGRAVITY_TRANSCRIPT.test(file) || DATABASE_SESSION.test(file)) return [];
@@ -505,13 +489,11 @@ function agentsByDay(file, since) {
     // watermark stays unsent, which is the safe direction.
     if (stamps.length === 0 || (since && started <= since)) continue;
     stamps.sort((a, b) => a - b);
-    // A run is counted on the day it started; its seconds go with it, the same rule as the parent's.
+    // A run is counted on the day it started.
     const day = new Date(stamps[0]).toISOString().slice(0, 10);
-    let seconds = 0;
-    for (let i = 1; i < stamps.length; i += 1) seconds += Math.min(IDLE_CAP, Math.round((stamps[i] - stamps[i - 1]) / 1000));
-    if (!byDay.has(day)) byDay.set(day, { runs: 0, seconds: 0, spans: [] });
+    if (!byDay.has(day)) byDay.set(day, { runs: 0, spans: [] });
     const entry = byDay.get(day);
-    entry.runs += 1; entry.seconds += seconds; entry.spans.push([stamps[0], stamps[stamps.length - 1]]);
+    entry.runs += 1; entry.spans.push([stamps[0], stamps[stamps.length - 1]]);
   }
   for (const entry of byDay.values()) entry.peak = peakOf(entry.spans);
   return byDay;
@@ -546,66 +528,41 @@ function isHumanTurn(content) {
   return types.has("text") || types.has("image");
 }
 
-/** One day's messages → the stretch, measured. Null when there is nothing honest to send. */
+/** One day's messages → the stretch: its timeline, its tokens, its model. The server measures it. */
 function measure(cwd, messages) {
-  // MEASURED, AND ONLY MEASURED: every second counted lies between two recorded timestamps, and a
-  // gap longer than the cap is a pause rather than work. No stretch is ever inferred from a count.
-  let seconds = 0;
-  for (let i = 1; i < messages.length; i += 1) seconds += Math.min(IDLE_CAP, Math.round((messages[i].at - messages[i - 1].at) / 1000));
-  // A DURATION MAY BE ABSENT; THE STRETCH MAY NOT. What corroborates a commit is that a person and
-  // an agent were there at that moment, not how long they stayed — so a stretch too short to time,
-  // or one whose clocks give nothing, is still reported, WITHOUT seconds and without a basis. The
-  // alternative is a hook that goes quiet exactly where the record is thinnest, or one that fills
-  // the gap with a guess: the same fabrication in a smaller jacket.
-  const measured = seconds >= MIN_SECONDS ? Math.min(MAX_SECONDS, seconds) : null;
+  // THE CLOCK IS THE SERVER'S (0.10.20). This hook sends the stretch's timeline and never a duration of its own: every
+  // second WorkTrust counts lies between two recorded timestamps in that timeline, under WorkTrust's rules, and a stretch
+  // too short to time is a stretch WorkTrust answers without a duration. A stretch whose clocks give nothing is still
+  // reported, so a commit beside it can be joined to a moment somebody was there.
   const models = new Map();
-  let exchanges = 0;
-  for (const message of messages) {
-    if (message.type === "user" && !message.meta && !message.bridge && isHumanTurn(message.content)) exchanges += 1;
-    if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);
-  }
+  for (const message of messages) if (message.model) models.set(message.model, (models.get(message.model) ?? 0) + 1);
   const model = [...models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
   const tokens = tokensOf(messages);
-  // HOW THE PERSON STEERED (owner, 2026-10-08): how often they stopped the agent (Claude Code's interruption line), and how
-  // often their next turn arrived while the agent was still mid-task (right after a tool call or its result). Counts only.
-  let interrupts = 0, steers = 0;
-  for (let i = 1; i < messages.length; i += 1) {
-    const message = messages[i], prev = messages[i - 1];
-    if (message.bridge || message.type !== "user" || message.meta || message.kind === "tool_result") continue;
-    if (INTERRUPTED.test(textOf(message.content).trim())) interrupts += 1;
-    else if (isHumanTurn(message.content) && (prev.kind === "tool_result" || prev.toolUse)) steers += 1;
-  }
   const from = firstOf(messages);
-  return { cwd, seconds: measured, derived: deriveStretch(messages, { isHumanTurn, INTERRUPTED, textOf }), layers: measured !== null ? timeLayers(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), exchanges, interrupts, steers, model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
+  return { cwd, derived: deriveStretch(messages, { isHumanTurn, INTERRUPTED, textOf }), timeline: messages.length > 0 ? timelineOf(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
 }
 
 /**
- * HOW THE SECONDS WERE SPENT (owner, 2026-10-06: "observed time → AI active → agent-directed → verified work activity").
- * `seconds` keeps its exact meaning above; this reads the same gaps a second time and says what each one WAS, by the
- * message that ends it: the model's message (model time, capped as before), a tool's result or an agent run (tool time,
- * NOT capped at five minutes, because a test suite that ran twenty minutes was twenty minutes of the agent's work; bounded
- * by the stretch's own ceiling), or the person's next turn (human time, capped). What a cap cut off is idle, counted as
- * idle and never as work. The four sum to the stretch's span, so nothing is hidden and nothing is double-counted.
+ * THE TIMELINE, FOR THE SERVER'S OWN CLOCK (0.10.20, owner 2026-10-18: "the calculation must be done by our system; we only get
+ * metadata"). One step per message, as the KIND the measure read it as and the whole seconds since the previous step; the
+ * first step carries 0, a bridge is lowercase, an agent run is marked G. Nothing of a message travels: not a word, not a
+ * tool's name, not a path. WorkTrust computes `seconds`, the hours in layers, the turns, the interruptions and the mid-task
+ * turns from this with its own rules (private to the server); this file sends no figure of its own, so nothing in it can
+ * move the passport.
  */
-function timeLayers(messages) {
-  const split = { model: 0, tool: 0, human: 0, idle: 0 };
-  for (let i = 1; i < messages.length; i += 1) {
-    const gap = Math.max(0, Math.round((messages[i].at - messages[i - 1].at) / 1000));
-    const next = messages[i], prev = messages[i - 1];
-    // WAITS FOR THE PERSON ARE NOT TOOL TIME (review, 2026-10-06). A tool's result arrives when the tool is done, or when the
-    // person answered a question, approved a plan, or sat on a permission prompt. The first two are named by the tool and
-    // counted as human time; the third is invisible in the transcript, so a tool gap is counted as tool time only up to
-    // TOOL_CAP, and the rest as idle: a tool runs minutes, a person away from the keyboard does not.
-    const tool = (next.kind === "tool_result" || next.agentic || (prev.toolUse && next.kind === "assistant")) && !prev.waitsForPerson;
-    // ONE DEFINITION OF A HUMAN TURN (review, 2026-10-06): the same `isHumanTurn` that counts `exchanges`; a user line that
-    // is not one (a meta line the client injected, a textless line) is the loop's own and counts as model time.
-    const human = !tool && ((prev.waitsForPerson && next.kind === "tool_result") || (next.kind === "user" && !next.meta && isHumanTurn(next.content)));
-    const counted = Math.min(tool ? TOOL_CAP : IDLE_CAP, gap);
-    split[tool ? "tool" : human ? "human" : "model"] += counted;
-    split.idle += gap - counted;
+function timelineOf(messages) {
+  let out = "";
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    const gap = i === 0 ? 0 : Math.max(0, Math.round((message.at - messages[i - 1].at) / 1000));
+    const kind = message.kind === "assistant" ? (message.waitsForPerson ? "W" : message.toolUse ? "T" : "A") : message.kind === "tool_result" ? "R" : INTERRUPTED.test(textOf(message.content).trim()) && !message.meta ? "I" : !message.meta && isHumanTurn(message.content) ? "H" : "U";
+    out += `${message.agentic ? "G" : ""}${message.bridge ? kind.toLowerCase() : kind}${Math.min(999999, gap)}`;
   }
-  return split;
+  return out;
 }
+/** A digest of this hook and the readers beside it, as installed: the door records it beside each line as a signal of which code ran, never as proof. */
+const selfDigest = (() => { try { const here = dirname(fileURLToPath(import.meta.url)); const hash = createHash("sha256"); for (const name of ["log-session.mjs", ...READER_FILES].sort()) { try { hash.update(`${name}\0`).update(readFileSync(join(here, name))).update("\0"); } catch { hash.update(`${name}\0missing\0`); } } return hash.digest("hex"); } catch { return null; } })();
+const CLI_VERSION_SENT = /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}$/.test(process.env.WORKTRUST_CLI_VERSION ?? "") ? process.env.WORKTRUST_CLI_VERSION : null; // `worktrust.mjs` hands its own version to the hook it starts
 
 /**
  * THE TOKENS, AND THE CACHE HALVES APART (roadmap 16). Claude Code's usage block carries input_tokens, output_tokens,
@@ -667,7 +624,7 @@ function payloadFor(stretch) {
   // 0.8.7: of the stretch's commits, how many name an AI as co-author (the Co-authored-by trailer, read here, never kept).
   const coauthored = cwd && touched.shas.length > 0 ? git(cwd, "log", "--no-walk", "--format=%(trailers:key=Co-authored-by,valueonly,separator=%x01)%x00", ...touched.shas.slice(0, 50)).split("\0").filter((entry, index) => index < Math.min(50, touched.shas.length) && AI_COAUTHOR.test(entry)).length : 0;
   const route = { ...(stretch.derived?.route ?? {}), ...(touched.committed ? gitRouteOf(cwd, touched.shas, changed) : {}) };
-  const derived = stretch.derived ? { ...stretch.derived, ...(Object.keys(route).length > 0 ? { route } : {}), ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(contextFilesOf(changed) ? { context_files: contextFilesOf(changed) } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: stretch.seconds }) } : {}) } : null;
+  const derived = stretch.derived ? { ...stretch.derived, ...(Object.keys(route).length > 0 ? { route } : {}), ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(contextFilesOf(changed) ? { context_files: contextFilesOf(changed) } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: null }) } : {}) } : null;
   const evidence = derived || stretch.live ? { ...(derived ?? {}), ...(stretch.live ? { live: stretch.live } : {}) } : null; // 0.10.15: the mod's counts ride as their own group
   const payload = {
     title: layer ? `AI-assisted work · ${layer}` : "AI-assisted work",
@@ -676,30 +633,27 @@ function payloadFor(stretch) {
     ...(layers.length > 1 ? { layers } : {}),
     ...(stack.length > 0 ? { stack } : {}),
     ...(toolsSeen.length > 0 ? { tools_seen: toolsSeen } : {}), // its own line: the payload allowlist (hook-presence) reads the key here
-    // Both, or neither: seconds without a basis is exactly the ambiguity the record is trying to
-    // lose, and a basis without seconds says nothing.
-    ...(stretch.seconds !== null ? { seconds: stretch.seconds, duration_basis: "measured" } : {}),
+    // THE TIMELINE AND ITS BASIS, both or neither (0.10.20): the basis says the timeline was read from the app's own folder
+    // on this computer; WorkTrust computes the duration from the timeline, and a timeline too short to time gets none.
+    ...(stretch.timeline ? { timeline: stretch.timeline, duration_basis: "measured" } : {}),
     // Tokens only when the usage block's shape is the one this script knows — otherwise nothing, never a guess.
     ...(stretch.shapeKnown && stretch.tokensIn + stretch.tokensOut > 0 ? { tokens_in: stretch.tokensIn, tokens_out: stretch.tokensOut, token_basis: "newInput" } : {}),
-    // The turns are the person's own messages, tool results excluded — said explicitly, because a
-    // row that does not say reads as the old count, which included them.
-    ...(stretch.exchanges > 0 ? { turn_basis: "humanOnly" } : {}),
+    // The turns WorkTrust counts from the timeline are the person's own messages, tool results excluded — said explicitly,
+    // because a row that does not say reads as the old count, which included them.
+    ...(stretch.timeline ? { turn_basis: "humanOnly" } : {}),
     // The cache halves, as counts, beside the tokens (roadmap 16): read from a cache, written into one.
     ...(stretch.shapeKnown && stretch.cacheRead > 0 ? { tokens_cache_read: stretch.cacheRead } : {}),
     ...(stretch.shapeKnown && stretch.cacheWrite > 0 ? { tokens_cache_write: stretch.cacheWrite } : {}),
-    ...(stretch.exchanges > 0 ? { exchanges: stretch.exchanges } : {}),
     ...(stretch.model ? { model: stretch.model } : {}),
     ...(repo ? { repo } : {}),
     ...(touched.shas.length > 0 ? { commits: touched.shas.slice(0, 50) } : {}),
     ...(stretch.ref ? { stretch_ref: stretch.ref } : {}), ...(stretch.steered ? { steered_from: stretch.steered } : {}),
-    // THE LAYERS (2026-10-06), only on a measured stretch, each bounded by a day: what the seconds were. `seconds` above is untouched.
-    ...(stretch.seconds !== null && stretch.layers ? { model_seconds: Math.min(DAY_SECONDS, stretch.layers.model), tool_seconds: Math.min(DAY_SECONDS, stretch.layers.tool), human_seconds: Math.min(DAY_SECONDS, stretch.layers.human), idle_seconds: Math.min(DAY_SECONDS, stretch.layers.idle) } : {}),
-    // THE SUBAGENTS, as agent metadata beside the day: runs, their own seconds, the peak open at once. Never in `seconds`.
-    // WHEN AND HOW (0.6.18): the stretch's first moment and the computer's UTC offset then; the person's interruptions and mid-task turns, counts only.
+    // WHICH CODE SENT IT (0.10.20): a version and a digest of this hook's own files, signals never proof.
+    ...(CLI_VERSION_SENT ? { cli_version: CLI_VERSION_SENT } : {}),
+    ...(selfDigest ? { cli_digest: selfDigest } : {}),
+    // WHEN (0.6.18): the stretch's first moment and the computer's UTC offset then. The interruptions and the mid-task turns are
+    // read by WorkTrust from the timeline; the subagents' seconds wait for a timeline per run (0.10.20).
     started_at: new Date(stretch.from).toISOString(), utc_offset: stretch.offset,
-    ...(stretch.interrupts > 0 ? { interrupts: Math.min(10000, stretch.interrupts) } : {}),
-    ...(stretch.steers > 0 ? { steers: Math.min(10000, stretch.steers) } : {}),
-    ...(stretch.agents && stretch.agents.runs > 0 ? { agent_runs: Math.min(AGENT_RUNS_MAX, stretch.agents.runs), agent_seconds: Math.min(AGENT_SECONDS_MAX, stretch.agents.seconds), agent_peak: Math.min(AGENT_RUNS_MAX, stretch.agents.peak) } : {}),
     // THE STRETCH'S EVIDENCE (0.8.3): what the CLI derived from it here, kinds and counts only (stretch-evidence.mjs); the door keeps it from a CLI key alone.
     ...(evidence ? { evidence } : {}),
     at: new Date(stretch.to).toISOString(),
@@ -722,8 +676,12 @@ function payloadFor(stretch) {
  * one day alone exceeds the cap: the door's receipt counts per day what it replaced and how many AI-app lines lie there, and a
  * day in two batches would be counted twice.
  */
+/** A batch stays under the door's body ceiling (4.5 MB) with room for the envelope: a timeline (0.10.20) is up to 200 KB a line, so a batch is cut by bytes as well as by count. */
+const BATCH_BYTES = 3_500_000;
+const bytesOf = (entry) => Buffer.byteLength(JSON.stringify(entry), "utf8");
+const byBytes = (entries) => { const out = []; let current = [], size = 0; for (const entry of entries) { const bytes = bytesOf(entry); if (current.length > 0 && (current.length >= 200 || size + bytes > BATCH_BYTES)) { out.push(current); current = []; size = 0; } current.push(entry); size += bytes; } if (current.length) out.push(current); return out; };
 function batchesOf(group, byDay) {
-  if (!byDay) { const out = []; for (let i = 0; i < group.length; i += 200) out.push(group.slice(i, i + 200)); return out; }
+  if (!byDay) return byBytes(group);
   const days = new Map();
   for (const entry of group) { const day = String(entry.at).slice(0, 10); days.set(day, [...(days.get(day) ?? []), entry]); }
   const out = []; let current = [];
@@ -736,7 +694,7 @@ function batchesOf(group, byDay) {
   return out;
 }
 /** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
-const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0 }; // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
+const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0 }; // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
 const noteReceipt = (answer) => {
   try {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
@@ -863,20 +821,17 @@ function historyEntries(floor = null, all = false) {
 /**
  * A DATA EXPORT'S CONVERSATIONS AS HISTORY (0.10.10, owner 2026-10-10: "hours from an export count as reconstructed, shown,
  * never in verified hours"). Since 0.10.17 one line per RUN of activity in a conversation-day (runsOf, below), no longer one
- * envelope per conversation and day. The same clock cuts them (a day, gaps capped at IDLE_CAP) and the same measure counts the
- * person's own turns and the model, but the line says `reconstructed`: the file can be edited before it is read and no
- * device key witnessed it. No tokens (the export carries none and none are estimated), no layers, no evidence; the
- * title names the product and never the conversation; the stretch's name is the vendor, the conversation's id and the
- * day, so the same export sent twice is each line once. The database keeps a reconstructed stretch inside eight hours
- * (20261009170000), so the line is cut there before it leaves.
+ * envelope per conversation and day. Each run travels as its TIMELINE (0.10.20) and WorkTrust computes its reconstructed
+ * seconds and the person's turns from it; the line says `reconstructed`: the file can be edited before it is read and no
+ * device key witnessed it. No tokens (the export carries none and none are estimated), no evidence; the title names the
+ * product and never the conversation; the stretch's name is the vendor, the conversation's id and the day, so the same
+ * export sent twice is each line once. The database keeps a reconstructed stretch inside eight hours (20261009170000).
  */
-const RECONSTRUCTED_MAX = 28800;
 /**
  * WHERE A CONVERSATION-DAY IS CUT (CLI 0.10.17, owner 2026-10-17): the hook's own stretch-finished gap, IDLE_BEFORE_SWEEP
- * (half an hour of quiet says a stretch is finished), never a new constant. Counting is unchanged: every gap between two
- * messages, the person's or the model's, counts up to IDLE_CAP, and a gap the cut falls in is counted, as it always was,
- * with the run BEFORE it (the five minutes the clock credits after a message). So the runs' seconds sum to exactly what
- * the one envelope carried, and only the windows sharpen: a long-idle conversation no longer spans its own gap.
+ * (half an hour of quiet says a stretch is finished), never a new constant. The gap the cut falls in belongs to the run
+ * BEFORE it: that run's timeline ends with a closing step carrying the gap (kind U, the loop's own, never a turn), so
+ * WorkTrust counts the gap after the last message as it did when the day was one envelope, and only the windows sharpen.
  */
 const RUN_GAP = IDLE_BEFORE_SWEEP;
 function runsOf(messages) {
@@ -884,9 +839,8 @@ function runsOf(messages) {
   let current = null;
   for (let i = 0; i < messages.length; i += 1) {
     const gap = i === 0 ? null : messages[i].at - messages[i - 1].at;
-    if (current && gap > RUN_GAP) { current.seconds += Math.min(IDLE_CAP, Math.round(gap / 1000)); current = null; }
-    if (!current) { current = { messages: [], seconds: 0 }; runs.push(current); }
-    else current.seconds += Math.min(IDLE_CAP, Math.round(gap / 1000));
+    if (current && gap > RUN_GAP) { current.tail = messages[i].at; current = null; }
+    if (!current) { current = { messages: [], tail: null }; runs.push(current); }
     current.messages.push(messages[i]);
   }
   return runs;
@@ -898,7 +852,7 @@ async function exportEntries() {
   if (!exportSessions || !exportRunRef) throw Error("chat-exports.mjs is not beside this file, or is older than this hook: a data export cannot be read");
   const entries = [], reports = [];
   for (const given of EXPORT_PATHS) {
-    const read = {}, report = { days: new Set(), seconds: 0 }; // 0.10.18: the reader streams the export and fills `read` as it goes (path and vendor first; digest, count and the conversations left out as too large at the end)
+    const read = {}, report = { days: new Set() }; // 0.10.18: the reader streams the export and fills `read` as it goes (path and vendor first; digest, count and the conversations left out as too large at the end)
     for await (const { id, lines } of exportSessions(given, { excluded, report: read })) {
       const messages = [];
       for (const line of lines) { const at = line.timestamp ? Date.parse(line.timestamp) : NaN; if (Number.isFinite(at)) messages.push(messageOf(line, at)); }
@@ -907,16 +861,15 @@ async function exportEntries() {
         if (ofDay.length === 0) continue;
         // ONE STRETCH PER RUN OF ACTIVITY (0.10.17): the day's messages cut where the hook calls a stretch finished; one run
         // is the day as before, under the name it always had; several name the one-envelope line they replace.
-        const runs = runsOf(ofDay), whole = measure(null, ofDay), old = exportRef(read.vendor, id, day);
-        runs.forEach(({ messages: run, seconds }, index) => {
+        const runs = runsOf(ofDay), old = exportRef(read.vendor, id, day);
+        runs.forEach(({ messages: run, tail }, index) => {
           const stretch = measure(null, run), ref = runs.length === 1 ? old : exportRunRef(read.vendor, id, day, index);
-          // The day as a whole decides whether there is a duration (under a minute is none, as before); a run then carries
-          // its own share of the day's count, and a run with nothing to count carries none.
-          const own = runs.length === 1 ? whole.seconds : whole.seconds !== null && seconds > 0 ? seconds : null;
+          // The run's timeline, with the gap to the next run as a closing step (the loop's own, never a turn), so WorkTrust
+          // counts it with this run as the one envelope did; the last run of the day closes where the day did.
+          const timeline = stretch.timeline ? `${stretch.timeline}${tail ? `U${Math.min(999999, Math.max(0, Math.round((tail - run[run.length - 1].at) / 1000)))}` : ""}` : null;
           const entry = {
             title: EXPORT_TITLES[read.vendor], kind: "researched",
-            ...(own !== null ? { seconds: Math.min(RECONSTRUCTED_MAX, own), duration_basis: "reconstructed" } : {}),
-            ...(stretch.exchanges > 0 ? { exchanges: stretch.exchanges, turn_basis: "humanOnly" } : {}),
+            ...(timeline ? { timeline, duration_basis: "reconstructed", turn_basis: "humanOnly" } : {}),
             ...(stretch.model ? { model: stretch.model } : {}),
             stretch_ref: ref, source_event_id: `exp_${ref}`,
             ...(runs.length > 1 ? { supersedes_ref: old } : {}),
@@ -924,13 +877,13 @@ async function exportEntries() {
           };
           entrySource.set(entry, read.vendor);
           entryFile.set(entry, { file: `${read.vendor}:${id}`, from: stretch.from, folder: null });
-          report.seconds += entry.seconds ?? 0; entries.push(entry);
+          entries.push(entry);
         });
         report.days.add(day);
       }
     }
     const days = [...report.days].sort();
-    reports.push({ path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations, days: days.length, seconds: report.seconds, hours: Math.round(report.seconds / 360) / 10, first: days[0] ?? null, last: days.at(-1) ?? null, oversized: read.oversized });
+    reports.push({ path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations, days: days.length, first: days[0] ?? null, last: days.at(-1) ?? null, oversized: read.oversized }); // no hours (0.10.20): WorkTrust computes them on arrival and the receipt says
   }
   const seen = new Set();
   return { entries: entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at)), reports };
@@ -942,8 +895,8 @@ async function exportEntries() {
  * themselves (a copy of one of them, or one holding them, is refused by name). Each day is named exactly as the live folder
  * would name it (the session file's name and the day), so a stretch the live folders already hold, or an earlier send of the
  * same copy, is skipped: the live folders win. What travels is RECONSTRUCTED: no device key witnessed the copy, and a copy can
- * be edited. The counts a transcript carries (tokens, turns, the model, the evidence) travel; the hours in layers, which say
- * what a MEASURED day's seconds were, do not. The title says where the line came from.
+ * be edited. The timeline, the tokens, the model and the evidence travel as they do for a live day; WorkTrust computes the
+ * reconstructed seconds from the timeline. The title says where the line came from.
  */
 function folderEntries(given) {
   const dir = given.replace(/^~(?=\/|$)/, homedir());
@@ -964,7 +917,7 @@ function folderEntries(given) {
   walk(here, 0);
   if (files.length === 0) throw Error(`no session files under ${given} (Claude Code transcripts, Codex rollouts or Antigravity transcripts, as .jsonl)`);
   const present = new Set(historyEntries(null, true).map((entry) => entry.stretch_ref)), seen = new Set();
-  const entries = [], report = { stretches: 0, skipped: 0, days: new Set(), seconds: 0 };
+  const entries = [], report = { stretches: 0, skipped: 0, days: new Set() };
   for (const file of files) {
     const client = CODEX_ROLLOUT.test(file) ? "codex" : ANTIGRAVITY_TRANSCRIPT.test(file) ? "antigravity" : "claude";
     const lines = parsedLines(file);
@@ -984,17 +937,15 @@ function folderEntries(given) {
       report.stretches += 1;
       if (present.has(ref) || seen.has(ref)) { report.skipped += 1; continue; }
       seen.add(ref);
-      const measured = payloadFor({ ...measure(cwd, messages), ref, steered: null, agents: null });
-      const { model_seconds, tool_seconds, human_seconds, idle_seconds, agent_runs, agent_seconds, agent_peak, ...rest } = measured;
-      void model_seconds; void tool_seconds; void human_seconds; void idle_seconds; void agent_runs; void agent_seconds; void agent_peak;
-      const entry = { ...rest, title: rest.layer ? `AI-assisted work from a copied session folder · ${rest.layer}` : "AI-assisted work from a copied session folder", ...(typeof rest.seconds === "number" ? { seconds: Math.min(RECONSTRUCTED_MAX, rest.seconds), duration_basis: "reconstructed" } : {}) };
+      const rest = payloadFor({ ...measure(cwd, messages), ref, steered: null, agents: null });
+      const entry = { ...rest, title: rest.layer ? `AI-assisted work from a copied session folder · ${rest.layer}` : "AI-assisted work from a copied session folder", ...(rest.timeline ? { duration_basis: "reconstructed" } : {}) };
       if (client !== "claude") entrySource.set(entry, client);
       entryFile.set(entry, { file, from: firstOf(messages), folder: null });
-      report.days.add(day); report.seconds += entry.seconds ?? 0; entries.push(entry);
+      report.days.add(day); entries.push(entry);
     }
   }
   const days = [...report.days].sort();
-  return { entries: entries.sort((a, b) => a.at.localeCompare(b.at)), report: { stretches: report.stretches, skipped: report.skipped, days: days.length, hours: Math.round(report.seconds / 360) / 10, first: days[0] ?? null, last: days.at(-1) ?? null } };
+  return { entries: entries.sort((a, b) => a.at.localeCompare(b.at)), report: { stretches: report.stretches, skipped: report.skipped, days: days.length, first: days[0] ?? null, last: days.at(-1) ?? null } };
 }
 
 /** Every transcript this machine holds, excluded projects skipped before a file is opened. */
@@ -1189,7 +1140,7 @@ if (flag("evidence-summary")) {
   const complexity = {};
   for (const entry of rows) { const tier = DERIVED.get(entry)?.complexity?.class; if (tier) complexity[tier] = (complexity[tier] ?? 0) + 1; }
   const summary = {
-    stretches: rows.length, hours: Math.round(rows.reduce((total, entry) => total + (entry.seconds ?? 0), 0) / 360) / 10,
+    stretches: rows.length, // the hours are WorkTrust's (0.10.20): the app shows them
     delivered: sum((d) => (d.delivery ? 1 : 0)), verified_first: sum((d) => (d.delivery?.verified_first ? 1 : 0)),
     failures: sum((d) => d.recovery?.failures), recovered: sum((d) => d.recovery?.recovered), blind_retries: sum((d) => d.recovery?.blind_retries),
     steers: sum((d) => d.steering?.moments), effective_steers: sum((d) => d.steering?.effective),
@@ -1230,7 +1181,7 @@ if (flag("history") && flag("from-archive")) {
   const all = archiveEntries(dir, ownKey), gone = all.filter(({ entry }) => !present.has(entry.stretch_ref));
   const entries = gone.map(({ entry, client, signed }) => {
     if (client !== "claude") entrySource.set(entry, client);
-    if (!signed && typeof entry.seconds === "number") { entry.seconds = Math.min(RECONSTRUCTED_MAX, entry.seconds); entry.duration_basis = "reconstructed"; }
+    if (!signed && (typeof entry.seconds === "number" || typeof entry.timeline === "string")) entry.duration_basis = "reconstructed"; // the door keeps an unmeasured stretch inside its own ceiling
     return entry;
   });
   const signedCount = all.filter(({ signed }) => signed).length;
@@ -1256,12 +1207,12 @@ if (flag("history")) {
   // lines under no product go only with `--withdraw-unknown`, which the command sends after the person's yes, with an export alone.
   if (flag("withdraw-unknown") && !fromExports) { console.log("--withdraw-unknown goes with --export alone: it withdraws, on the days an export covers, the earlier lines an AI app reported under no product."); await exitFlushed(1); }
   const entries = fromExports ? fromExports.entries : fromFolder ? fromFolder.entries : historyEntries(historyFloor);
-  const hours = entries.reduce((sum, entry) => sum + (entry.seconds ?? 0), 0) / 3600;
   const months = [...new Set(entries.map((entry) => entry.at.slice(0, 7)))].sort();
-  // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, hours, first and last month; per client its days and hours (the rebuild's plan, 2026-10-07); nothing sent.
-  const clients = [...entries.reduce((map, entry) => { const client = entrySource.get(entry) ?? "claude", row = map.get(client) ?? { client, days: new Set(), seconds: 0 }; row.days.add(entry.at.slice(0, 10)); row.seconds += entry.seconds ?? 0; return map.set(client, row); }, new Map()).values()].map((row) => ({ client: row.client, days: row.days.size, hours: Math.round(row.seconds / 360) / 10, first: [...row.days].sort()[0], last: [...row.days].sort().at(-1) }));
-  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, hours: Math.round(hours * 10) / 10, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients })); await exitFlushed(0); }
-  console.log(`${entries.length} day-stretches · ${hours.toFixed(1)} ${fromExports || fromFolder ? "reconstructed" : "measured"} hours · ${months.join(", ")}${flag("rebuild") ? " · rebuild: this computer's earlier lines for these days and clients are replaced at the door" : ""}`);
+  // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, days, first and last month; per client its days (the rebuild's plan,
+  // 2026-10-07); nothing sent. NO HOURS (0.10.20): the hours are WorkTrust's to compute; the receipt after the send carries them.
+  const clients = [...entries.reduce((map, entry) => { const client = entrySource.get(entry) ?? "claude", row = map.get(client) ?? { client, days: new Set() }; row.days.add(entry.at.slice(0, 10)); return map.set(client, row); }, new Map()).values()].map((row) => ({ client: row.client, days: row.days.size, first: [...row.days].sort()[0], last: [...row.days].sort().at(-1) }));
+  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients })); await exitFlushed(0); }
+  console.log(`${entries.length} day-stretches · ${fromExports || fromFolder ? "reconstructed" : "measured"} by WorkTrust on arrival · ${months.join(", ")}${flag("rebuild") ? " · rebuild: this computer's earlier lines for these days and clients are replaced at the door" : ""}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.
     if (entries[0]) console.log(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`);
@@ -1273,7 +1224,7 @@ if (flag("history")) {
   // An export that arrived whole is remembered by its digest (never by a conversation), so the bare command offers it no more.
   if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
   // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
-  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: entries.length, ...RECEIPTS })); // the same line for a history send: what the door did with it
+  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: entries.length, ...RECEIPTS })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
   await exitFlushed(accepted === entries.length ? 0 : 1);
 }
 

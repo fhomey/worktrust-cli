@@ -13,7 +13,12 @@ const canonical = value => {
   throw Error('PACKAGE_INVALID_MANIFEST');
 };
 const exact = (value, keys) => value && Object.keys(value).sort().join(',') === keys.sort().join(',');
-const safe = name => typeof name === 'string' && name.length <= 240 && name.split('/').every(p => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(p) && p !== '..');
+const safe = name => {
+  if (typeof name !== 'string' || name.length > 240) return false;
+  const parts = name.split('/');
+  return parts.every((p, i) => (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(p) && p !== '..')
+    || (p === '.claude-plugin' && i > 0 && i < parts.length - 1 && parts[i - 1] === 'agent'));
+};
 function regular(path) {
   const s = lstatSync(path);
   if (s.isSymbolicLink() || !s.isFile()) throw Error('PACKAGE_NON_REGULAR_FILE');

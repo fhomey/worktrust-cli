@@ -36,7 +36,12 @@ def seal(purpose, payload, key):
 
 
 def valid_name(name):
-    return len(name) <= 240 and all(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", part) and part != ".." for part in name.split("/"))
+    parts = name.split("/")
+    return len(name) <= 240 and all(
+        (re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", part) and part != "..")
+        or (part == ".claude-plugin" and 0 < index < len(parts) - 1 and parts[index - 1] == "agent")
+        for index, part in enumerate(parts)
+    )
 
 
 def put(result, name, data):
@@ -191,6 +196,7 @@ def main():
         relative = source.relative_to(args.input).as_posix()
         if not valid_name(relative):
             raise ValueError("RELEASE_ARTIFACT_PATH")
+        print(f"Signing release artifact: {source.name}", flush=True)
         artifacts[relative] = sign_artifact(source, args.output / relative, args.version, key)
     signed = seal("artifact-catalogue", {"format": "worktrust-artifacts/1", "version": args.version, "sourceCommit": args.commit, "files": artifacts}, key)
     (args.output / "release-artifacts.json").write_text(canonical(signed) + "\n", encoding="utf-8")

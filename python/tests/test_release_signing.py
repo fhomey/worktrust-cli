@@ -160,7 +160,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_archive_boundaries_and_record_regeneration(self):
-        for name in ("../escape", "/absolute", "a/../../escape"):
+        for name in ("../escape", "/absolute", "a/../../escape", "agent/.claude-plugin/../escape", "agent/./escape", "agent/.unreviewed/secret", "agent/.claude-plugin"):
             path = self.root / "bad.whl"
             with zipfile.ZipFile(path, "w") as archive:
                 archive.writestr(name, b"synthetic")
@@ -171,6 +171,35 @@ class ReleaseTests(unittest.TestCase):
         signer.rewrite(path, files)
         actual = signer.read_archive(path)
         self.assertIn(b"worktrust_cli/a.py,sha256=", actual["worktrust-1.dist-info/RECORD"])
+
+    def test_actual_preservation_kit_is_authenticated_with_plugin_metadata(self):
+        candidates = [CLI / "release/worktrust-preserve-kit.zip", CLI.parents[1] / "apps/worktrust/web/public/downloads/worktrust-preserve-kit.zip"]
+        archive = next((p for p in candidates if p.is_file()), None)
+        self.assertIsNotNone(archive, "the actual preservation artifact is mandatory")
+        files = signer.read_archive(archive)
+        prefix = signer.archive_root(files)
+        plugin = "agent/.claude-plugin/plugin.json"
+        self.assertIn(prefix + plugin, files)
+        for name, data in self.modules().items():
+            self.assertIn(prefix + name, files)
+            files[prefix + name] = data
+        signer.sign_engine(files, prefix, self.version, self.key)
+        package = {name[len(prefix):]: data for name, data in files.items()}
+        files[prefix + "package-release.json"] = signer.signed_tree(package, "npm", self.version, self.key)
+        root = self.root / "preserve"; root.mkdir()
+        for name, data in files.items():
+            path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
+        entry = root / prefix / "worktrust-launch.mjs"
+        node = os.environ.get("WORKTRUST_TEST_NODE", shutil.which("node"))
+        env = {"HOME":str(self.root / "home"), "USERPROFILE":str(self.root / "home"), "PATH":"", "WORKTRUST_RELAYED":"1"}
+        if os.name == "nt":
+            env.update({k:os.environ[k] for k in ("SYSTEMROOT", "WINDIR", "COMSPEC") if k in os.environ})
+        run = lambda: subprocess.run([node,str(entry),"--version"],env=env,capture_output=True,text=True,timeout=15)
+        result = run(); self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout.strip(),self.version)
+        (root / prefix / plugin).write_bytes(files[prefix + plugin] + b" ")
+        result = run(); self.assertEqual(result.returncode,1)
+        self.assertIn("PACKAGE_FILE_CHANGED",result.stderr)
 
     def test_complete_release_signs_nine_artifacts_and_detects_final_byte_changes(self):
         root = self.python_module()

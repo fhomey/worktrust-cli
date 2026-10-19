@@ -1,4 +1,4 @@
-include VERSION LICENSE README.md runtime-lock.json build_runtime.py setup.py
+include VERSION LICENSE README.md runtime-lock.json build_runtime.py setup.py sign_release.py verify_release.py
 recursive-include src/worktrust_cli/bundle *.mjs *.json
 recursive-include tests *.py
 prune src/worktrust_cli/runtime

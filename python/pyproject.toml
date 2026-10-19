@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-WorkTrust-CLI"
 license-files = ["LICENSE"]
-dependencies = []
+dependencies = ["pycryptodomex>=3.24.1,<3.25"]
 
 [project.scripts]
 worktrust = "worktrust_cli:main"
@@ -29,4 +29,4 @@ version = {file = "VERSION"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-worktrust_cli = ["bundle/*.mjs", "bundle/manifest.json", "runtime/*"]
+worktrust_cli = ["bundle/*.mjs", "bundle/*.json", "runtime/*", "package-release.json"]

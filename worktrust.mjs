@@ -78,12 +78,12 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.21";
+const CLI_VERSION = "0.10.22";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs"];
+const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -128,15 +128,7 @@ async function post(path, body) {
 /** The three scripts: from the package when it carries them; otherwise from the same site, once, into ~/.worktrust. */
 async function scripts() {
   if (BUNDLED) return Object.fromEntries(SCRIPTS.map((name) => [name, join(HERE, name)]));
-  mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 });
-  const paths = {};
-  for (const name of SCRIPTS) {
-    const response = await fetch(`${ORIGIN}/counter/${name}`);
-    if (!response.ok) fail(`could not download ${name} (${response.status}).`);
-    paths[name] = join(HOME_DIR, downloaded(name));
-    writeFileSync(paths[name], await response.text(), { mode: 0o600 });
-  }
-  return paths;
+  fail("Use the complete official npm/Python package or preservation kit. Individual scripts are not downloaded or executed without release verification.");
 }
 
 /** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
@@ -277,7 +269,14 @@ const ensureHome = () => { mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 })
 
 /** A tool-runner cache is disposable. Install the whole verified runtime/engine before changing wiring. */
 async function prepareBundledRuntime() {
-  if (!process.env.WORKTRUST_BUNDLED_RUNTIME_DIR || runtimePrepared) return;
+  if (runtimePrepared) return;
+  if (!process.env.WORKTRUST_BUNDLED_RUNTIME_DIR) {
+    if (existsSync(join(HERE, "package-release.json"))) {
+      if (existsSync(HOME_DIR) && (!lstatSync(HOME_DIR).isDirectory() || lstatSync(HOME_DIR).isSymbolicLink())) fail("the WorkTrust directory must be a directory, not a symlink.");
+      ensureHome(); const { installSignedPackage } = await import("./package-integrity.mjs"); STABLE = installSignedPackage(HERE, HOME_DIR); runtimePrepared = true;
+    }
+    return;
+  }
   const { installRuntime } = await import("./runtime-install.mjs");
   if (existsSync(HOME_DIR) && (!lstatSync(HOME_DIR).isDirectory() || lstatSync(HOME_DIR).isSymbolicLink())) fail("the WorkTrust directory must be a directory, not a symlink.");
   ensureHome();
@@ -1193,15 +1192,10 @@ if (agentShell && PERSON_ONLY.has(command)) {
   return (process.exitCode = 3);
 }
 
-/**
- * ALWAYS THE NEWEST, WHATEVER WAS TYPED (0.10.7, owner: "npx worktrust should simply be right"). npx runs whatever version
- * it cached, and a person should never need `@latest` or `--prefer-online`. A command a PERSON runs in a terminal asks npm
- * which version is newest (the version string only, nothing of this computer, two seconds at most) and, when this one is
- * older, hands the same command to the newest through npx and steps aside. Offline, npm slow, no terminal (a script, a
- * test), an AI agent's shell: this version runs as it is. The bridge and the hook, which run many times a day from the
- * stable copy, never ask.
+/** Interactive version notice only. Registry metadata is not a trusted signed release catalogue.
+ * Hooks, bridge and offline preserve never check. Installation remains with the person's package manager
+ * until the signed release updater has a provisioned trust root and has passed the distribution gates.
  */
-// NOT `preserve` (0.10.8): it promises no network connection at all (the site and its kit say so), so it never asks npm.
 const RELAY_COMMANDS = new Set(["default", "connect", "update", "history", "status", "disconnect", "codex", "antigravity"]);
 const semverNewer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 async function newestVersion() {
@@ -1216,15 +1210,8 @@ async function relayToNewest() {
   if (process.env.WORKTRUST_RELAYED === "1" || !RELAY_COMMANDS.has(command) || !process.stdin.isTTY || !process.stdout.isTTY) return;
   const latest = await newestVersion();
   if (!latest || !semverNewer(latest, CLI_VERSION)) return;
-  say(`  worktrust ${CLI_VERSION} is not the newest: running ${latest} instead.`);
-  const argv = ["--yes", `worktrust@${latest}`, ...args];
-  const env = { ...process.env, WORKTRUST_RELAYED: "1" };
-  // A .cmd shim on Windows needs a shell: one line, each argument quoted for cmd.exe, never an argument list beside it.
-  const quote = (arg) => (/^[\w@%+=:,./\\-]+$/.test(arg) ? arg : `"${String(arg).replace(/"/g, '\\"')}"`);
-  const child = platform() === "win32" ? spawn(["npx", ...argv].map(quote).join(" "), { stdio: "inherit", env, shell: true }) : spawn("npx", argv, { stdio: "inherit", env });
-  const code = await new Promise((done) => { child.on("error", () => done(null)); child.on("close", (exit) => done(exit)); });
-  if (code === null) { say("  The newest could not be started; this version runs instead."); return; }
-  process.exitCode = code; return true;
+  say(`  WorkTrust ${latest} is available. Automatic execution is paused until signed release verification is configured.`);
+  say("  Update explicitly using the package manager you installed with. This invocation keeps its current version.");
 }
 if (await relayToNewest()) return;
 

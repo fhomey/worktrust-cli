@@ -1,0 +1,77 @@
+/** Official launcher verification. Pinned keys are generated from reviewed release configuration. */
+import { createHash, createPublicKey, verify, randomBytes } from 'node:crypto';
+import { existsSync, lstatSync, readFileSync, readdirSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+
+export const RELEASE_KEYS = {"608168ccdef72562fc91f9c0f9f2c2d6876bece7f7362cb545b818f7947da6b5":"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAxe/h8yLe+e4iKYSx/2lzS7MgHIgzM+mi1XjofW1VKo4=\n-----END PUBLIC KEY-----\n"}; // GENERATED_RELEASE_KEYS
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const canonical = value => {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && Object.getPrototypeOf(value) === Object.prototype) return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}`;
+  throw Error('PACKAGE_INVALID_MANIFEST');
+};
+const exact = (value, keys) => value && Object.keys(value).sort().join(',') === keys.sort().join(',');
+const safe = name => typeof name === 'string' && name.length <= 240 && name.split('/').every(p => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(p) && p !== '..');
+function regular(path) {
+  const s = lstatSync(path);
+  if (s.isSymbolicLink() || !s.isFile()) throw Error('PACKAGE_NON_REGULAR_FILE');
+  return s;
+}
+function filesIn(root, prefix = '') {
+  const s = lstatSync(root);
+  if (s.isSymbolicLink() || !s.isDirectory()) throw Error('PACKAGE_NON_REGULAR_DIRECTORY');
+  return readdirSync(root).flatMap(name => {
+    const path = join(root, name), stat = lstatSync(path);
+    if (stat.isSymbolicLink()) throw Error('PACKAGE_NON_REGULAR_FILE');
+    return stat.isDirectory() ? filesIn(path, prefix + name + '/') : [prefix + name];
+  });
+}
+export function verifyPackage(root, kind = 'npm') {
+  const signatureName = kind === 'engine' ? 'engine-release.json' : 'package-release.json';
+  const path = join(root, signatureName);
+  if (regular(path).size > 1024 * 1024) throw Error('PACKAGE_MANIFEST_TOO_LARGE');
+  const signed = JSON.parse(readFileSync(path, 'utf8'));
+  if (!exact(signed, ['keyId', 'payload', 'signature']) || !Object.hasOwn(RELEASE_KEYS, signed.keyId) || !/^[A-Za-z0-9_-]{86}$/.test(signed.signature)) throw Error('PACKAGE_UNTRUSTED_SIGNATURE');
+  const pem = RELEASE_KEYS[signed.keyId], key = createPublicKey(pem);
+  if (key.asymmetricKeyType !== 'ed25519' || hash(key.export({ format: 'der', type: 'spki' })) !== signed.keyId
+    || !verify(null, Buffer.from('worktrust:package:1\n' + canonical(signed.payload)), key, Buffer.from(signed.signature, 'base64url'))) throw Error('PACKAGE_UNTRUSTED_SIGNATURE');
+  const m = signed.payload;
+  if (!exact(m, ['format', 'kind', 'version', 'files']) || m.format !== 'worktrust-package/1' || m.kind !== kind || !/^\d+\.\d+\.\d+$/.test(m.version)
+    || !m.files || Array.isArray(m.files) || typeof m.files !== 'object' || Object.keys(m.files).length > 2000 || !Object.hasOwn(m.files, 'worktrust.mjs')) throw Error('PACKAGE_INVALID_MANIFEST');
+  const expected = Object.keys(m.files).sort();
+  for (const name of expected) {
+    if (!safe(name) || name === signatureName || !/^[a-f0-9]{64}$/.test(m.files[name])) throw Error('PACKAGE_INVALID_MANIFEST');
+    let parent = root;
+    for (const part of name.split('/').slice(0, -1)) { parent = join(parent, part); const s = lstatSync(parent); if (s.isSymbolicLink() || !s.isDirectory()) throw Error('PACKAGE_NON_REGULAR_DIRECTORY'); }
+    const file = join(root, name);
+    if (regular(file).size > 128 * 1024 * 1024 || hash(readFileSync(file)) !== m.files[name]) throw Error('PACKAGE_FILE_CHANGED');
+  }
+  const found = filesIn(root).filter(name => name !== signatureName && (kind !== 'engine' || name.endsWith('.mjs'))).sort();
+  if (JSON.stringify(found) !== JSON.stringify(expected)) throw Error('PACKAGE_FILE_LIST_CHANGED');
+  if (/const CLI_VERSION = "([^"]+)";/.exec(readFileSync(join(root, 'worktrust.mjs'), 'utf8'))?.[1] !== m.version) throw Error('PACKAGE_VERSION_MISMATCH');
+  return { manifest: m, identity: hash(readFileSync(path)), signatureName };
+}
+export function installSignedPackage(source, home) {
+  const checked = verifyPackage(source), store = join(home, 'verified');
+  if (!existsSync(home)) mkdirSync(home, { mode: 0o700 });
+  const owned = lstatSync(home);
+  if (owned.isSymbolicLink() || !owned.isDirectory()) throw Error('PACKAGE_NON_REGULAR_DIRECTORY');
+  if (!existsSync(store)) mkdirSync(store, { mode: 0o700 });
+  const stored = lstatSync(store);
+  if (stored.isSymbolicLink() || !stored.isDirectory()) throw Error('PACKAGE_NON_REGULAR_DIRECTORY');
+  const target = join(store, checked.identity);
+  if (existsSync(target)) { if (verifyPackage(target).identity !== checked.identity) throw Error('PACKAGE_INSTALLATION_IDENTITY_MISMATCH'); return join(target, 'worktrust-launch.mjs'); }
+  const pending = join(store, '.pending-' + randomBytes(16).toString('hex'));
+  mkdirSync(pending, { mode: 0o700 });
+  try {
+    for (const name of [...Object.keys(checked.manifest.files), checked.signatureName]) {
+      const path = join(pending, name); mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, readFileSync(join(source, name)), { flag: 'wx', mode: 0o600 });
+    }
+    if (verifyPackage(pending).identity !== checked.identity) throw Error('PACKAGE_INSTALLATION_IDENTITY_MISMATCH');
+    try { renameSync(pending, target); } catch (error) { if (!existsSync(target)) throw error; if (verifyPackage(target).identity !== checked.identity) throw Error('PACKAGE_INSTALLATION_IDENTITY_MISMATCH'); }
+  } finally { rmSync(pending, { recursive: true, force: true }); }
+  return join(target, 'worktrust-launch.mjs');
+}

@@ -34,9 +34,15 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     if os.name == "nt":
         env.update({key:os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP") if key in os.environ})
     buildenv = dict(env, PATH=os.environ.get("PATH", ""))
-    for kind in ("--wheel", "--sdist"):
-        build = subprocess.run([sys.executable,"-m","build",kind,"--no-isolation","--outdir",str(scratch/"dist"),str(PACKAGE)],env=buildenv,capture_output=True,text=True)
-        check(build.returncode == 0, build.stdout + build.stderr)
+    signed_wheel = os.environ.get("WORKTRUST_SIGNED_WHEEL")
+    if signed_wheel:
+        (scratch/"dist").mkdir()
+        for path in (signed_wheel, os.environ["WORKTRUST_SIGNED_SOURCE"]):
+            shutil.copyfile(path, scratch/"dist"/Path(path).name)
+    else:
+        for kind in ("--wheel", "--sdist"):
+            build = subprocess.run([sys.executable,"-m","build",kind,"--no-isolation","--outdir",str(scratch/"dist"),str(PACKAGE)],env=buildenv,capture_output=True,text=True)
+            check(build.returncode == 0, build.stdout + build.stderr)
     wheel = next((scratch/"dist").glob("*.whl"))
     installed = scratch / "installed"
     with zipfile.ZipFile(wheel) as archive:
@@ -57,6 +63,19 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     for name, digest in manifest["files"].items():
         original = (CLI/name).read_bytes()
         check((bundle/name).read_bytes() == original and hashlib.sha256(original).hexdigest() == digest, name)
+    if not signed_wheel:
+        # Source CI checks exact unsigned build bytes above, then uses a distinct, explicitly
+        # synthetic bootstrap for executable smoke. Only the original unsigned artifacts are retained.
+        from sign_fixture import fixture_wheel
+        fixture = scratch/"fixture-wheel"/wheel.name
+        fixture_wheel(wheel, fixture)
+        wheel = fixture
+        shutil.rmtree(installed)
+        with zipfile.ZipFile(wheel) as archive:
+            archive.extractall(installed)
+            for member in archive.infolist():
+                if member.filename.endswith("/runtime/node"):
+                    (installed/member.filename).chmod(0o755)
 
     def run(args=(), changes=None):
         return subprocess.run([sys.executable,"-m","worktrust_cli",*args],env=dict(env,**(changes or {})),cwd=scratch,capture_output=True,text=True,timeout=45)
@@ -72,6 +91,24 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     check("Node.js" in (runtime_dir/"LICENSE").read_text(), "full Node license shipped")
     node_version = subprocess.run([NODE,"--version"],env=env,capture_output=True,text=True)
     check(node_version.returncode == 0 and node_version.stdout.strip() == "v"+lock["version"], "actual bundled runtime version matches pin")
+    signed_npm = os.environ.get("WORKTRUST_SIGNED_NPM")
+    if signed_npm:
+        npm_root = scratch/"signed-npm"; npm_root.mkdir()
+        with tarfile.open(signed_npm, "r:gz") as archive:
+            total = 0
+            for member in archive:
+                check(member.isfile() and member.size <= 128*1024*1024, "signed npm archive contains regular bounded files")
+                total += member.size; check(total <= 256*1024*1024, "signed npm archive total bound")
+                destination = npm_root/member.name
+                check(destination.resolve().is_relative_to(npm_root.resolve()), "signed npm member stays in its directory")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(archive.extractfile(member).read())
+        npm_entry = npm_root/"package/worktrust-launch.mjs"
+        result = subprocess.run([NODE, str(npm_entry), "--version"], env=env, cwd=scratch, capture_output=True, text=True, timeout=20)
+        check(result.returncode == 0 and result.stdout.strip() == npm["version"], "final signed npm launcher works on this native platform")
+        (npm_root/"package/log-session.mjs").write_bytes(b"SYNTHETIC_TAMPERED_ENGINE")
+        result = subprocess.run([NODE, str(npm_entry), "--version"], env=env, cwd=scratch, capture_output=True, text=True, timeout=20)
+        check(result.returncode == 1 and "PACKAGE_FILE_CHANGED" in result.stderr, "final npm launcher refuses modified engine before execution")
     telemetry = subprocess.run([sys.executable, str(PACKAGE/"tests/test_telemetry.py"), "--installed"],
                                env=dict(env, WORKTRUST_TEST_NODE=NODE, WORKTRUST_TEST_CLI_SOURCE=str(bundle)),
                                cwd=scratch, capture_output=True, text=True, timeout=60)
@@ -146,19 +183,19 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     check(outputs[0] == outputs[1] and "synthetic-model" in outputs[0],"canonical summary arithmetic parity")
     original = (bundle/"stack-rules.mjs").read_bytes()
     (bundle/"stack-rules.mjs").write_bytes(original+b"\n// modified\n")
-    check("integrity" in run(["--help"]).stderr,"modified bundle refused")
+    check("PACKAGE_FILE_CHANGED" in run(["--help"]).stderr,"modified bundle refused before runtime execution")
     (bundle/"stack-rules.mjs").unlink()
-    check("file list" in run(["--help"]).stderr,"missing bundle refused")
+    check("PACKAGE_FILE_LIST_CHANGED" in run(["--help"]).stderr,"missing bundle refused")
     (bundle/"stack-rules.mjs").write_bytes(original)
     (bundle/"unexpected.mjs").write_text("")
-    check("file list" in run(["--help"]).stderr,"extra bundle refused")
+    check("PACKAGE_FILE_LIST_CHANGED" in run(["--help"]).stderr,"extra bundle refused")
     (bundle/"unexpected.mjs").unlink()
     binary = Path(NODE)
     original_binary = binary.read_bytes()
     binary.write_bytes(original_binary+b"tampered")
-    check("runtime integrity" in run(["--help"]).stderr,"tampered native runtime refused")
+    check("PACKAGE_FILE_CHANGED" in run(["--help"]).stderr,"tampered native runtime refused before execution")
     binary.unlink()
-    check("runtime file list" in run(["--help"]).stderr,"missing native runtime refused without PATH fallback")
+    check("PACKAGE_FILE_LIST_CHANGED" in run(["--help"]).stderr,"missing native runtime refused without PATH fallback")
     binary.write_bytes(original_binary)
     binary.chmod(0o755)
 
@@ -173,6 +210,9 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
         executable = next((candidate for candidate in (Path(sys.executable).parent/command, Path(sys.executable).parent/"Scripts"/command) if candidate.exists()), Path(sys.executable).parent/command)
         if executable.exists():
             toolenv = dict(env, PATH=os.pathsep.join([str(binaries)] + ([str(Path(os.environ["SYSTEMROOT"])/"System32")] if os.name == "nt" else [])), UV_PYTHON=sys.executable, UV_PYTHON_DOWNLOADS="never", UV_CACHE_DIR=str(scratch/"uv-cache"), PIPX_HOME=str(scratch/"pipx"), PIPX_BIN_DIR=str(scratch/"pipx-bin"), PIPX_DEFAULT_PYTHON=sys.executable, PIP_NO_INDEX="1")
+            wheelhouse = os.environ.get("WORKTRUST_TEST_WHEELHOUSE")
+            if wheelhouse:
+                toolenv.update(PIP_FIND_LINKS=wheelhouse, UV_FIND_LINKS=wheelhouse)
             check(shutil.which("node",path=toolenv["PATH"]) is None, f"{tool} runs without Node on PATH")
             toolenv.pop("PYTHONPATH",None)
             result = subprocess.run([str(executable),*args],env=toolenv,cwd=scratch,capture_output=True,text=True,timeout=120)

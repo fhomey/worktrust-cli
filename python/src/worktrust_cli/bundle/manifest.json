@@ -1,5 +1,5 @@
 {
-  "version": "0.10.21",
+  "version": "0.10.22",
   "files": {
     "chat-exports.mjs": "04eafe333940ec03d5058d8d51062124aa12ab882bf04db03bcda5613ec69298",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -9,15 +9,17 @@
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",
     "orchestration-evidence.mjs": "d0d06cecf0eb08e5c6e653c62a4f45b1eddf2119c2acb8341056b34f488d214a",
     "orchestration-report.mjs": "d4e0a9ad8e4a01b462d22c6b1866aac291565c533ff476085d3367cb6d59bc1b",
+    "package-integrity.mjs": "dbaa85fd9ae7b1d4eb6dbd958027cdeedbdc63ee0c96b68eafbd34568b86d1fc",
     "preserve-lines.mjs": "18081b745b8c47838448b0a49a129a363e29d3f2f5207bc591187d860157b456",
     "preserve-summary.mjs": "137f781ed7021596a3f0ea67afcf2ab8616ac293f833dbb8f176e838e0ed8321",
     "preserve.mjs": "38f83bd933853a986fef61f4e452c27d4a3adc6000f5c9201ef70f270b404eac",
-    "runtime-install.mjs": "1ed2316a1114f163583f99c5370327ced7d4ea422815ce386af4950deeaf513e",
+    "runtime-install.mjs": "b9d2e4febbf400a679eeb3a14b74eef6c2062c5b626d45872a193b7502d3201c",
     "session-databases.mjs": "543fd3b82d28d96d789be0a1dc9186c5fafa783e98b87e5b3b17b211542e2b4d",
     "setup-mcp.mjs": "70f63b61cf1e28fb2b7471e7768d596b0cf166ccdc9d1ce859ee58d29b2ecabc",
     "stack-rules.mjs": "b23c56e72ec56ba02b17ed895f869172d988c468a697e8d6026b0e268f61e489",
     "stretch-evidence.mjs": "5b31a6f29b785d277e92257532f3c7cee366a79759decc7a75cfbaec2686ee13",
     "transcript-readers.mjs": "413948644a74dc0bf1b49548be193bf596bcf82ac7eae668f624345a18e189e7",
-    "worktrust.mjs": "0c8a04a07e85520e7ea77c7a44b7e0e7f1391a3de43754e1a86909c3b7c85f8a"
+    "worktrust-launch.mjs": "d328c4b880d871d4da57699c9ae0a43d2560b7ee1b46b86ebf3f937531517b88",
+    "worktrust.mjs": "24332f5d2bc8de28be82ec0c68b18fb06f0c05d697b640f37678a00937d23583"
   }
 }

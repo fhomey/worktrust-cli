@@ -1,10 +1,10 @@
 {
   "name": "worktrust",
-  "version": "0.10.21",
+  "version": "0.10.22",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
-    "worktrust": "worktrust.mjs"
+    "worktrust": "worktrust-launch.mjs"
   },
   "files": [
     "worktrust.mjs",
@@ -29,7 +29,11 @@
     "orchestration-contract.mjs",
     "orchestration-evidence.mjs",
     "orchestration-report.mjs",
-    "claude-mod.mjs"
+    "claude-mod.mjs",
+    "package-integrity.mjs",
+    "worktrust-launch.mjs",
+    "engine-release.json",
+    "package-release.json"
   ],
   "engines": {
     "node": ">=18"

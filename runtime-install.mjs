@@ -30,6 +30,7 @@ export function installRuntime(runtime, engine, home, moduleNames) {
     if (!/^[a-z][a-z0-9-]*\.mjs$/.test(name)) throw Error("invalid engine module name");
     contents.set(`engine/${name}`, checkedBytes(join(engine, name)));
   }
+  if (existsSync(join(engine, "engine-release.json"))) contents.set("engine/engine-release.json", checkedBytes(join(engine, "engine-release.json")));
   const identities = Object.fromEntries([...contents].map(([name, bytes]) => [name, hash(bytes)]));
   const identity = Buffer.from(JSON.stringify(identities));
   const installations = join(home, "installations"), installed = join(installations, hash(identity));
@@ -60,5 +61,5 @@ export function installRuntime(runtime, engine, home, moduleNames) {
     } finally { rmSync(temporary, { recursive: true, force: true }); }
   }
   // Existing immutable directories are never replaced, including executables used by Windows processes.
-  return { executable: join(installed, "runtime", executable), bridge: join(installed, "engine", "worktrust.mjs") };
+  return { executable: join(installed, "runtime", executable), bridge: join(installed, "engine", contents.has("engine/engine-release.json") ? "worktrust-launch.mjs" : "worktrust.mjs") };
 }

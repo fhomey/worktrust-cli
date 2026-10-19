@@ -9,12 +9,9 @@ npx worktrust@latest
 
 **The official npm package** is `worktrust`, published by the npm account **worktrustio** with
 provenance from this repository (github.com/fhomey/worktrust-cli). Check it on npmjs.com before you run
-it; a package of another name or from another publisher is not ours. Without npm, the same script runs
-from WorkTrust's own site:
-
-```
-curl -fsSO https://app.worktrust.io/counter/worktrust.mjs && node worktrust.mjs
-```
+it; a package of another name or from another publisher is not ours. Use the complete package:
+individual support scripts are no longer downloaded and executed during setup. Version 0.10.22
+adds a signed launcher. Check the registry for availability; 0.10.21 does not include this guard.
 
 **Python tool runners:** this repository also builds `worktrust` for `uvx` and `pipx` from the
 same measurement modules. Native wheels (0.10.13+) include a pinned official Node runtime,
@@ -254,7 +251,7 @@ and counts, exactly as the session hook reads it.
 
 ## Rebuild the history
 
-From **0.10.21 (release candidate)**, changed measured history waits for review before it
+From **0.10.21**, changed measured history waits for review before it
 can replace measurements already received for that computer, client and historical day.
 The earlier receipt is retained as local activity, not independent proof of human effort.
 Other computers and periods remain on the record, including an unavailable old laptop.
@@ -391,7 +388,7 @@ which would delete every password on the computer, and many people rightly keep 
 
 ## What it reads, writes and sends
 
-From **0.10.21 (release candidate)**, before each submission the hook keeps a local
+From **0.10.21**, before each submission the hook keeps a local
 metadata file in `~/.worktrust/measurements/`. The `worktrust-measurement/1` format retains
 the available timeline, opaque stretch reference, dates, counts and collector identifiers.
 It omits prompts, answers, titles, repository names, file paths, endpoint URLs and credentials.
@@ -423,13 +420,13 @@ never as proof.
 
 ## Why you can check it
 
-- **No dependencies and no install scripts.** Plain files, readable
+- **No npm dependencies and no install scripts.** Plain files, readable
   in an afternoon: `worktrust.mjs` (this command), `setup-mcp.mjs` (writes the MCP entries),
   `log-session.mjs` (the session hook), `count-behaviour.mjs` (the local counter) and `preserve.mjs`
   (keep your history), with the readers they import.
 - **Bundled measurement modules.** The npm package includes its counter and readers. Interactive
-  commands can check the registry and relay through `npx` to a newer package; that can download code.
-  The standalone bootstrap can also download support modules. See SECURITY.md for the distinction.
+  commands can check the registry for a version notice; they no longer execute another npm
+  version automatically. Installation stays with the selected package manager. See SECURITY.md.
 - **Provenance.** The release workflow requests npm provenance from the public source repository.
   Verify the actual version's attestation and contents before relying on that origin; the manifest
   setting alone does not establish it. `npm audit signatures` checks an installed dependency tree.
@@ -479,3 +476,23 @@ The licence is free of charge. `preserve` (with `--apply`, `--archive`, `--verif
 with or without an account; every other feature is for WorkTrust account holders, and without an account the rest may
 only be installed and evaluated. The archives and files the CLI makes from your own data are yours.
 From 0.10.18 on; versions up to and including 0.10.17 were published under the MIT licence and stay under it.
+
+## Release signatures and the limits of verification
+
+From 0.10.22, the official launcher verifies fixed release files through `worktrust-launch.mjs` before
+starting the shared engine. Python uses the `pycryptodomex` library to verify its package and
+bundled runtime before Node executes. Final npm/Python/source/preservation downloads are
+covered by an Ed25519-signed `release-artifacts.json`, containing their SHA-256 values and the
+source commit. Verify against the separately pinned publisher key, not a key supplied by the manifest.
+
+The initial package-manager installation and host interpreter are trusted bootstrap boundaries.
+A computer owner can alter or bypass a launcher; software signatures do not attest execution.
+
+Local Claude records and other client activity are outside this release manifest. An official
+CLI can read edited input. `cli_digest` remains client-reported diagnostic metadata and cannot
+prove which program ran. SHA-256/SHA-512 are not encryption; HTTPS protects transport. Public
+claim eligibility remains the server publication gate's responsibility.
+
+Revoking a computer key stops new submissions, not the validity of every historical publication.
+Passport withdrawal is a separate audited operation. Neither operation automatically erases the
+person's prior data. Release signing keys, computer keys and passport signing keys are separate.

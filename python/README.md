@@ -50,7 +50,7 @@ Runtime bundle hashes detect missing or changed files; they are not hardware att
 independent proof of authenticity. Request and archive signatures retain the existing CLI's
 software-key threat model. See the npm package SECURITY.md and README.md for the data contract.
 
-The **0.10.21 release candidate** also retains metadata before submission in
+The **0.10.21 release** also retains metadata before submission in
 `~/.worktrust/measurements/` and advances progress only on explicit receipts. This is the same
 implementation used by npm, uvx and pipx. The journal contains available timelines, opaque
 references and counts, not conversation text, paths or credentials. It remains on the computer
@@ -94,9 +94,11 @@ npm package at its root. There, install `python/requirements-release.txt`, run
 a system Node installation. Keep build-only workflow results distinct from successful publication.
 
 The active `.github/workflows/release-pypi.yml` uses the protected `pypi` environment and
-PyPI Trusted Publishing. The same GitHub release triggers both registries; manual execution
-supports retries. The retained `release-pypi.yml.example` is a reference, not the active workflow. npm also requires the supported-platform Python
-artifact/parity tests before publishing. Both channels use the same version and module bytes.
+PyPI Trusted Publishing. In the 0.10.22 candidate, the successful signed npm release workflow
+triggers PyPI, which consumes its exact artifacts without rebuilding. Failed jobs can be rerun
+through GitHub. The retained `release-pypi.yml.example` is historical, not the active workflow.
+All six native artifact checks must pass before either registry publishes. Both channels use
+the same version and module bytes.
 Approvals and registry failures remain separate; confirm both publications before announcing a
 release as available on both channels. Neither workflow invokes a Vercel deployment.
 
@@ -177,3 +179,17 @@ and your explicit file selection and consent; CLI publication does not deploy th
 Application reports never become measured human hours, capability scores or employer evidence.
 For the wider service, see [privacy](https://worktrust.io/privacy),
 [terms](https://worktrust.io/eula) and [support](https://worktrust.io/support).
+
+## Signed startup (0.10.22+)
+
+The Python launcher uses `pycryptodomex>=3.24.1,<3.25` to verify the signed file manifest before
+starting the bundled Node runtime. The runtime, descriptors, shared engine and Python modules
+are covered. Missing or changed files and invalid signatures stop execution. Package managers
+install this verification dependency; npm is never invoked or installed by the Python launcher.
+The initial package-manager installation, Python environment and bootstrap remain trusted;
+a computer owner can change or bypass them. This is not execution attestation.
+
+This is release integrity, not proof that a local transcript is authentic. Local Claude records
+are not release files, and `cli_digest` is diagnostic client metadata. Hashes are not encryption.
+Computer-key revocation stops submissions; passport withdrawal invalidates a publication;
+neither silently erases historical account data. See the shared CLI SECURITY.md for the limits.

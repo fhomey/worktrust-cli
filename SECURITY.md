@@ -12,7 +12,7 @@ private transcripts or account data in a public issue.
   A setup dry run is not a sandbox for the whole invocation: the standalone bootstrap can download
   scripts first, and the interactive entry can check for a newer release.
 - Submissions go to the configured WorkTrust MCP endpoint. Interactive commands can also contact
-  the npm registry and relay through `npx` to a newer version. The npm package bundles its runtime
+  the npm registry for a version notice. The unpublished patch based on 0.10.21 no longer executes a newer version from that notice. The npm package bundles its runtime
   modules, but installation and automatic relay still use the network. `preserve` itself is local.
   A custom `--origin`, URL or registry override changes whom you trust.
 - The key it receives is a WorkTrust coupling for this computer: it can submit work metadata to your
@@ -77,6 +77,13 @@ conversation's kept fields (`scripts/test-export-memory.mjs` holds it under 200 
 are resource bounds, not a sandbox or independent validation of the export's truth.
 
 ## Verifying a version
+
+The unpublished maintenance patch based on 0.10.21 removes automatic execution based only on a newer registry
+version string. The separate signed release/receipt components in the monorepo's
+`tools/worktrust-release` are engineering candidates: production signing keys, final artifact
+signing and npm/Python launcher integration are not yet provisioned. The current Python bundle
+manifest detects file corruption but is not itself an authenticated WorkTrust release signature.
+Do not treat its matching SHA-256 values as proof that modified input describes genuine work.
 
 The release configuration names https://github.com/fhomey/worktrust-cli and requests npm provenance.
 Check the particular published version's attestation and compare its contents to that commit before

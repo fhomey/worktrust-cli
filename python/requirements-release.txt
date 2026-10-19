@@ -1,5 +1,7 @@
-# Build/test tools only; the published launcher has no Python dependencies.
+# Locked build/test tools; the launcher uses PyCryptodomex for pre-runtime signature verification.
 build==1.6.1
 setuptools==84.0.0
 uv==0.13.0
 pipx==1.17.13
+pycryptodomex==3.24.1
+PyYAML==6.0.3

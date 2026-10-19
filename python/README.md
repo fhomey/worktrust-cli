@@ -50,6 +50,14 @@ Runtime bundle hashes detect missing or changed files; they are not hardware att
 independent proof of authenticity. Request and archive signatures retain the existing CLI's
 software-key threat model. See the npm package SECURITY.md and README.md for the data contract.
 
+The **0.10.21 release candidate** also retains metadata before submission in
+`~/.worktrust/measurements/` and advances progress only on explicit receipts. This is the same
+implementation used by npm, uvx and pipx. The journal contains available timelines, opaque
+references and counts, not conversation text, paths or credentials. It remains on the computer
+after disconnecting; keep your own backup. Its contents remain user-controlled observations,
+not independent proof of human effort. Changed historical replacements wait for server review
+without overwriting earlier measurements. Updating does not restore support-withdrawn lines.
+
 ## Maintainers
 
 Running `node tools/worktrust-cli/sync.mjs` from the monorepo also regenerates the Python JavaScript

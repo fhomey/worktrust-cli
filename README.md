@@ -254,6 +254,12 @@ and counts, exactly as the session hook reads it.
 
 ## Rebuild the history
 
+From **0.10.21 (release candidate)**, changed measured history waits for review before it
+can replace measurements already received for that computer, client and historical day.
+The earlier receipt is retained as local activity, not independent proof of human effort.
+Other computers and periods remain on the record, including an unavailable old laptop.
+A support withdrawal is not reversed by reconnecting or running a rebuild.
+
 Since 0.10.5 there is one path: `npx worktrust@latest history` always re-measures and replaces this computer's earlier
 lines day by day. If a send did not finish, or you merged two keys of one computer, run `npx worktrust@latest` again:
 it finishes what did not arrive and never counts a day twice.
@@ -384,6 +390,20 @@ which would delete every password on the computer, and many people rightly keep 
   that cannot run a local command. Such a key is not bound to the computer and does not renew.
 
 ## What it reads, writes and sends
+
+From **0.10.21 (release candidate)**, before each submission the hook keeps a local
+metadata file in `~/.worktrust/measurements/`. The `worktrust-measurement/1` format retains
+the available timeline, opaque stretch reference, dates, counts and collector identifiers.
+It omits prompts, answers, titles, repository names, file paths, endpoint URLs and credentials.
+Files request mode 0600 in a mode-0700 directory; Windows ACLs need their own validation.
+Retries retain the same metadata once; changed measurements get a separate file. Disconnecting
+does not erase this journal. You control its retention and backups; it is not a remote backup.
+Keep the regular `preserve --archive` archive too if your AI app removes its session files.
+Metadata cannot reconstruct deleted conversation text or observations it never recorded.
+
+A successful HTTP response alone does not advance progress. The hook requires an explicit
+receipt; JSON-RPC errors, tool errors, incomplete receipts and partially refused batches are
+retried safely. A row kept pending on WorkTrust remains excluded from counted activity.
 
 | | |
 |---|---|

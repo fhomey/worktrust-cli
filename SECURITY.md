@@ -48,6 +48,14 @@ private transcripts or account data in a public issue.
 
 ## What measurement signatures establish
 
+The metadata journal introduced in the 0.10.21 candidate preserves observations, not their
+truth. A user who controls the computer can fabricate session files, timestamps, counters,
+model labels and software-key signatures, or name an official code digest. Server-side
+recalculation detects a conflicting arithmetic claim; it cannot authenticate a fabricated
+timeline. Prior receipts provide a comparison baseline, not independent confirmation.
+Changed historical replacements are held for review without overwriting that baseline.
+The journal is not encrypted storage, hardware attestation or a server-signed archive.
+
 Request proofs authenticate possession of the device key. Archive seals make later changes
 detectable relative to their trusted key/root. Neither proves that the client is unmodified, that
 local input files are authentic, or that work really happened. Local-only archive keys do not grant

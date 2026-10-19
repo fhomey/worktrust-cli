@@ -60,7 +60,7 @@
  * honoured here too, matched against the transcript's project directory, before a file is read.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, openSync, closeSync, fsyncSync, linkSync, unlinkSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -698,6 +698,43 @@ const noteReceipt = (answer) => {
     for (const key of Object.keys(RECEIPTS)) RECEIPTS[key] += Number(receipt[key]) || 0;
   } catch { /* a receipt unread leaves the counts short, never the send */ }
 };
+/** Only explicit durable receipts authorize a checkpoint. HTTP 200 alone says nothing. */
+function confirmedReceipt(answer, expectedCount = null) {
+  try {
+    const candidates = answer.trim().startsWith("{") ? [answer] : answer.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trim()).filter(line => line && line !== "[DONE]");
+    const replies = candidates.map(text => JSON.parse(text)).filter(reply => reply?.id === 1);
+    if (replies.length !== 1) throw Error();
+    const reply = replies[0];
+    if (reply.jsonrpc !== "2.0" || reply.error || !reply.result || reply.result.isError === true) throw Error();
+    const content = reply.result.content;
+    if (!Array.isArray(content) || content.length !== 1 || content[0].type !== "text") throw Error();
+    const receipt = JSON.parse(content[0].text);
+    if (expectedCount === null) {
+      if (!(receipt.receipt === "received" && ["accepted", "flagged", "pending"].includes(receipt.status)) && !(receipt.receipt === "unchanged" && receipt.reason === "duplicate")) throw Error();
+    } else if (receipt.receipt !== "received" || receipt.received !== expectedCount || receipt.refused !== 0
+      || !Number.isInteger(receipt.new) || receipt.new < 0 || !Number.isInteger(receipt.alreadyHeld) || receipt.alreadyHeld < 0
+      || receipt.new + receipt.alreadyHeld !== expectedCount) throw Error();
+    return receipt;
+  } catch { throw Error("WorkTrust did not confirm every line; progress was not advanced. Retained metadata and safe retries remain available."); }
+}
+/** A private metadata journal survives retries, an edited transcript and a later CLI update. */
+function retainMeasurement(payload, source) {
+  const fields = ["stretch_ref", "at", "started_at", "timeline", "seconds", "client_seconds", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write", "exchanges", "interrupts", "steers", "agent_runs", "agent_seconds", "agent_peak", "duration_basis", "token_basis", "turn_basis", "cli_version", "cli_digest"];
+  const metadata = Object.fromEntries(fields.filter(key => Object.hasOwn(payload, key)).map(key => [key, payload[key]]));
+  const body = JSON.stringify({ format: "worktrust-measurement/1", source: source ?? "claude", metadata }) + "\n";
+  const parent = join(homedir(), ".worktrust"), dir = join(parent, "measurements");
+  for (const path of [parent, dir]) { mkdirSync(path, { recursive: true, mode: 0o700 }); const st = lstatSync(path); if (!st.isDirectory() || st.isSymbolicLink()) throw Error("WorkTrust metadata directory is not a private directory"); }
+  const file = join(dir, createHash("sha256").update(body).digest("hex") + ".json");
+  if (existsSync(file)) { const st = lstatSync(file); if (!st.isFile() || st.isSymbolicLink() || readFileSync(file, "utf8") !== body) throw Error("WorkTrust retained metadata did not match its digest"); return; }
+  const temporary = join(dir, ".pending-" + randomBytes(18).toString("hex"));
+  const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+  try {
+    writeFileSync(fd, body); fsyncSync(fd);
+    try { linkSync(temporary, file); } catch (error) {
+      if (error.code !== "EEXIST" || lstatSync(file).isSymbolicLink() || readFileSync(file, "utf8") !== body) throw error;
+    }
+  } finally { closeSync(fd); unlinkSync(temporary); }
+}
 async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
   let accepted = 0;
   // A Codex entry goes through Codex's own coupling where one exists (see codexDoor), the rest
@@ -714,11 +751,13 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
     // tells the door to replace this computer's earlier lines on the days and for the client the batch carries, and every group names its client.
     // WITHDRAW UNKNOWN (owner, 2026-10-10): with an export, after the person's yes, `withdraw_unknown: true` also withdraws the AI-app lines on its days.
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map((entry) => { const { commits, ...rest } = entry; void commits; return rest; }) } } });
+    for (const entry of batch) retainMeasurement(entry, source);
     // `named` (0.10.10): a copied folder's lines name their client too, so the record says which app the copy came from.
     const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild || named), ...proofFor(target.url, body) }, body });
     const text = await response.text();
     if (announce) console.log(`batch ${number}: ${response.status} ${text.slice(0, 200).replace(/\\n/g, " ")}`);
     if (!response.ok) break;
+    try { confirmedReceipt(text, batch.length); } catch { break; }
     accepted += batch.length;
     noteReceipt(text);
   }
@@ -756,10 +795,13 @@ const proofFor = (url, body) => {
 const clientOf = (source, always = false) => (always || source === "antigravity" || DATABASE_CLIENTS.includes(source) || EXPORT_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)` } : {});
 
 async function send(door, payload) {
+  retainMeasurement(payload, entrySource.get(payload));
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "log_work", arguments: payload } });
   const response = await fetch(door.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${door.token}`, ...clientOf(entrySource.get(payload)), ...proofFor(door.url, body) }, body });
   if (!response.ok) throw new Error(`door said ${response.status}`);
-  return response.text();
+  const text = await response.text();
+  confirmedReceipt(text);
+  return text;
 }
 
 /**
@@ -1181,7 +1223,7 @@ if (flag("history") && flag("from-archive")) {
     return entry;
   });
   const signedCount = all.filter(({ signed }) => signed).length;
-  say(`${all.length} stretches in the archive · ${signedCount} signed by this computer's key (verified) · ${all.length - signedCount} unsigned or signed by another key (reconstructed) · ${entries.length} of them no longer in any AI app here`);
+  say(`${all.length} stretches in the archive · ${signedCount} signed by this computer's key (signature checked) · ${all.length - signedCount} unsigned or signed by another key (reconstructed) · ${entries.length} of them no longer in any AI app here`);
   if (DRY || entries.length === 0) { if (entries[0]) say(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`); say(entries.length === 0 ? "Nothing to send." : "\ndry run — nothing sent."); return await exitFlushed(0); }
   if (!(await doorKnowsArchive(door))) { say("WorkTrust does not accept history from an archive yet (the door does not know the mark). Nothing was sent."); return await exitFlushed(1); }
   return await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);

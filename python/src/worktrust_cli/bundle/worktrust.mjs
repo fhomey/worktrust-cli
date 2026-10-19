@@ -78,7 +78,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.20";
+const CLI_VERSION = "0.10.21";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -683,6 +683,8 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   if (rebuild) {
     for (const row of found.clients ?? []) say(`    ${row.client.padEnd(12)} ${String(row.days).padStart(4)} days   ${row.first} … ${row.last}`);
     say("  Re-measured with the current rules (what the seconds were, your own turns, tokens with the cache, every AI app above).");
+    say("  Changed measured history is held for review; earlier measurements remain in your record.");
+    say("  For older unmeasured history only:");
     say("  WorkTrust REPLACES this computer's earlier lines for those days and apps: each earlier line is withdrawn and kept,");
     say("  never deleted, so a day is counted once. Other computers, web sources and days not listed are not touched.");
   }

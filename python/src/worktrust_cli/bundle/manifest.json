@@ -1,11 +1,11 @@
 {
-  "version": "0.10.20",
+  "version": "0.10.21",
   "files": {
     "chat-exports.mjs": "04eafe333940ec03d5058d8d51062124aa12ab882bf04db03bcda5613ec69298",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
     "config-edits.mjs": "0eba2f176ef6f7afba071d6e00de0ff19ba2b283180a801dfd957aa38c1edd94",
     "count-behaviour.mjs": "1beaec2a4d0aead76d166f89cc52441a9cf48f2e69da9888ca2091dd3a10a37b",
-    "log-session.mjs": "e72763caaed3f1cf25ac1e206eaa93d5ee764be6dc288dc9c20259e1e406bdf1",
+    "log-session.mjs": "b99f082a58f0a92375026f52b62eb72173f06614b844e3def06b3ed40942b103",
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",
     "orchestration-evidence.mjs": "d0d06cecf0eb08e5c6e653c62a4f45b1eddf2119c2acb8341056b34f488d214a",
     "orchestration-report.mjs": "d4e0a9ad8e4a01b462d22c6b1866aac291565c533ff476085d3367cb6d59bc1b",
@@ -18,6 +18,6 @@
     "stack-rules.mjs": "b23c56e72ec56ba02b17ed895f869172d988c468a697e8d6026b0e268f61e489",
     "stretch-evidence.mjs": "5b31a6f29b785d277e92257532f3c7cee366a79759decc7a75cfbaec2686ee13",
     "transcript-readers.mjs": "413948644a74dc0bf1b49548be193bf596bcf82ac7eae668f624345a18e189e7",
-    "worktrust.mjs": "5a9a8cf691501783481f5f52722f2bf4d1498e839ee135eb6f8185d6cb56c778"
+    "worktrust.mjs": "0c8a04a07e85520e7ea77c7a44b7e0e7f1391a3de43754e1a86909c3b7c85f8a"
   }
 }

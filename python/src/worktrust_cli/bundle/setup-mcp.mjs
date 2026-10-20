@@ -33,6 +33,8 @@ const NAME = value("name") ?? "worktrust";
  */
 const BRIDGE = value("bridge");
 const NODE = process.env.WORKTRUST_NODE || process.execPath;
+const NODE_ARGS = process.env.WORKTRUST_NODE_ARGS === '["-I"]' ? ["-I"] : [];
+const NODE_COMMAND = `"${NODE}"${NODE_ARGS.length ? " -I" : ""}`;
 
 /** The coupling: given, or the one Claude Code already holds (the counter reads it the same way). */
 function fromClaude() {
@@ -65,7 +67,7 @@ const URL_ = value("url") ?? process.env.WORKTRUST_MCP_URL ?? discovered?.url;
 const TOKEN = value("token") ?? process.env.WORKTRUST_MCP_TOKEN ?? discovered?.token;
 if (!URL_ || (!TOKEN && !BRIDGE)) { console.error("no coupling: pass --url and --token (from Sources → Claude (MCP) → Add coupling), or couple Claude Code first"); process.exit(1); }
 const masked = BRIDGE ? "kept in ~/.worktrust/key.json, not in these files" : `${TOKEN.slice(0, 6)}…${TOKEN.slice(-4)}`;
-const stdio = { command: NODE, args: [BRIDGE ?? "", "mcp"] };
+const stdio = { command: NODE, args: [...NODE_ARGS, BRIDGE ?? "", "mcp"] };
 const home = homedir();
 /** Whether Claude Code's own command is on this machine: asked of the shell, never guessed from a file. */
 /**
@@ -98,8 +100,8 @@ const hermesHomes = () => {
   try { for (const name of readdirSync(join(HERMES_BASE, "profiles")).sort()) homes.add(join(HERMES_BASE, "profiles", name)); } catch { /* no profiles */ }
   return [...homes].filter((dir) => existsSync(dir));
 };
-const HERMES_HOOK = `"${NODE}" "${BRIDGE ?? ""}" hook --hermes`;
-const ours = (text) => text.includes(URL_) || /worktrust\.mjs/.test(text);
+const HERMES_HOOK = `${NODE_COMMAND} "${BRIDGE ?? ""}" hook --hermes`;
+const ours = (text) => text.includes(URL_) || /worktrust(?:-launch)?\.(?:mjs|py)/.test(text);
 /** A YAML client's file with our entry (and hook) taken out and, unless removing, put back in; null when it cannot be. */
 function yamlConfig(client, text, remove) {
   const lines = text.trim() === "" ? [] : text.replace(/\n$/, "").split("\n");
@@ -112,7 +114,7 @@ function yamlConfig(client, text, remove) {
   return lines.length ? `${lines.join("\n")}\n` : "";
 }
 const bridgeOrUrl = (local, remote) => (BRIDGE ? local : remote);
-const HERMES_SERVER = bridgeOrUrl([`${NAME}:`, `  command: ${JSON.stringify(NODE)}`, `  args: [${JSON.stringify(BRIDGE)}, "mcp"]`], [`${NAME}:`, `  url: ${JSON.stringify(URL_)}`, "  headers:", `    Authorization: ${JSON.stringify(`Bearer ${TOKEN}`)}`]);
+const HERMES_SERVER = bridgeOrUrl([`${NAME}:`, `  command: ${JSON.stringify(NODE)}`, `  args: [${[...NODE_ARGS, BRIDGE, "mcp"].map(arg => JSON.stringify(arg)).join(", ")}]`], [`${NAME}:`, `  url: ${JSON.stringify(URL_)}`, "  headers:", `    Authorization: ${JSON.stringify(`Bearer ${TOKEN}`)}`]);
 /**
  * GOOSE (2026-10-05, aaif-goose/goose: crates/goose/src/config/extensions.rs, agents/extension.rs; documentation
  * guides/config-files.md): `extensions` in config.yaml (~/.config/goose, %APPDATA%\\Block\\goose\\config on Windows,
@@ -121,12 +123,12 @@ const HERMES_SERVER = bridgeOrUrl([`${NAME}:`, `  command: ${JSON.stringify(NODE
  * guides/context-engineering/hooks.md); with the bridge one plugin named worktrust runs the session hook on SessionEnd.
  */
 const GOOSE_SERVER = bridgeOrUrl(
-  [`${NAME}:`, "  type: stdio", `  name: ${NAME}`, "  enabled: true", `  cmd: ${JSON.stringify(NODE)}`, `  args: [${JSON.stringify(BRIDGE)}, "mcp"]`, "  envs: {}", "  timeout: 300"],
+  [`${NAME}:`, "  type: stdio", `  name: ${NAME}`, "  enabled: true", `  cmd: ${JSON.stringify(NODE)}`, `  args: [${[...NODE_ARGS, BRIDGE, "mcp"].map(arg => JSON.stringify(arg)).join(", ")}]`, "  envs: {}", "  timeout: 300"],
   [`${NAME}:`, "  type: streamable_http", `  name: ${NAME}`, "  enabled: true", `  uri: ${JSON.stringify(URL_)}`, "  headers:", `    Authorization: ${JSON.stringify(`Bearer ${TOKEN}`)}`, "  envs: {}", "  timeout: 300"],
 );
 const gooseDirs = () => [...new Set([...(process.env.GOOSE_PATH_ROOT ? [join(process.env.GOOSE_PATH_ROOT, "config")] : []), join(home, ".config", "goose"), ...(platform() === "win32" && process.env.APPDATA ? [join(process.env.APPDATA, "Block", "goose", "config")] : [])])].filter((dir) => existsSync(dir));
 const GOOSE_PLUGIN = join(process.env.GOOSE_PATH_ROOT || home, ".agents", "plugins", NAME);
-const GOOSE_HOOKS = { hooks: { SessionEnd: [{ hooks: [{ type: "command", command: `"${NODE}" "${BRIDGE ?? ""}" hook --goose`, timeout: 30 }] }] } };
+const GOOSE_HOOKS = { hooks: { SessionEnd: [{ hooks: [{ type: "command", command: `${NODE_COMMAND} "${BRIDGE ?? ""}" hook --goose`, timeout: 30 }] }] } };
 const goosePluginStands = () => { try { return JSON.stringify(JSON.parse(readFileSync(join(GOOSE_PLUGIN, "hooks", "hooks.json"), "utf8"))) === JSON.stringify(GOOSE_HOOKS); } catch { return false; } };
 /** Our plugin folder in, or out; another plugin is never touched, and a folder of that name that is not ours stays. */
 function goosePlugin(remove) {
@@ -157,7 +159,7 @@ export const WorkTrust = async () => ({
   event: async ({ event }) => {
     if (event?.type !== "session.idle" || Date.now() - last < 30_000) return;
     last = Date.now();
-    try { spawn(${JSON.stringify(NODE)}, [${JSON.stringify(BRIDGE ?? "")}, "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
+    try { spawn(${JSON.stringify(NODE)}, ${JSON.stringify([...NODE_ARGS, BRIDGE ?? "", "hook"])}, { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
   },
 });
 `;
@@ -179,25 +181,25 @@ const opencodePluginStands = () => { try { return readFileSync(OPENCODE_PLUGIN, 
  * sessions are read whenever another client's hook runs.
  */
 const OPENCLAW_FILE = process.env.OPENCLAW_CONFIG_PATH || join(process.env.OPENCLAW_STATE_DIR || join(home, ".openclaw"), "openclaw.json");
-const OPENCLAW_ENTRY = BRIDGE ? { command: NODE, args: [BRIDGE, "mcp"] } : { url: URL_, transport: "streamable-http", headers: { Authorization: `Bearer ${TOKEN}` } };
+const OPENCLAW_ENTRY = BRIDGE ? { command: NODE, args: [...NODE_ARGS, BRIDGE, "mcp"] } : { url: URL_, transport: "streamable-http", headers: { Authorization: `Bearer ${TOKEN}` } };
 
 /** Each client: where it lives, how it says "an HTTP MCP server with a header". */
 const CLIENTS = [
   { key: "cursor", label: "Cursor", present: () => existsSync(join(home, ".cursor")), file: join(home, ".cursor", "mcp.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? stdio : { url: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
-  { key: "codex", label: "Codex CLI", present: () => existsSync(join(home, ".codex")), file: join(home, ".codex", "config.toml"), shape: "toml", block: BRIDGE ? `\n[mcp_servers.${NAME}]\ncommand = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(BRIDGE)}, "mcp"]\n` : `\n[mcp_servers.${NAME}]\nurl = "${URL_}"\nhttp_headers = { Authorization = "Bearer ${TOKEN}" }\n` },
+  { key: "codex", label: "Codex CLI", present: () => existsSync(join(home, ".codex")), file: join(home, ".codex", "config.toml"), shape: "toml", block: BRIDGE ? `\n[mcp_servers.${NAME}]\ncommand = ${JSON.stringify(NODE)}\nargs = [${[...NODE_ARGS, BRIDGE, "mcp"].map(arg => JSON.stringify(arg)).join(", ")}]\n` : `\n[mcp_servers.${NAME}]\nurl = "${URL_}"\nhttp_headers = { Authorization = "Bearer ${TOKEN}" }\n` },
   { key: "gemini", label: "Gemini CLI", present: () => existsSync(join(home, ".gemini")), file: join(home, ".gemini", "settings.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? stdio : { httpUrl: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
   { key: "copilot", label: "VS Code (Copilot agent mode)", present: () => existsSync(vscodeUser), file: join(vscodeUser, "mcp.json"), shape: "json", root: "servers", entry: BRIDGE ? { type: "stdio", ...stdio } : { type: "http", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
   { key: "windsurf", label: "Windsurf", present: () => existsSync(join(home, ".codeium", "windsurf")), file: join(home, ".codeium", "windsurf", "mcp_config.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? stdio : { serverUrl: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
   // MISTRAL VIBE (2026-10-04, docs.mistral.ai/vibe/code/cli/mcp-servers): `[[mcp_servers]]` tables in
   // ~/.vibe/config.toml (or $VIBE_HOME), each with a name, a transport and a url or a command.
-  { key: "vibe", label: "Mistral Vibe", present: () => existsSync(VIBE_DIR), file: join(VIBE_DIR, "config.toml"), shape: "vibe", block: BRIDGE ? `\n[[mcp_servers]]\nname = "${NAME}"\ntransport = "stdio"\ncommand = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(BRIDGE)}, "mcp"]\n` : `\n[[mcp_servers]]\nname = "${NAME}"\ntransport = "streamable-http"\nurl = "${URL_}"\nheaders = { "Authorization" = "Bearer ${TOKEN}" }\n` },
+  { key: "vibe", label: "Mistral Vibe", present: () => existsSync(VIBE_DIR), file: join(VIBE_DIR, "config.toml"), shape: "vibe", block: BRIDGE ? `\n[[mcp_servers]]\nname = "${NAME}"\ntransport = "stdio"\ncommand = ${JSON.stringify(NODE)}\nargs = [${[...NODE_ARGS, BRIDGE, "mcp"].map(arg => JSON.stringify(arg)).join(", ")}]\n` : `\n[[mcp_servers]]\nname = "${NAME}"\ntransport = "streamable-http"\nurl = "${URL_}"\nheaders = { "Authorization" = "Bearer ${TOKEN}" }\n` },
   // GOOGLE ANTIGRAVITY (2026-10-04, antigravity.google/docs/mcp/): the 2.0 app, the `agy` CLI and the IDE read
   // ~/.gemini/config/mcp_config.json; a remote server is `serverUrl` with headers (`url` and `httpUrl` are not
   // read), a local one `command` and `args`. Present when its config folder or one of its data folders is here.
   { key: "antigravity", label: "Antigravity", present: () => existsSync(join(home, ".gemini", "config")) || (() => { try { return readdirSync(join(home, ".gemini")).some((name) => /^antigravity/.test(name)); } catch { return false; } })(), file: join(home, ".gemini", "config", "mcp_config.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? stdio : { serverUrl: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
   // GROK BUILD (2026-10-04, docs.x.ai/build/settings/reference): `[mcp_servers.<name>]` in ~/.grok/config.toml (or
   // $GROK_HOME), `url` and `headers` for a remote server, `command` and `args` for a local one.
-  { key: "grok", label: "Grok Build", present: () => existsSync(GROK_DIR), file: join(GROK_DIR, "config.toml"), shape: "toml", block: BRIDGE ? `\n[mcp_servers.${NAME}]\ncommand = ${JSON.stringify(NODE)}\nargs = [${JSON.stringify(BRIDGE)}, "mcp"]\n` : `\n[mcp_servers.${NAME}]\nurl = "${URL_}"\nheaders = { Authorization = "Bearer ${TOKEN}" }\n` },
+  { key: "grok", label: "Grok Build", present: () => existsSync(GROK_DIR), file: join(GROK_DIR, "config.toml"), shape: "toml", block: BRIDGE ? `\n[mcp_servers.${NAME}]\ncommand = ${JSON.stringify(NODE)}\nargs = [${[...NODE_ARGS, BRIDGE, "mcp"].map(arg => JSON.stringify(arg)).join(", ")}]\n` : `\n[mcp_servers.${NAME}]\nurl = "${URL_}"\nheaders = { Authorization = "Bearer ${TOKEN}" }\n` },
   // ZED (zed.dev/docs/ai/mcp): `context_servers` in its settings.json, `url` and `headers` for a remote server.
   { key: "zed", label: "Zed", present: () => existsSync(ZED_DIR), file: join(ZED_DIR, "settings.json"), shape: "json", root: "context_servers", entry: BRIDGE ? { ...stdio, env: {} } : { url: URL_, headers: { Authorization: `Bearer ${TOKEN}` } } },
   // CLINE (docs.cline.bot/mcp): `mcpServers` in the extension's cline_mcp_settings.json; `type` must be
@@ -205,7 +207,7 @@ const CLIENTS = [
   { key: "cline", label: "Cline (VS Code)", present: () => existsSync(CLINE_DIR), file: join(CLINE_DIR, "cline_mcp_settings.json"), shape: "json", root: "mcpServers", entry: BRIDGE ? { ...stdio, disabled: false } : { type: "streamableHttp", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` }, disabled: false } },
   ...hermesHomes().map((dir) => ({ key: "hermes", label: dir === HERMES_BASE ? "Hermes Agent" : `Hermes Agent (${dir.split(/[\\/]/).pop()})`, present: () => true, file: join(dir, "config.yaml"), shape: "yaml", root: "mcp_servers", server: HERMES_SERVER, hook: { path: ["hooks", "on_session_end"], unit: [`- command: ${JSON.stringify(HERMES_HOOK)}`, "  timeout: 30"], note: "an on_session_end hook (Hermes asks once before it runs it)" } })),
   ...gooseDirs().map((dir) => ({ key: "goose", label: "Goose", present: () => true, file: join(dir, "config.yaml"), shape: "yaml", root: "extensions", server: GOOSE_SERVER, plugin: true })),
-  { key: "opencode", label: "OpenCode", present: () => existsSync(OPENCODE_DIR), file: OPENCODE_FILE, shape: "json", root: "mcp", entry: BRIDGE ? { type: "local", command: [NODE, BRIDGE, "mcp"], enabled: true } : { type: "remote", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` }, enabled: true }, plugin: "opencode" },
+  { key: "opencode", label: "OpenCode", present: () => existsSync(OPENCODE_DIR), file: OPENCODE_FILE, shape: "json", root: "mcp", entry: BRIDGE ? { type: "local", command: [NODE, ...NODE_ARGS, BRIDGE, "mcp"], enabled: true } : { type: "remote", url: URL_, headers: { Authorization: `Bearer ${TOKEN}` }, enabled: true }, plugin: "opencode" },
   { key: "openclaw", label: "OpenClaw", present: () => existsSync(dirname(OPENCLAW_FILE)) || onPath("openclaw"), file: OPENCLAW_FILE, shape: "openclaw" },
   { key: "claude", label: "Claude Code", present: () => existsSync(join(home, ".claude.json")), file: join(home, ".claude.json"), shape: "claude" },
 ];
@@ -233,8 +235,8 @@ for (const client of CLIENTS) {
     // the verb when the `claude` command is on this machine (2026-09-28; before, the line was only
     // printed, and a person who had just run one command was handed a second to type), and prints
     // it when the command is not. User scope, so the coupling holds in every folder on this machine.
-    const claudeArgs = REMOVE ? ["mcp", "remove", "-s", "user", NAME] : BRIDGE ? ["mcp", "add", "-s", "user", NAME, "--", NODE, BRIDGE, "mcp"] : ["mcp", "add", "--transport", "http", "-s", "user", NAME, URL_, "-H", `Authorization: Bearer ${TOKEN}`];
-    const shown = REMOVE ? `claude mcp remove -s user ${NAME}` : BRIDGE ? `claude mcp add -s user ${NAME} -- "${NODE}" "${BRIDGE}" mcp` : `claude mcp add --transport http -s user ${NAME} "${URL_}" -H "Authorization: Bearer <token>"`;
+    const claudeArgs = REMOVE ? ["mcp", "remove", "-s", "user", NAME] : BRIDGE ? ["mcp", "add", "-s", "user", NAME, "--", NODE, ...NODE_ARGS, BRIDGE, "mcp"] : ["mcp", "add", "--transport", "http", "-s", "user", NAME, URL_, "-H", `Authorization: Bearer ${TOKEN}`];
+    const shown = REMOVE ? `claude mcp remove -s user ${NAME}` : BRIDGE ? `claude mcp add -s user ${NAME} -- ${NODE_COMMAND} "${BRIDGE}" mcp` : `claude mcp add --transport http -s user ${NAME} "${URL_}" -H "Authorization: Bearer <token>"`;
     const direct = directClaudeEntries();
     if (!REMOVE && (BRIDGE ? direct.bridged && direct.entries.length === 0 : discovered)) { console.log(`  ✓ ${client.label}: already coupled`); standing += 1; continue; }
     // A direct entry under any name is replaced by the bridge, and every one goes on removal.
@@ -255,7 +257,7 @@ for (const client of CLIENTS) {
   }
   const text = existsSync(client.file) ? readFileSync(client.file, "utf8") : "";
   // With the bridge, coupled means the bridge is in AND no entry with a key in it is left beside it.
-  const already = client.shape === "yaml" && !REMOVE ? (BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE)) && (!client.plugin || goosePluginStands()) : text.includes(URL_)) && yamlConfig(client, text, false) === text : REMOVE ? text.includes(URL_) || /worktrust\.mjs/.test(text) : BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE).slice(1, -1)) && !text.includes(URL_) : text.includes(URL_);
+  const already = client.shape === "yaml" && !REMOVE ? (BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE)) && (!client.plugin || goosePluginStands()) : text.includes(URL_)) && yamlConfig(client, text, false) === text : REMOVE ? text.includes(URL_) || /worktrust(?:-launch)?\.(?:mjs|py)/.test(text) : BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE).slice(1, -1)) && !text.includes(URL_) : text.includes(URL_);
   // THE WAY OUT, ON THE MACHINE. Uncoupling in the app ends the TOKEN; the config that names the
   // door stays behind on every client here, so the next person to read this file believes the
   // machine is coupled. `--remove` takes the entry out; the account side is a separate act and
@@ -268,7 +270,7 @@ for (const client of CLIENTS) {
       try { config = JSON.parse(readFileSync(client.file, "utf8")); } catch { console.log(`  ! ${client.label}: ${client.file} is not plain JSON; take the "${NAME}" entry out by hand`); continue; }
       const root = config[client.root] ?? {};
       for (const [key, entry] of Object.entries(root)) {
-        const named = JSON.stringify(entry ?? {}).includes(URL_) || /worktrust\.mjs/.test(JSON.stringify(entry ?? {}));
+        const named = JSON.stringify(entry ?? {}).includes(URL_) || /worktrust(?:-launch)?\.(?:mjs|py)/.test(JSON.stringify(entry ?? {}));
         if (key === NAME || named) delete root[key];
       }
       config[client.root] = root;
@@ -282,7 +284,7 @@ for (const client of CLIENTS) {
       // Vibe's servers are an ARRAY of tables, so a block is found by what it says, not by its header: every
       // `[[mcp_servers]]` that names ours, the door, or the bridge goes, up to the next header at a line start.
       const text = readFileSync(client.file, "utf8");
-      const stripped = text.replace(/\n?\[\[mcp_servers\]\][\s\S]*?(?=\n\[|$)/g, (block) => (block.includes(`name = "${NAME}"`) || block.includes(URL_) || /worktrust\.mjs/.test(block) ? "" : block));
+      const stripped = text.replace(/\n?\[\[mcp_servers\]\][\s\S]*?(?=\n\[|$)/g, (block) => (block.includes(`name = "${NAME}"`) || block.includes(URL_) || /worktrust(?:-launch)?\.(?:mjs|py)/.test(block) ? "" : block));
       console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}`);
       if (WRITE) writeFileSync(client.file, stripped);
     } else if (client.shape === "toml") {
@@ -291,7 +293,7 @@ for (const client of CLIENTS) {
       // Every block that names the door, under any name (a hand-made one too, 2026-10-04), or ours.
       // A block runs to the next table header at the START of a line, never to the next "[" — the
       // bridge's own `args = ["…", "mcp"]` holds one, and cutting there left half a block behind.
-      const stripped = text.replace(/\n?\[mcp_servers\.("?)([A-Za-z0-9_.-]+)\1\][\s\S]*?(?=\n\[|$)/g, (block, _q, name) => (name === NAME || block.includes(URL_) || /worktrust\.mjs/.test(block) ? "" : block));
+      const stripped = text.replace(/\n?\[mcp_servers\.("?)([A-Za-z0-9_.-]+)\1\][\s\S]*?(?=\n\[|$)/g, (block, _q, name) => (name === NAME || block.includes(URL_) || /worktrust(?:-launch)?\.(?:mjs|py)/.test(block) ? "" : block));
       console.log(`  − ${client.label}: ${WRITE ? "removed from" : "would remove from"} ${client.file}`);
       if (WRITE) writeFileSync(client.file, stripped);
     }

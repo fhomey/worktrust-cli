@@ -126,6 +126,9 @@ def main():
         # Package-manager selection is authoritative. This does not disable agent detection.
         env["WORKTRUST_RELAYED"] = "1"
         env["WORKTRUST_BUNDLED_RUNTIME_DIR"] = str(node.parent)
+        env["WORKTRUST_BUNDLED_PYTHON"] = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+        env.pop("NODE_OPTIONS", None)
+        env.pop("NODE_PATH", None)
         argv = [str(node), str(entry), *sys.argv[1:]]
         if os.name != "nt":
             os.execve(node, argv, env)

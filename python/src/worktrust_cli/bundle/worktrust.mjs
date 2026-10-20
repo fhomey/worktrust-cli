@@ -32,9 +32,7 @@
  * WHAT RUNS. From the npm package, everything that runs is in the package: this file,
  * `setup-mcp.mjs` (gives every AI app here the WorkTrust door), `log-session.mjs` (the session hook)
  * and `count-behaviour.mjs` (the local counter, pinned: never replaced from the network), with
- * `transcript-readers.mjs` (how Codex and Antigravity logs are read, imported by the last two). Nothing
- * is downloaded. Run as a single file from WorkTrust's site instead, it fetches those from that
- * same site, and says so before it asks.
+ * `transcript-readers.mjs` (how Codex and Antigravity logs are read, imported by the last two). Individual support scripts are never downloaded or executed outside the complete release.
  * HOW THE ACCOUNT IS DECIDED. By default this terminal listens on 127.0.0.1 for one answer and holds
  * a PKCE secret. Your browser opens WorkTrust, you approve this computer there (signed in, second
  * factor), and the browser is sent back to 127.0.0.1 with a one-time code that only this terminal,
@@ -67,10 +65,12 @@ import { createHash, createPublicKey, generateKeyPairSync, randomBytes, sign } f
 import { createServer } from "node:http";
 import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, hostname, platform } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, basename } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { createInterface as lines } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+const { moduleArgs, moduleExecutable, readPrivateFile, writePrivateFile } = await import("./package-integrity.mjs").catch(() => ({}));
 
 const args = process.argv.slice(2);
 const VALUED = ["--name", "--origin", "--url", "--export", "--from-folder"];
@@ -78,7 +78,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.24";
+const CLI_VERSION = "0.10.25";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -125,7 +125,7 @@ async function post(path, body) {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 }
 
-/** The three scripts: from the package when it carries them; otherwise from the same site, once, into ~/.worktrust. */
+/** Every helper belongs to this complete release. No loose-file download fallback. */
 async function scripts() {
   if (BUNDLED) return Object.fromEntries(SCRIPTS.map((name) => [name, join(HERE, name)]));
   fail("Use the complete official npm/Python package or preservation kit. Individual scripts are not downloaded or executed without release verification.");
@@ -142,7 +142,7 @@ function historyQueueScope(token) {
 /** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
 function run(path, scriptArgs, token, collect = false, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [...NODE_FLAGS, path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(token), ...extraEnv } });
+    const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, basename(path), scriptArgs)], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_NODE_ARGS: JSON.stringify(NODE_ARGS), WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(token), ...extraEnv } });
     let out = "";
     child.stdout?.on("data", (chunk) => { out += chunk; });
     child.stderr?.on("data", (chunk) => { out += chunk; });
@@ -272,7 +272,7 @@ async function pairByCode(host, extra) {
 let NODE = process.env.WORKTRUST_BUNDLED_RUNTIME_DIR ? process.execPath : (process.env.PATH ?? "").split(OS === "windows" ? ";" : ":").map((dir) => join(dir, OS === "windows" ? "node.exe" : "node")).find((path) => existsSync(path)) ?? process.execPath;
 const KEY_FILE = join(HOME_DIR, "key.json");
 const STABLE_FILE = join(HOME_DIR, "worktrust.mjs");
-let STABLE = STABLE_FILE, runtimePrepared = false;
+let STABLE = join(HERE, "worktrust-launch.mjs"), runtimePrepared = false, NODE_ARGS = [];
 const RENEW_EVERY_MS = 7 * 24 * 3600_000;
 const KEY_PLACE = "~/.worktrust/key.json (only you can read it)";
 const ensureHome = () => { mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 }); try { chmodSync(HOME_DIR, 0o700); } catch { /* Windows */ } };
@@ -280,6 +280,10 @@ const ensureHome = () => { mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 })
 /** A tool-runner cache is disposable. Install the whole verified runtime/engine before changing wiring. */
 async function prepareBundledRuntime() {
   if (runtimePrepared) return;
+  const installedLauncher = join(dirname(HERE), "worktrust-launch.py");
+  if (moduleExecutable(HERE) !== process.execPath) {
+    NODE = process.env.WORKTRUST_BUNDLED_PYTHON; NODE_ARGS = ["-I"]; STABLE = installedLauncher; runtimePrepared = true; return;
+  }
   if (!process.env.WORKTRUST_BUNDLED_RUNTIME_DIR) {
     if (existsSync(join(HERE, "package-release.json"))) {
       if (existsSync(HOME_DIR) && (!lstatSync(HOME_DIR).isDirectory() || lstatSync(HOME_DIR).isSymbolicLink())) fail("the WorkTrust directory must be a directory, not a symlink.");
@@ -291,11 +295,11 @@ async function prepareBundledRuntime() {
   if (existsSync(HOME_DIR) && (!lstatSync(HOME_DIR).isDirectory() || lstatSync(HOME_DIR).isSymbolicLink())) fail("the WorkTrust directory must be a directory, not a symlink.");
   ensureHome();
   const installed = installRuntime(process.env.WORKTRUST_BUNDLED_RUNTIME_DIR, HERE, HOME_DIR, ["worktrust.mjs", ...SCRIPTS, "preserve.mjs", "preserve-lines.mjs", "preserve-summary.mjs"]);
-  NODE = installed.executable; STABLE = installed.bridge; runtimePrepared = true;
+  NODE = installed.executable; NODE_ARGS = installed.args; STABLE = installed.bridge; runtimePrepared = true;
 }
 function saveStableEntry() {
-  const temporary = `${STABLE_FILE}.${randomBytes(8).toString("hex")}.tmp`;
-  try { writeFileSync(temporary, readFileSync(fileURLToPath(import.meta.url)), { flag: "wx", mode: 0o600 }); renameSync(temporary, STABLE_FILE); }
+  const target = join(HOME_DIR, "installed-release.json"), temporary = `${target}.${randomBytes(8).toString("hex")}.tmp`;
+  try { writeFileSync(temporary, JSON.stringify({ version: CLI_VERSION }), { flag: "wx", mode: 0o600 }); renameSync(temporary, target); }
   finally { try { rmSync(temporary); } catch { /* already renamed */ } }
 }
 
@@ -309,14 +313,16 @@ function saveStableEntry() {
 const keyStore = {
   /** Written whole or not at all: a temporary file renamed over the old one. */
   save(entry) {
-    ensureHome();
-    const temporary = `${KEY_FILE}.${process.pid}.tmp`;
-    writeFileSync(temporary, Buffer.from(JSON.stringify(entry)).toString("base64"), { mode: 0o600 });
-    try { chmodSync(temporary, 0o600); } catch { /* Windows */ }
-    renameSync(temporary, KEY_FILE);
+    writePrivateFile(KEY_FILE, Buffer.from(JSON.stringify(entry)).toString("base64"));
   },
   load() {
-    try { return JSON.parse(Buffer.from(readFileSync(KEY_FILE, "utf8"), "base64").toString("utf8")); } catch { return null; }
+    const bytes = readPrivateFile(KEY_FILE);
+    if (bytes === null) return null;
+    try {
+      const entry = JSON.parse(Buffer.from(bytes, "base64").toString("utf8"));
+      if (!entry || Array.isArray(entry) || typeof entry !== "object" || typeof entry.token !== "string" || !entry.token) throw Error();
+      return entry;
+    } catch { throw Error("KEY_FILE_INVALID"); }
   },
   erase() { try { rmSync(KEY_FILE); } catch { /* gone */ } },
 };
@@ -467,7 +473,7 @@ function sweepAtMostHourly() {
   const stamp = join(HOME_DIR, "bridge-swept-at");
   try { if (Date.now() - Number(readFileSync(stamp, "utf8")) < 3_600_000) return; } catch { /* never swept here */ }
   try { mkdirSync(HOME_DIR, { recursive: true }); writeFileSync(stamp, String(Date.now())); } catch { return; }
-  try { spawn(process.execPath, [...NODE_FLAGS, fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next start sweeps */ }
+  try { spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", ["hook"])], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next start sweeps */ }
 }
 
 async function bridge() {
@@ -510,7 +516,7 @@ async function hook() {
   if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
   if (!key) return;
-  const child = spawn(process.execPath, [...NODE_FLAGS, join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
+  const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "log-session.mjs", args.filter((arg) => arg !== "hook"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
   process.exitCode = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code) => resolve(code ?? 1)); });
 }
 
@@ -533,7 +539,7 @@ async function antigravityStop() {
     process.stdin.on("end", () => { clearTimeout(timer); resolve(text); });
     process.stdin.on("error", () => { clearTimeout(timer); resolve(text); });
   });
-  try { spawn(process.execPath, [...NODE_FLAGS, fileURLToPath(import.meta.url), "hook", "--antigravity"], { detached: true, stdio: "ignore", env: { ...process.env, WORKTRUST_HOOK_INPUT: input.slice(0, 65536) } }).unref(); } catch { /* the next run sweeps it */ }
+  try { spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", ["hook", "--antigravity"])], { detached: true, stdio: "ignore", env: { ...process.env, WORKTRUST_HOOK_INPUT: input.slice(0, 65536) } }).unref(); } catch { /* the next run sweeps it */ }
   process.stdin.pause(); return;
 }
 
@@ -547,7 +553,7 @@ async function antigravityStop() {
 async function sessionEnd() {
   writeSync(1, "{}\n");
   if (!process.stdin.isTTY) await new Promise((resolve) => { const timer = setTimeout(resolve, 2000); process.stdin.on("data", () => {}); process.stdin.on("end", () => { clearTimeout(timer); resolve(); }); process.stdin.on("error", () => { clearTimeout(timer); resolve(); }); });
-  try { spawn(process.execPath, [...NODE_FLAGS, fileURLToPath(import.meta.url), "hook"], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
+  try { spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", ["hook"])], { detached: true, stdio: "ignore" }).unref(); } catch { /* the next run sweeps it */ }
   process.stdin.pause(); return;
 }
 
@@ -583,7 +589,7 @@ async function update() {
   // Out first, then in: an app that held a key of its own (a hand-made entry) moves onto the bridge.
   await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token, true);
   if ((await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
-  const hookArgs = ["--install", ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), "--via", STABLE];
+  const hookArgs = ["--install", "--via", STABLE];
   if ((await run(paths["log-session.mjs"], hookArgs, key.token, false)).code !== 0) fail("installing the session hook failed; the output above says where.");
   // Codex installed since, or a No said at connect: the one question, asked again (or "already set").
   await offerCodex();
@@ -611,7 +617,6 @@ async function connect() {
     if (!has("replace") && !(await ask("Couple it again?", false))) { say("  Stopped. Nothing was changed: this computer stays coupled as it is."); return; }
     say();
   }
-  if (!BUNDLED) say(`  The three scripts that do the work are downloaded from ${ORIGIN} first. From npm they come in the package.\n`);
   const paths = await scripts();
   const direct = has("direct");
   const plan = await run(paths["setup-mcp.mjs"], direct ? [] : ["--bridge", STABLE], PLACEHOLDER, true);
@@ -623,7 +628,7 @@ async function connect() {
   if (foundApps.length === 0) say("    (no AI app found here yet; run connect again after installing one)");
   if (!direct) say(`  3. The key is kept in ${KEY_PLACE}, works only on this computer (every call is signed) and is renewed every week.`);
   say(`  ${direct ? 3 : 4}. The session hook is installed:`);
-  say(`    + ${join(HOME_DIR, "log-session.mjs")} and ${join(HOME_DIR, "count-behaviour.mjs")}${BUNDLED ? " (from this package, not updated from the network)" : ""}`);
+  say("    + The hook and counter from the checked release, retained outside the package-manager cache");
   say(`    + ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd and PreCompact run it`);
   say();
   say("  Sent to WorkTrust afterwards: durations, token counts, model names, a layer keyword, counts,");
@@ -661,7 +666,7 @@ async function connect() {
   // A NEW COUPLING SENDS NOTHING FROM BEFORE IT (log-session THE FLOORS): `--from-now` for a first coupling and a change
   // of account; the same account coupled again keeps its watermarks. A change of account also closes the history offer.
   const floors = !previous || switched ? ["--from-now", ...(switched ? ["--history-floor", "now"] : [])] : [];
-  const hookArgs = ["--install", ...floors, ...(BUNDLED ? ["--counter", paths["count-behaviour.mjs"]] : []), ...(direct ? [] : ["--via", STABLE])];
+  const hookArgs = ["--install", ...floors, "--via", STABLE, ...(direct ? ["--direct"] : [])];
   if ((await run(paths["log-session.mjs"], hookArgs, token, false, { WORKTRUST_CODEX_OFFER: "1" })).code !== 0) fail("installing the session hook failed; the output above says where.");
   await offerCodex();
   await offerAntigravity();
@@ -720,7 +725,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
 }
 
 /** The version stamped in the stable copy in ~/.worktrust, the CLI this computer ran before an update; null without one. */
-const stableVersion = () => { try { return /const CLI_VERSION = "([^"]+)";/.exec(readFileSync(STABLE_FILE, "utf8"))?.[1] ?? null; } catch { return null; } };
+const stableVersion = () => { try { const installed = JSON.parse(readFileSync(join(HOME_DIR, "installed-release.json"), "utf8")); if (/^\d+\.\d+\.\d+$/.test(installed.version)) return installed.version; } catch { /* older registration */ } try { return /const CLI_VERSION = "([^"]+)";/.exec(readFileSync(STABLE_FILE, "utf8"))?.[1] ?? null; } catch { return null; } };
 
 /**
  * OFFERED ONCE, BY `update`, IN PLAIN WORDS (owner, 2026-10-07): when the computer's earlier lines were made by an earlier CLI
@@ -937,9 +942,9 @@ function writeCodex(rows) {
 async function offerCodex() {
   if (!existsSync(join(homedir(), ".codex"))) { if (command === "codex") say("  Codex is not on this computer (no ~/.codex)."); return; }
   const viaBridge = existsSync(STABLE);
-  const hookFile = viaBridge ? STABLE : join(HOME_DIR, "log-session.mjs");
+  const hookFile = STABLE;
   if (!existsSync(hookFile)) { say("  Couple this computer first: npx worktrust"); return; }
-  const desired = () => `notify = [${(viaBridge ? [NODE, STABLE, "hook", "--codex-notify"] : [NODE, hookFile, "--codex-notify"]).map((part) => JSON.stringify(part)).join(", ")}]`;
+  const desired = () => `notify = [${(viaBridge ? [NODE, ...NODE_ARGS, STABLE, "hook", "--codex-notify"] : [NODE, ...NODE_ARGS, hookFile, "--codex-notify"]).map((part) => JSON.stringify(part)).join(", ")}]`;
   let want = desired();
   const found = codexNotify();
   say();
@@ -986,7 +991,7 @@ function writeAgyHooks(hooks) {
 async function offerAntigravity() {
   if (!antigravityHere()) { if (command === "antigravity") say("  Antigravity is not on this computer (no ~/.gemini/config or ~/.gemini/antigravity*)."); return; }
   if (!existsSync(STABLE)) { say("  Couple this computer first: npx worktrust"); return; }
-  const desired = () => ({ enabled: true, Stop: [{ type: "command", command: `"${NODE}" "${STABLE}" hook --antigravity-stop`, timeout: 10 }] });
+  const desired = () => ({ enabled: true, Stop: [{ type: "command", command: `"${NODE}" ${NODE_ARGS.map(arg => JSON.stringify(arg)).join(" ")}${NODE_ARGS.length ? " " : ""}"${STABLE}" hook --antigravity-stop`, timeout: 10 }] });
   let want = desired();
   const hooks = agyHooks();
   say();
@@ -1042,7 +1047,7 @@ async function disconnect() {
   previousNote.save(keyStore.load());
   keyStore.erase();
   // Everything of ours on this computer goes; the folder too, when nothing else is left in it.
-  for (const name of [STABLE, ...SCRIPTS.map((script) => join(HOME_DIR, downloaded(script))), join(HOME_DIR, "pinned")]) { try { rmSync(name); } catch { /* gone */ } }
+  for (const name of [STABLE_FILE, ...SCRIPTS.map((script) => join(HOME_DIR, downloaded(script))), join(HOME_DIR, "pinned")]) { try { rmSync(name); } catch { /* gone */ } }
   try { rmSync(HOME_DIR, { recursive: false }); } catch { /* not empty, or gone */ }
   say();
   say("  Done. Revoke the key in WorkTrust to finish.");
@@ -1102,12 +1107,12 @@ async function status() {
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
   if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
   let hook = false;
-  try { hook = /log-session|worktrust\.mjs\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
+  try { hook = /log-session|worktrust(?:-launch)?\.(?:mjs|py)\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
   say(hook ? "  Session hook: installed" : "  Session hook: not installed");
   if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust update asks)"); }
-  if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust\.mjs\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust update writes it)"); }
+  if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust(?:-launch)?\.(?:mjs|py)\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust update writes it)"); }
   if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust update asks)");
-  say(existsSync(join(HOME_DIR, "pinned")) ? "  Counter: from the package, pinned" : existsSync(join(HOME_DIR, "count-behaviour.mjs")) ? "  Counter: follows the site" : "  Counter: not installed");
+  say("  Counter: from this release, checked by the official launcher");
   await measuredHere();
 }
 
@@ -1116,7 +1121,7 @@ async function status() {
  * with each stretch (kinds and counts, never text). Read here by the hook beside this file; nothing is sent to show it.
  */
 async function measuredHere() {
-  const hook = [join(HERE, "log-session.mjs"), join(HOME_DIR, "log-session.mjs")].find((path) => existsSync(path));
+  const hook = join(HERE, "log-session.mjs");
   if (!hook) return;
   // Through the CLI's one way of starting a script (never a synchronous child: check-computer-pairing), with no door to send to.
   const read = await run(hook, ["--evidence-summary"], "", true, { WORKTRUST_MCP_URL: "", WORKTRUST_HOOK_INPUT: "" });
@@ -1150,7 +1155,7 @@ function claudeKeepsDays() {
 async function preserve() {
   const script = join(HERE, "preserve.mjs");
   if (!existsSync(script)) fail("preserve runs from the package: npx worktrust@latest preserve");
-  const child = spawn(process.execPath, [...NODE_FLAGS, script, ...args.filter((arg) => arg !== "preserve")], { stdio: "inherit", env: { ...process.env, WORKTRUST_COLLECTOR: `worktrust-cli/${CLI_VERSION}` } });
+  const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "preserve.mjs", args.filter((arg) => arg !== "preserve"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_COLLECTOR: `worktrust-cli/${CLI_VERSION}` } });
   process.exitCode = await new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
 }
 
@@ -1201,6 +1206,7 @@ function help() {
 // before anything is read or written, --yes included. The hook and the MCP bridge are started by the agent's client
 // itself and stay as they are; `status` only reads.
 async function main() {
+if (!moduleArgs || !moduleExecutable) fail("Use the complete WorkTrust package from npm/PyPI or the signed preservation kit; individual scripts cannot run.");
 if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or later (fetch is built in from 18).");
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
 const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod"]);
@@ -1235,6 +1241,10 @@ async function relayToNewest() {
 }
 if (await relayToNewest()) return;
 
+if (!["version", "help", "preserve"].includes(command)) {
+  try { keyStore.load(); }
+  catch { fail("The local WorkTrust key file is unsafe or damaged. Upload stopped. Restore the private key file from your own backup, or reconnect using an official release."); }
+}
 if (command === "version") say(CLI_VERSION);
 else if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
 else if (command === "mcp") await bridge();

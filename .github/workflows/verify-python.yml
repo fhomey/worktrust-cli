@@ -63,6 +63,9 @@ jobs:
           python-version: '3.12'
           architecture: ${{ matrix.architecture }}
       - run: python -m pip install -r python/requirements-release.txt
+      - run: node tests/test-cli-execution-boundary.mjs
+        env:
+          WORKTRUST_TEST_CLI_SOURCE: .
       - run: python python/tests/test_runtime_build.py
       - run: python python/build_runtime.py --target ${{ matrix.target }}
       - name: Coupling survives removal of the tool-runner cache

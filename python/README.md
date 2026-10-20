@@ -207,3 +207,13 @@ This is release integrity, not proof that a local transcript is authentic. Local
 are not release files, and `cli_digest` is diagnostic client metadata. Hashes are not encryption.
 Computer-key revocation stops submissions; passport withdrawal invalidates a publication;
 neither silently erases historical account data. See the shared CLI SECURITY.md for the limits.
+
+### Persistent hooks in 0.10.25
+
+After pairing or update, client configuration starts the package manager's host Python with
+`-I` and a retained bootstrap. It checks the copied Node runtime and engine against the
+release-authenticated hashes before executing Node. No package-manager cache or crypto
+dependency is needed by this retained standard-library bootstrap; the host Python interpreter
+must remain installed. Node itself is still bundled, so no separate Node installation is needed.
+Changed files stop execution and request an official reinstall. This is integrity checking,
+not hardware attestation or validation of the person's local transcript.

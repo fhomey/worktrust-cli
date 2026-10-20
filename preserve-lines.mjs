@@ -3,6 +3,7 @@
  * and the behaviour signals joined on `stretch_ref`. A key not named here never reaches the archive. The capability
  * tranches (docs/CAPABILITY-EVIDENCE-ROADMAP.md) add their fields here, each with its own check.
  */
+import { moduleArgs, moduleExecutable } from "./package-integrity.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -25,7 +26,7 @@ const WORD = /^[a-z][A-Za-z]{1,31}$/;
 export function stretchSignals(here, say) {
   const counter = join(here, "count-behaviour.mjs");
   if (!existsSync(counter)) return null;
-  const run = spawnSync(process.execPath, [counter, "--stretch-signals", "--months", "120"], { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "" } });
+  const run = spawnSync(moduleExecutable(here), moduleArgs(here, "count-behaviour.mjs", ["--stretch-signals", "--months", "120"]), { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "" } });
   const rows = (run.stdout ?? "").split("\n").filter((text) => text.startsWith("{")).map((text) => { try { return JSON.parse(text); } catch { return null; } });
   const end = rows.at(-1)?.stretch_signals_end;
   if (run.status !== 0 || !Number.isInteger(end) || end !== rows.length - 1) { say("  The behaviour counter did not answer whole, so these lines carry no signals; the next run adds them to new lines."); return null; }

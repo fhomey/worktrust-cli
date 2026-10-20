@@ -9,11 +9,11 @@ private transcripts or account data in a public issue.
 
 - Setup changes client configuration and local coupling files; preservation can change retention
   settings and create or append archives. See the README for the paths and individual options.
-  A setup dry run is not a sandbox for the whole invocation: the standalone bootstrap can download
-  scripts first, and the interactive entry can check for a newer release.
+  The complete official release is required. Individual script download fallbacks are removed;
+  interactive commands may check for a newer release.
 - Submissions go to the configured WorkTrust MCP endpoint. Interactive commands can also contact
-  the npm registry for a version notice. The unpublished patch based on 0.10.21 no longer executes a newer version from that notice. The npm package bundles its runtime
-  modules, but installation and automatic relay still use the network. `preserve` itself is local.
+  the npm registry for a version notice. Release notices never execute a different version. The npm package bundles its runtime
+  modules, but package-manager installation and explicit upgrades still use the network. `preserve` itself is local.
   A custom `--origin`, URL or registry override changes whom you trust.
 - The key it receives is a WorkTrust coupling for this computer: it can submit work metadata to your
   record and cannot read your record back. Revoke it in WorkTrust at any time.
@@ -131,3 +131,23 @@ selection and consent. It is not an automatic SDK upload or an MCP submission. D
 recording does not erase a separately imported copy; delete that copy through the private app.
 See the service [privacy policy](https://worktrust.io/privacy) and
 [support](https://worktrust.io/support) for account data requests.
+
+## Execution boundary in 0.10.25
+
+The official launcher starts helpers from its checked release, never a loose counter, hook or
+reader in `~/.worktrust`. Its helper processes re-enter the launcher and its manifest check.
+A missing or changed release is refused with an instruction to reinstall; it is not repaired
+by downloading individual scripts. Earlier loose files may remain for recovery but are not
+used as executable fallbacks.
+
+Python's persistent installation now starts with the package manager's host Python in isolated
+mode. A standard-library bootstrap checks the copied Node binary and engine before Node
+executes, against hashes authenticated during installation. It does not trust a rewritten local
+`runtime.json` or `installation.json` to authorize changes. The initial Python package still
+verifies its publisher signature before installation. The host Python must remain available.
+
+Bootstrap files, host interpreters, client configuration and processes running as the owner
+remain trust boundaries. Replacing the bootstrap or racing file changes after a check cannot
+be prevented by self-verification on an owner-controlled computer. Generated Claude/OpenCode
+client plugins and user transcript/SDK inputs are not remote attestation. Server claim and
+publication gates remain necessary; a matching client hash never proves truthful activity.

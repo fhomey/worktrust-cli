@@ -510,3 +510,10 @@ claim eligibility remains the server publication gate's responsibility.
 Revoking a computer key stops new submissions, not the validity of every historical publication.
 Passport withdrawal is a separate audited operation. Neither operation automatically erases the
 person's prior data. Release signing keys, computer keys and passport signing keys are separate.
+
+In 0.10.25, hooks and helper processes from the official launcher stay inside the checked
+release. The old loose `~/.worktrust/count-behaviour.mjs` and individual-script download
+fallbacks are no longer executed. Persistent Python hooks use the host Python to check the
+copied Node runtime before starting it, even after the temporary uvx/pipx cache is removed.
+Keep that host Python installed. Updating preserves credentials, pending uploads and archives;
+it does not approve held history or publish a passport automatically.

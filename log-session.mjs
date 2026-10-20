@@ -60,11 +60,13 @@
  * honoured here too, matched against the transcript's project directory, before a file is read.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, openSync, closeSync, fsyncSync, linkSync, unlinkSync, constants } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, openSync, closeSync, fsyncSync, linkSync, unlinkSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
+
+import { moduleArgs, moduleExecutable } from "./package-integrity.mjs";
 
 async function main() {
 const args = process.argv.slice(2), NODE_FLAGS = process.versions.node === "26.5.0" ? ["--no-concurrent-sparkplug"] : [];
@@ -83,32 +85,13 @@ const exitFlushed = (code) => new Promise((resolve) => process.stdout.write("", 
  * may stage, only the owner may count — and a hook that could send counts by itself would put an
  * automatic writer on the one surface that describes how a person thinks.
  */
-const COUNTER = join(homedir(), ".worktrust", "count-behaviour.mjs");
-/** PINNED (2026-10-03): from the npm package, the counter is the package's copy, never refreshed from the network. */
+const RELEASE_DIR = dirname(fileURLToPath(import.meta.url));
+const COUNTER = join(RELEASE_DIR, "count-behaviour.mjs");
+/** Legacy marker, used only when the person explicitly purges the old installation. */
 const PINNED = join(homedir(), ".worktrust", "pinned");
 /** A hook command is ours when it runs this file, or the `worktrust hook` wrapper that hands it the key from the key file. */
-const ours = (command) => /log-session|worktrust\.mjs" hook|worktrust\.mjs hook/.test(String(command ?? ""));
+const ours = (command) => /log-session|worktrust(?:-launch)?\.(?:mjs|py)" (?:hook|--internal-module)|worktrust(?:-launch)?\.(?:mjs|py) hook/.test(String(command ?? ""));
 const COUNTER_EVERY_MS = 24 * 3600_000;
-/**
- * Counter compatibility is pinned by the verified release.
- */
-const versionOf = (text) => /export const ANALYZER_VERSION = "counter@(\d+)\.(\d+)\.(\d+)"/.exec(text ?? "")?.slice(1, 4).map(Number) ?? null;
-const newer = (a, b) => { if (!a || !b) return false; for (let i = 0; i < 3; i += 1) { if (a[i] === b[i]) continue; return a[i] > b[i]; } return false; };
-async function refreshCounter(origin, announce) {
-  if (!origin || !existsSync(COUNTER) || existsSync(PINNED)) return false;
-  try {
-    const response = await fetch(`${origin}/counter/count-behaviour.mjs`);
-    if (!response.ok) return false;
-    const remote = await response.text();
-    const have = versionOf(readFileSync(COUNTER, "utf8")), theirs = versionOf(remote);
-    if (!newer(theirs, have)) return false;
-    writeFileSync(COUNTER, remote);
-    await installReaders(origin, true);
-    announce?.(`counter: updated to counter@${theirs.join(".")} (was counter@${have?.join(".") ?? "?"}) — the next reading counts under the new rubric`);
-    return true;
-  } catch { return false; }
-}
-
 /**
  * The live door refuses stretches older than two days; older work uses the history door.
  *
@@ -254,20 +237,6 @@ const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] ==
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
 const READER_FILES = ["history-outbox.mjs", "transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
-/** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
-async function installReaders(origin, fromNetwork = false) {
-  let installed = true;
-  for (const name of READER_FILES) { // Hermes, Goose, OpenCode and OpenClaw are read by session-databases.mjs
-    const here = join(dirname(fileURLToPath(import.meta.url)), name), home = join(homedir(), ".worktrust", name);
-    try {
-      if (!fromNetwork && existsSync(here)) { mkdirSync(dirname(home), { recursive: true }); if (here !== home) copyFileSync(here, home); continue; }
-      const response = origin ? await fetch(`${origin}/counter/${name}`) : null;
-      if (response?.ok) writeFileSync(home, await response.text()); else installed = false;
-    } catch { installed = false; }
-  }
-  return installed;
-}
-
 /** The roots this machine's transcripts live under; a test names its own. */
 const claudeRoot = () => value("transcript-root") ?? join(homedir(), ".claude", "projects");
 const codexRoot = () => { const given = value("codex-root"); if (given) return given.replace(/^~(?=\/|$)/, homedir()); return value("transcript-root") ? null : join(homedir(), ".codex", "sessions"); };
@@ -1070,7 +1039,7 @@ if (flag("uninstall")) {
   }
   const removed = before !== JSON.stringify(HOOK_EVENTS.map((event) => settings.hooks?.[event] ?? []));
   if (removed) writeFileSync(file, JSON.stringify(settings, null, 2));
-  if (flag("purge")) for (const path of [COUNTER, PINNED, join(homedir(), ".worktrust", "log-session.mjs"), STATE, ...READER_FILES.map((name) => join(homedir(), ".worktrust", name)), join(homedir(), ".worktrust", "antigravity.json")]) { try { rmSync(path); } catch { /* already gone */ } }
+  if (flag("purge")) for (const path of [join(homedir(), ".worktrust", "count-behaviour.mjs"), PINNED, join(homedir(), ".worktrust", "log-session.mjs"), STATE, ...READER_FILES.map((name) => join(homedir(), ".worktrust", name)), join(homedir(), ".worktrust", "antigravity.json")]) { try { rmSync(path); } catch { /* already gone */ } }
   console.log(`${removed ? "removed" : "nothing wired"}: ${file}${flag("purge") ? "\n         purged ~/.worktrust" : ""}`);
   console.log("the coupling itself still exists: end it in the app (Sources → the computer's row → end this coupling)");
   return await exitFlushed(0);
@@ -1085,32 +1054,17 @@ if (flag("install")) {
     if (value("history-floor") === "now") floors.__historyFloor = now;
     writeState(floors);
   }
-  // Wired to SessionEnd, not to every reply: the door asks for one call per PIECE of work, and a
-  // hook that fired per message would report a hundred stretches for one afternoon.
-  //
-  // AND WIRED TO A PATH THAT SURVIVES. `curl -O` leaves the file wherever the terminal happened to
-  // be — a Downloads folder, a repository, a temp directory somebody empties on Monday — and a
-  // hook whose command has gone missing fails silently, which on this record is indistinguishable
-  // from a person who stopped working. So install copies itself to ~/.worktrust and wires that.
-  const home = join(homedir(), ".worktrust", "log-session.mjs");
-  const self = process.argv[1];
-  // The copy that runs is refreshed from the file you ran — and SAYS so, because "already installed —
-  // nothing changed" after a newer download read as "your hook is old" to the person who had just updated it.
-  let hookRefreshed = false;
-  if (self !== home) {
-    const next = readFileSync(self, "utf8");
-    const current = existsSync(home) ? readFileSync(home, "utf8") : null;
-    mkdirSync(dirname(home), { recursive: true });
-    if (current !== next) { writeFileSync(home, next); hookRefreshed = current !== null; }
+  // Only complete, verified releases may be installed. Old loose scripts are never copied or fetched.
+  const home = join(RELEASE_DIR, "log-session.mjs");
+  let via = value("via");
+  if (!via) {
+    const { installSignedPackage } = await import("./package-integrity.mjs");
+    via = installSignedPackage(RELEASE_DIR, join(homedir(), ".worktrust"));
   }
-  // A counter handed over by the package (`--counter <path>`) is copied and pinned: nothing below fetches one.
-  const given = args.indexOf("--counter") >= 0 ? args[args.indexOf("--counter") + 1] : null;
-  if (given) { mkdirSync(dirname(COUNTER), { recursive: true }); writeFileSync(COUNTER, readFileSync(given, "utf8")); writeFileSync(PINNED, "the counter comes with the worktrust package; it is not refreshed from the network\n"); console.log(`counter: ${COUNTER} — from the package, pinned`); }
   const file = join(homedir(), ".claude", "settings.json");
   const settings = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-  // `--via <worktrust.mjs>`: the key lives in ~/.worktrust/key.json, so Claude Code runs the wrapper, which reads it and starts this hook.
-  const via = args.indexOf("--via") >= 0 ? args[args.indexOf("--via") + 1] : null;
-  const command = `"${process.env.WORKTRUST_NODE || process.execPath}" "${via ?? home}"${via ? " hook" : ""}`;
+  const direct = flag("direct");
+  const command = `"${process.env.WORKTRUST_NODE || process.execPath}"${process.env.WORKTRUST_NODE_ARGS === '["-I"]' ? " -I" : ""} "${via}"${direct ? " --internal-module log-session.mjs" : " hook"}`;
   settings.hooks ??= {};
   for (const event of HOOK_EVENTS) settings.hooks[event] ??= [];
   // A WIRING THAT POINTS SOMEWHERE ELSE IS REPAIRED, NOT LEFT. An earlier install wired whatever
@@ -1135,24 +1089,7 @@ if (flag("install")) {
   // how a person ends up certain that a thing works which does not.
   const added = HOOK_EVENTS.filter((event) => !wired.has(event));
   const already = added.length === 0;
-  // The counting half, from the same deployment the hook came from: one command installs both, or
-  // says plainly that it could not — a half nobody knows is missing is the worse outcome.
-  const counterOrigin = coupling()?.url ? new URL(coupling().url).origin : null;
-  if (!(await installReaders(counterOrigin))) console.log("readers:   transcript-readers.mjs or session-databases.mjs not found beside this file nor at the deployment; the clients they read are not read until they are");
-  if (existsSync(COUNTER)) await refreshCounter(counterOrigin, (line) => console.log(line));
-  if (!existsSync(COUNTER)) {
-    const origin = counterOrigin;
-    if (!origin) console.log("counter: not installed — no coupling found to name the deployment; fetch /counter/count-behaviour.mjs yourself");
-    else {
-      try {
-        const response = await fetch(`${origin}/counter/count-behaviour.mjs`);
-        if (!response.ok) throw new Error(String(response.status));
-        writeFileSync(COUNTER, await response.text());
-        console.log(`counter: ${COUNTER} — it runs once a day from this hook and STAGES its reading; nothing counts until you click Import in the app`);
-      } catch (error) { console.log(`counter: could not fetch it (${error.message}) — the hook works without it; fetch /counter/count-behaviour.mjs later`); }
-    }
-  }
-  if (already && !repaired) { console.log(hookRefreshed ? `hook updated: ${home} now runs the version you downloaded; the wiring was already right (${command})` : `already installed — nothing changed (${command})`); return await exitFlushed(0); }
+  if (already && !repaired) { console.log(`already installed — nothing changed (${command})`); return await exitFlushed(0); }
   for (const event of added) settings.hooks[event].push({ hooks: [{ type: "command", command }] });
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(settings, null, 2));
@@ -1234,7 +1171,7 @@ if (flag("history") && flag("from-archive")) {
   // archive must still verify whole, and only stretches no longer in any AI app here travel.
   let ownKey = null;
   try { ownKey = pem ? createPublicKey(createPrivateKey(pem)).export({ format: "jwk" }).x : null; } catch { ownKey = null; }
-  const verified = spawnSync(process.execPath, [...NODE_FLAGS, join(dirname(fileURLToPath(import.meta.url)), "preserve.mjs"), "--verify", dir], { encoding: "utf8" });
+  const verified = spawnSync(moduleExecutable(RELEASE_DIR), [...moduleArgs(RELEASE_DIR, "preserve.mjs", ["--verify", dir])], { encoding: "utf8" });
   if (verified.status !== 0) { say(`The archive in ${dir} does not verify, so nothing was sent: ${(verified.stdout || verified.stderr || "").trim().split("\n").pop()}`); return await exitFlushed(1); }
   const { archiveEntries = null } = (await import("./preserve-lines.mjs").catch(() => null)) ?? {};
   if (!archiveEntries) { say("preserve-lines.mjs is not beside this file. Nothing was sent."); return await exitFlushed(1); }
@@ -1360,12 +1297,10 @@ if (!DRY && (sent > 0 || filed > 0)) writeState(state);
 // `--send`: staging is idempotent on the reading's own digest, so a day that changed nothing
 // leaves nothing behind.
 if (!DRY && existsSync(COUNTER)) {
-  // Before the day's count: the deployment's counter, if it is newer than the one on this machine.
-  await refreshCounter(door?.url ? new URL(door.url).origin : null, (line) => console.log(line));
   const last = state.__counter?.at ? Date.parse(state.__counter.at) : 0;
   if (Date.now() - last > COUNTER_EVERY_MS) {
     try {
-      const child = spawn(process.execPath, [...NODE_FLAGS, COUNTER, "--stage"], { detached: true, stdio: "ignore" });
+      const child = spawn(moduleExecutable(RELEASE_DIR), moduleArgs(RELEASE_DIR, "count-behaviour.mjs", ["--stage"]), { detached: true, stdio: ["ignore", "ignore", "inherit"] });
       child.unref();
       state.__counter = { at: new Date().toISOString() };
       writeState(state);

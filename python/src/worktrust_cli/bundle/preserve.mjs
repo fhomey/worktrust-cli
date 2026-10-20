@@ -23,6 +23,7 @@
  * (`prev`, `hash`), appended and never rewritten; each day has proofs/<day>.json, its root, signed with the device key
  * (~/.worktrust/key.json) when there is one. Today waits for the next run. Nothing leaves this computer.
  */
+import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
@@ -185,13 +186,13 @@ function computerIds() {
 /** This computer's own secret for the archive's project hashes (0.8.6): made once, readable by its owner alone, never archived. */
 function archiveSalt() {
   const file = home(".worktrust", "archive-salt");
-  try { const kept = readFileSync(file, "utf8").trim(); if (/^[0-9a-f]{64}$/.test(kept)) return kept; } catch { /* first run */ }
-  try { mkdirSync(home(".worktrust"), { recursive: true, mode: 0o700 }); const made = randomBytes(32).toString("hex"); writeFileSync(file, `${made}\n`, { mode: 0o600, flag: "wx" }); return made; } catch { try { return readFileSync(file, "utf8").trim(); } catch { return null; } }
+  try { const kept = readPrivateFile(file)?.trim(); if (/^[0-9a-f]{64}$/.test(kept)) return kept; } catch { /* first run */ }
+  try { const made = randomBytes(32).toString("hex"); createPrivateFile(file, `${made}\n`); return made; } catch { try { return readPrivateFile(file)?.trim() ?? null; } catch { return null; } }
 }
 /** The device key, when this computer is coupled: its private half signs, its public half goes into the proof. */
 function deviceKey() {
   try {
-    const key = JSON.parse(Buffer.from(readFileSync(home(".worktrust", "key.json"), "utf8"), "base64").toString("utf8"));
+    const key = JSON.parse(Buffer.from(readPrivateFile(home(".worktrust", "key.json")), "base64").toString("utf8"));
     const privateKey = createPrivateKey(key.device);
     return { privateKey, publicX: createPublicKey(privateKey).export({ format: "jwk" }).x, kind: "device" };
   } catch { return null; }
@@ -207,7 +208,7 @@ function deviceKey() {
 const ARCHIVE_KEY_FILE = home(".worktrust", "archive-key.json");
 function archiveKey(create = false) {
   try {
-    const kept = JSON.parse(readFileSync(ARCHIVE_KEY_FILE, "utf8"));
+    const kept = JSON.parse(readPrivateFile(ARCHIVE_KEY_FILE));
     const privateKey = createPrivateKey(kept.private);
     return { privateKey, publicX: createPublicKey(privateKey).export({ format: "jwk" }).x, kind: "archive", made: false };
   } catch { /* none yet, or unreadable */ }
@@ -215,10 +216,7 @@ function archiveKey(create = false) {
   try {
     const pair = generateKeyPairSync("ed25519");
     const privatePem = pair.privateKey.export({ format: "pem", type: "pkcs8" }), publicX = pair.publicKey.export({ format: "jwk" }).x;
-    mkdirSync(home(".worktrust"), { recursive: true, mode: 0o700 });
-    try { chmodSync(home(".worktrust"), 0o700); } catch { /* Windows */ }
-    writeFileSync(ARCHIVE_KEY_FILE, `${JSON.stringify({ format: "worktrust-archive-key/1", public: publicX, private: privatePem, created: new Date().toISOString() }, null, 1)}\n`, { mode: 0o600, flag: "wx" });
-    try { chmodSync(ARCHIVE_KEY_FILE, 0o600); } catch { /* Windows */ }
+    createPrivateFile(ARCHIVE_KEY_FILE, `${JSON.stringify({ format: "worktrust-archive-key/1", public: publicX, private: privatePem, created: new Date().toISOString() }, null, 1)}\n`);
     return { privateKey: pair.privateKey, publicX, kind: "archive", made: true };
   } catch { return archiveKey(false); }
 }
@@ -289,7 +287,7 @@ function archive(dir) {
   IDS = computerIds();
   const existing = existsSync(join(dir, "manifest.json")) || readArchive(dir).length > 0 ? check(dir) : { lines: [], manifest: null };
   if (existing.broken) { say(`  The archive in ${dir} does not verify, so nothing was added: ${existing.broken}`); process.exit(1); }
-  const hook = spawnSync(process.execPath, [join(HERE, "log-session.mjs"), "--archive-lines"], { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "", WORKTRUST_HOOK_INPUT: "" } });
+  const hook = spawnSync(moduleExecutable(HERE), moduleArgs(HERE, "log-session.mjs", ["--archive-lines"]), { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "", WORKTRUST_HOOK_INPUT: "" } });
   if (hook.status !== 0) { say(`  The session hook could not read this computer's sessions: ${(hook.stderr || "").trim().split("\n").pop()}`); process.exit(1); }
   // A WHOLE ANSWER OR NOTHING: the hook ends with its own count; one line missing or cut is a read to refuse, never part of an archive.
   const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();

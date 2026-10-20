@@ -11,7 +11,9 @@ function invoke(executable, args, input) {
   // Do not inherit credential-bearing WorkTrust environment variables into the OS helper.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(WORKTRUST_|NODE_|PYTHON|DYLD_|LD_)/.test(key)));
   if (process.platform === "darwin") env.HOME = userInfo().homedir; // Keychain belongs to the OS user, not a caller-supplied HOME.
-  const r = spawnSync(executable, args, { input, env, encoding: 'utf8', timeout: 8000, maxBuffer: 32768, windowsHide: true });
+  // Windows PowerShell compiles the small Credential Manager binding on every call; a cold start on a slow or busy
+  // machine passed eight seconds on native CI (2026-10-20), so it gets thirty there. Elsewhere eight remain.
+  const r = spawnSync(executable, args, { input, env, encoding: 'utf8', timeout: process.platform === 'win32' ? 30000 : 8000, maxBuffer: 32768, windowsHide: true });
   if (r.error || r.status !== 0) throw Error('KEYSTORE_UNAVAILABLE');
   return r.stdout.trim();
 }

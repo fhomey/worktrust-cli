@@ -7,7 +7,7 @@
     "count-behaviour.mjs": "1beaec2a4d0aead76d166f89cc52441a9cf48f2e69da9888ca2091dd3a10a37b",
     "credential-store.mjs": "a4b3540a61f4ce19e535c7f1d260c0d817686cd066d559a76db2ab108144abba",
     "credential-vault-scripts.mjs": "7e42fe1db3885c2dec6f1de87bebfbefe2292d29179a68f3da87d19eb6c7704b",
-    "credential-vault.mjs": "5dd584e0149909d0e52d5eb071366225f7c450367c6c4c355d724c2b518d6b2f",
+    "credential-vault.mjs": "279baabb217e2a3f170e8d7f2b271a88484531f9031c441360ea91561a70da99",
     "history-outbox.mjs": "1bdca17b807c76e4a8e7bf42c6f07e12e8ae8e4466417cafdd26b1f58bf178a5",
     "log-session.mjs": "c5e6e4d44a85768f21c25945b8630f31306ec2665193886870c1010ef6bf3c26",
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",

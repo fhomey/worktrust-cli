@@ -24,7 +24,9 @@ try {
   const archiveSigner = readDeviceSigningKey(file), metadata = Buffer.from('synthetic metadata digest');
   assert(verify(null, metadata, pair.publicKey, sign(null, metadata, archiveSigner.privateKey)), 'offline archive reader preserves the protected device signing identity');
   const env = { HOME: root, USERPROFILE: root, PATH: process.env.PATH || '', WORKTRUST_MACHINE_ID: 'synthetic-keystore-fixture' };
-  for (const name of ['SystemRoot','SYSTEMROOT','WINDIR','COMSPEC','TEMP','TMP','DBUS_SESSION_BUS_ADDRESS','XDG_RUNTIME_DIR']) if(process.env[name]) env[name]=process.env[name];
+  // The variables every Windows process carries: without them Windows PowerShell hangs before the vault call
+  // (native CI, 2026-10-20: over 30 s trimmed, 0.5 s with them), which a real hook or terminal never meets.
+  for (const name of ['SystemRoot','SYSTEMROOT','WINDIR','COMSPEC','TEMP','TMP','DBUS_SESSION_BUS_ADDRESS','XDG_RUNTIME_DIR','APPDATA','LOCALAPPDATA','ProgramData','ProgramFiles','ProgramFiles(x86)','CommonProgramFiles','PSModulePath','USERNAME','USERDOMAIN','PATHEXT','SystemDrive','ALLUSERSPROFILE','PUBLIC','NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE','OS']) if(process.env[name]) env[name]=process.env[name];
   const r = spawnSync(process.execPath, [join(source, 'worktrust.mjs'), 'status'], { env, input: '', encoding: 'utf8', timeout: 15000 });
   assert.equal(r.status, 0, `real CLI status reads protected credentials in a separate process: ${r.stderr}`);
   assert.match(r.stdout, /OS vault \+ encrypted local file/);

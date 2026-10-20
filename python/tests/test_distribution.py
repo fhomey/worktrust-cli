@@ -128,11 +128,16 @@ with tempfile.TemporaryDirectory(prefix="worktrust-python-test-") as temporary:
     source_root = next(source_directory.iterdir())
     source_build = subprocess.run([sys.executable,"-m","build","--wheel","--no-isolation",str(source_root)],env=buildenv,capture_output=True,text=True)
     check(source_build.returncode != 0 and "Bundled runtime is absent" in source_build.stdout+source_build.stderr, "unstaged sdist wheel fails closed without runtime download")
-    # Real Node intercepts argv before core dispatch; no platform-specific fake executable.
+    # A synthetic transport fixture selects an entry explicitly; NODE_OPTIONS is never a permitted bypass.
     intercept = scratch/"intercept.mjs"
     intercept.write_text("console.log(JSON.stringify({args:process.argv.slice(2),agent:process.env.CLAUDECODE,relay:process.env.WORKTRUST_RELAYED}));console.error('synthetic stderr');process.exit(7);\n")
     args = ["literal space", "$(never-run)", "; touch SHOULD_NOT_EXIST", "quote'\""]
-    result = run(args,{"CLAUDECODE":"1","NODE_OPTIONS":f"--import={intercept.as_uri()}"})
+    blocked = run(["--version"], {"NODE_OPTIONS":f"--import={intercept.as_uri()}", "NODE_PATH":str(scratch)})
+    check(blocked.returncode == 0 and blocked.stdout.strip() == npm["version"] and "synthetic stderr" not in blocked.stderr,
+          "official Python launcher removes Node preload injection before execution")
+    transport = "import pathlib,sys,worktrust_cli as cli; cli.verified_entry=lambda:pathlib.Path(" + repr(str(intercept)) + "); sys.exit(cli.main())"
+    result = subprocess.run([sys.executable,"-c",transport,*args], env=dict(env,CLAUDECODE="1"),
+                            cwd=scratch,capture_output=True,text=True,timeout=20)
     check(result.returncode == 7,"child exit propagated")
     check(json.loads(result.stdout) == {"args":args,"agent":"1","relay":"1"},"literal args and agent environment preserved")
     check(result.stderr.strip() == "synthetic stderr" and not (scratch/"SHOULD_NOT_EXIST").exists(),"stdio preserved without shell")

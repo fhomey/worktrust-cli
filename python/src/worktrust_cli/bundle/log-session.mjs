@@ -90,12 +90,7 @@ const PINNED = join(homedir(), ".worktrust", "pinned");
 const ours = (command) => /log-session|worktrust\.mjs" hook|worktrust\.mjs hook/.test(String(command ?? ""));
 const COUNTER_EVERY_MS = 24 * 3600_000;
 /**
- * THE COUNTER KEEPS UP WITH THE DEPLOYMENT. The install fetched it once and never again, so a
- * machine set up in August counted with an August rubric in September while the door already
- * spoke a newer vocabulary. Now the version stamped in the local copy is compared with the one the
- * deployment serves — numerically, the way the door picks its newest rubric — and a newer copy
- * replaces the old one. A rubric bump is what makes the previous reading superseded on the
- * mirror; this is how the machine hears about it. Nothing else is read off the network here.
+ * Counter compatibility is pinned by the verified release.
  */
 const versionOf = (text) => /export const ANALYZER_VERSION = "counter@(\d+)\.(\d+)\.(\d+)"/.exec(text ?? "")?.slice(1, 4).map(Number) ?? null;
 const newer = (a, b) => { if (!a || !b) return false; for (let i = 0; i < 3; i += 1) { if (a[i] === b[i]) continue; return a[i] > b[i]; } return false; };
@@ -258,7 +253,7 @@ const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await impor
 const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
-const READER_FILES = ["transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
+const READER_FILES = ["history-outbox.mjs", "transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
 /** The readers go where the hook and the counter run: copied from beside this file, else (or for a newer counter) from the deployment. */
 async function installReaders(origin, fromNetwork = false) {
   let installed = true;
@@ -735,31 +730,44 @@ function retainMeasurement(payload, source) {
     }
   } finally { closeSync(fd); unlinkSync(temporary); }
 }
+const HISTORY_DELIVERY = { review: 0, waiting: 0 };
 async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
   let accepted = 0;
-  // A Codex entry goes through Codex's own coupling where one exists (see codexDoor), the rest
-  // through the door given: the record files a line under the coupling that sent it. Antigravity's
-  // go apart too, so their batch can name the client (clientOf).
-  // An export's lines go as their own group too (0.10.10), so the record names the product (ChatGPT, Claude on the web).
-  for (const [source, group] of [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS, ...EXPORT_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])]) {
+  const { queuedHistory, historyRefusal } = await import("./history-outbox.mjs");
+  // Keep each source and its approved coupling separate.
+  const groups = [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS, ...EXPORT_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])];
+  const encodeBatch = batch => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }) } } });
+  // Persist the approved plan before sending, so later batches survive removed source files too.
+  try { for (const [source, group] of groups) { const target = source === "codex" ? codexDoor ?? door : door; if (target) for (const batch of batchesOf(group, byDay)) queuedHistory(target, encodeBatch(batch), source); } }
+  catch { console.error("History queue is full, busy or unavailable. Resume the saved batches before retrying this import; nothing was marked complete."); HISTORY_DELIVERY.waiting += entries.length; return 0; }
+  for (const [source, group] of groups) {
   const target = source === "codex" ? codexDoor ?? door : door;
   if (group.length === 0 || !target) continue;
   let number = 0;
   for (const batch of batchesOf(group, byDay)) {
     number += 1;
-    // History carries no shas: an imported line forms no session, and the join is the live route's. REBUILD (owner, 2026-10-07): `rebuild: true`
-    // tells the door to replace this computer's earlier lines on the days and for the client the batch carries, and every group names its client.
-    // WITHDRAW UNKNOWN (owner, 2026-10-10): with an export, after the person's yes, `withdraw_unknown: true` also withdraws the AI-app lines on its days.
-    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map((entry) => { const { commits, ...rest } = entry; void commits; return rest; }) } } });
+    // Imported entries carry no live commit/session join.
+    const body = encodeBatch(batch);
     for (const entry of batch) retainMeasurement(entry, source);
     // `named` (0.10.10): a copied folder's lines name their client too, so the record says which app the copy came from.
-    const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild || named), ...proofFor(target.url, body) }, body });
-    const text = await response.text();
-    if (announce) console.log(`batch ${number}: ${response.status} ${text.slice(0, 200).replace(/\\n/g, " ")}`);
-    if (!response.ok) break;
-    try { confirmedReceipt(text, batch.length); } catch { break; }
-    accepted += batch.length;
-    noteReceipt(text);
+    let queued;
+    try { queued = queuedHistory(target, body, source); }
+    catch { console.error("Pending history could not be stored safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); HISTORY_DELIVERY.waiting += batch.length; break; }
+    if (queued.status === "acknowledged" && !byDay) { accepted += batch.length; RECEIPTS.alreadyHeld += batch.length; continue; }
+    if (queued.status === "review" && !flag("retry-review")) { HISTORY_DELIVERY.review += batch.length; continue; }
+    if (queued.status === "waiting") { HISTORY_DELIVERY.waiting += batch.length; continue; }
+    try {
+      const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild || named), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(65_000) });
+      const text = await response.text();
+      try { if (!response.ok) throw Error(); confirmedReceipt(text, batch.length); }
+      catch {
+        const refusal = historyRefusal(text, response); queued.defer(refusal.reason, refusal.seconds);
+        if (refusal.reason === "review") { HISTORY_DELIVERY.review += batch.length; continue; }
+        HISTORY_DELIVERY.waiting += batch.length; break;
+      }
+      queued.confirm(); accepted += batch.length; noteReceipt(text);
+      if (announce) console.log(`batch ${number}: received ${batch.length}`);
+    } catch { queued.defer("unconfirmed"); HISTORY_DELIVERY.waiting += batch.length; break; }
   }
   }
   return accepted;
@@ -792,7 +800,7 @@ const proofFor = (url, body) => {
  * on this computer, and the door names a coupling's clients by the user-agent it hears (mcp_identify's
  * agents_seen). An Antigravity line names Antigravity: the product name, nothing of the work.
  */
-const clientOf = (source, always = false) => (always || source === "antigravity" || DATABASE_CLIENTS.includes(source) || EXPORT_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)` } : {});
+const clientOf = (source, always = false) => (CLI_VERSION_SENT || always || source === "antigravity" || DATABASE_CLIENTS.includes(source) || EXPORT_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)${CLI_VERSION_SENT ? ` worktrust-cli/${CLI_VERSION_SENT}` : ""}` } : {});
 
 async function send(door, payload) {
   retainMeasurement(payload, entrySource.get(payload));
@@ -1201,6 +1209,21 @@ if (!door && !codexDoor && !DRY) { return await exitFlushed(0); } // Not coupled
  * device key (only lines this computer signed travel), an archive that verifies, a stretch whose session is gone from
  * this computer (one still here goes through the ordinary history), a door that knows the mark, and the person asking.
  */
+if (flag("history") && flag("resume")) {
+  const { resumeHistory } = await import("./history-outbox.mjs");
+  const totals = { received: 0, review: 0, waiting: 0, batches: 0 };
+  try {
+    for (const target of [door, ...(codexDoor && codexDoor.token !== door?.token ? [codexDoor] : [])].filter(Boolean)) {
+      const result = await resumeHistory(target, { dry: DRY, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt,
+        send: (body, source) => fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, true), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(65_000) }),
+      });
+      for (const key of Object.keys(totals)) totals[key] += result[key];
+    }
+    console.log(JSON.stringify({ resumed: totals.received, ...totals, ...RECEIPTS }));
+    return await exitFlushed(DRY || (!totals.waiting && !totals.review) ? 0 : 1);
+  } catch { console.log("Pending history could not be read safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); return await exitFlushed(1); }
+}
+
 if (flag("history") && flag("from-archive")) {
   const named = value("from-archive"), dir = named && !named.startsWith("--") ? named.replace(/^~(?=\/|$)/, homedir()) : join(homedir(), "AI-Evidence");
   const say = (text) => console.log(text);
@@ -1262,7 +1285,7 @@ if (flag("history")) {
   // An export that arrived whole is remembered by its digest (never by a conversation), so the bare command offers it no more.
   if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
   // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
-  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: entries.length, ...RECEIPTS })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
+  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: entries.length, ...RECEIPTS, delivery: HISTORY_DELIVERY })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
   return await exitFlushed(accepted === entries.length ? 0 : 1);
 }
 

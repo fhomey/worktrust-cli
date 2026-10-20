@@ -63,7 +63,7 @@
  * No dependencies: Node 18 or later.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, hostname, platform } from "node:os";
@@ -78,12 +78,12 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.23";
+const CLI_VERSION = "0.10.24";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs"];
+const SCRIPTS = ["history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -131,10 +131,18 @@ async function scripts() {
   fail("Use the complete official npm/Python package or preservation kit. Individual scripts are not downloaded or executed without release verification.");
 }
 
+/** Stable across bearer renewal, distinct across account/device replacement. Never sent to the server. */
+function historyQueueScope(token) {
+  const key = keyStore.load();
+  if (!key || key.token !== token || !key.accountRef || !key.device) return "";
+  try { return createHash("sha256").update(`${key.accountRef}\0${createPublicKey(key.device).export({ format: "jwk" }).x}`).digest("hex"); }
+  catch { return ""; }
+}
+
 /** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
 function run(path, scriptArgs, token, collect = false, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [...NODE_FLAGS, path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_CLI_VERSION: CLI_VERSION, ...extraEnv } });
+    const child = spawn(process.execPath, [...NODE_FLAGS, path, ...scriptArgs], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(token), ...extraEnv } });
     let out = "";
     child.stdout?.on("data", (chunk) => { out += chunk; });
     child.stderr?.on("data", (chunk) => { out += chunk; });
@@ -213,6 +221,7 @@ async function pairByBrowser(host, extra) {
   server.close();
   if (!code) fail("no approval arrived in time. Run `worktrust connect` again.");
   const exchange = await post("/api/cli/token", { device_code: secret, code, code_verifier: verifier }).catch(() => null);
+  if (exchange?.json?.error === "device_limit") fail("Five devices are already connected. In WorkTrust Sources, disconnect a device, then connect again. Earlier measurements are kept.");
   if (!exchange || exchange.status !== 200 || !exchange.json.token) fail(`the approval could not be exchanged (${exchange?.json?.error ?? "no answer"}). Run \`worktrust connect\` again.`);
   say(`  ✓ Approved as "${exchange.json.label}"${exchange.json.account ? ` for the WorkTrust account ${exchange.json.account}` : ""}`);
   if (exchange.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
@@ -247,6 +256,7 @@ async function pairByCode(host, extra) {
       if (answer.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
       return paired(answer.json);
     }
+    if (answer.json.error === "device_limit") fail("Five devices are already connected. In WorkTrust Sources, disconnect a device, then connect again. Earlier measurements are kept.");
     if (answer.json.error === "slow_down") wait += 2000;
     else if (answer.json.error === "expired_token") fail("the code expired. Run `worktrust connect` again.");
     else if (answer.json.error === "invalid_grant") fail("this pairing was already used. Run `worktrust connect` again.");
@@ -356,7 +366,7 @@ function proof(device, url, body) {
 async function accepted(url, token, device) {
   try {
     const body = JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" });
-    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", authorization: `Bearer ${token}`, "user-agent": "worktrust-bridge", ...proof(device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(5000) });
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", authorization: `Bearer ${token}`, "user-agent": `worktrust-bridge worktrust-cli/${CLI_VERSION}`, ...proof(device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(5000) });
     if (response.status === 401 || response.status === 403) return false;
     if (response.status !== 200) return null;
     const answer = await response.json();
@@ -500,7 +510,7 @@ async function hook() {
   if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
   if (!key) return;
-  const child = spawn(process.execPath, [...NODE_FLAGS, join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
+  const child = spawn(process.execPath, [...NODE_FLAGS, join(BUNDLED ? HERE : HOME_DIR, "log-session.mjs"), ...args.filter((arg) => arg !== "hook")], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
   process.exitCode = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code) => resolve(code ?? 1)); });
 }
 
@@ -578,10 +588,11 @@ async function update() {
   // Codex installed since, or a No said at connect: the one question, asked again (or "already set").
   await offerCodex();
   await offerAntigravity();
+  const reported = await accepted(key.url, key.token, key.device);
+  say(reported === true ? `  ✓ WorkTrust received CLI version ${CLI_VERSION}.` : "  ! Installed locally. WorkTrust could not confirm the version yet; it will be reported on the next connection.");
   await offerRebuild(previousVersion, paths, key);
   say();
-  say("  Done. Quit your AI apps completely and open them again; the CLI version shows in WorkTrust");
-  say("  under Sources → CLI once one of them has spoken. A key an app held by hand still works until you end it there.");
+  say("  Done. Quit your AI apps completely and open them again to use the updated CLI.");
 }
 
 async function connect() {
@@ -691,7 +702,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   if (!has("history") && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust"); return; }
   // Marked unfinished before the first batch leaves (0.10.9): a send stopped halfway (Ctrl+C, a closed lid) is finished by the next run.
   historyDone(false);
-  const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : [])], token, true, env);
+  const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : []), ...(has("retry-review") ? ["--retry-review"] : [])], token, true, env);
   historyDone(sent.code === 0);
   // WHAT ACTUALLY HAPPENED, FROM THE DOOR'S RECEIPTS (owner, 2026-10-10): a re-measure in which nothing changed must not say
   // "replaced". The hook sums the receipts of every batch and prints one line; without it (an older hook) the sentence stays neutral.
@@ -701,8 +712,10 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
     : n(did.replaced) > 0 ? `${n(did.replaced)} of this computer's earlier lines were replaced (withdrawn and kept, never deleted)${n(did.new) > 0 ? `, ${n(did.new)} new` : ""}${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}.`
     : n(did.new) === 0 ? `Nothing changed: the same measurement${n(did.filled) > 0 ? `; ${n(did.filled)} lines gained what was missing (the stack, the tools seen, a layer)` : ""}; ${n(did.alreadyHeld)} lines already held.`
     : `${n(did.new)} new lines${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}; ${n(did.alreadyHeld)} already held.`;
-  if (rebuild) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
-  else say(sent.code === 0 ? "  ✓ Sent as history. Measured sessions count toward your verified hours; a day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
+  if (Number(did?.delivery?.review) > 0) say(`  ${did.delivery.review} lines are waiting for review. Earlier measurements remain unchanged. Reconnecting or repeating the import does not approve them.`);
+  if (Number(did?.delivery?.waiting) > 0) say("  Pending batches remain on this computer. Run npx worktrust history --resume after the upload limit or connection recovers.");
+  if (rebuild && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
+  else if (!rebuild) say(sent.code === 0 ? "  ✓ Sent as history. Activity is recorded with its origin; independent verification and passport publication are separate. A day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
   if (did && Number(did.measuredSeconds) > 0) say(`  Measured by WorkTrust: ${(Number(did.measuredSeconds) / 3600).toFixed(1)} h for what this send stored${n(did.corrected) > 0 ? ` (${n(did.corrected)} lines corrected: a figure sent beside the timeline differed)` : ""}.`);
 }
 
@@ -763,6 +776,11 @@ async function again() {
 async function history() {
   const key = await freshKey();
   if (!key) fail("this computer is not coupled through the key file. Run npx worktrust first.");
+  if (has("resume")) {
+    if (!has("dry-run") && !has("history") && !(await ask("Resume previously approved metadata uploads? Lines held for review stay held.", false))) return;
+    const paths = await scripts(), sent = await run(paths["log-session.mjs"], ["--history", "--resume", ...(has("dry-run") ? ["--dry-run"] : []), ...(has("retry-review") ? ["--retry-review"] : [])], key.token, true, { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) });
+    say(sent.out.trim()); process.exitCode = sent.code; return;
+  }
   if (has("from-archive")) return offerArchive(await scripts(), key);
   if (has("export")) { if (!flag("export") || flag("export").startsWith("--")) fail("--export needs the export's path: the zip, its folder, conversations.json, a conversations-000.zip part, or the manifest"); await offerExport(await scripts(), key, flag("export")); return; }
   if (has("from-folder")) { if (!flag("from-folder") || flag("from-folder").startsWith("--")) fail("--from-folder needs the copied folder's path"); await offerFolder(await scripts(), key, flag("from-folder")); return; }
@@ -1150,6 +1168,8 @@ function help() {
   say("    --replace            yes in advance to coupling a computer that is already coupled");
   say("  worktrust update       this computer onto the newest CLI: same key, no new pairing");
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
+  say("    --resume             retry saved metadata batches, even if source files are gone (asks first)");
+  say("    --retry-review       explicitly retry held batches after support resolves their review");
   say("    --rebuild            re-measure them with the current rules; WorkTrust replaces this computer's earlier lines,");
   say("                         day by day, never counting a day twice (shows the plan per AI app, asks first; --dry-run: the plan only)");
   say("    --from-archive [dir] send what your archive (preserve --archive) holds of sessions your AI apps already deleted,");

@@ -178,6 +178,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertIsNotNone(archive, "the actual preservation artifact is mandatory")
         files = signer.read_archive(archive)
         prefix = signer.archive_root(files)
+        # Re-sign a disposable test copy; deployed production archives may already carry
+        # these envelopes. The website's separate source/signature verifier checks originals.
+        for signature in ("engine-release.json", "package-release.json"):
+            files.pop(prefix + signature, None)
         plugin = "agent/.claude-plugin/plugin.json"
         self.assertIn(prefix + plugin, files)
         for name, data in self.modules().items():

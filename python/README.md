@@ -1,5 +1,19 @@
 # WorkTrust for Python tool runners
 
+## Candidate 0.10.24: delivery and account limits
+
+Not published yet. After an approved update, WorkTrust receives the running version without
+an activity upload. Pending metadata batches can be resumed with `worktrust history --resume`,
+even after an AI app removed the original session files. Review-held revisions need review;
+reconnecting does not approve them. Keep archives for work that was never queued.
+
+The corresponding server candidate limits new personal registrations to five active device
+identities. AI apps sharing one key share one slot; cloned keys share account upload capacity.
+Retiring a device preserves earlier data. Existing accounts above the limit are preserved but
+cannot add another identity. Version labels and device signatures are not independent evidence
+of time or correctness. A CLI update does not automatically publish a passport.
+
+
 This package launches the same JavaScript measurement engine shipped in the WorkTrust npm
 package. It does not implement another measurement engine. Version 0.10.14+ also includes
 the explicit observation SDK documented below; 0.10.13 does not include it. See the official

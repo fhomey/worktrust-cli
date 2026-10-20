@@ -23,6 +23,7 @@
  * (`prev`, `hash`), appended and never rewritten; each day has proofs/<day>.json, its root, signed with the device key
  * (~/.worktrust/key.json) when there is one. Today waits for the next run. Nothing leaves this computer.
  */
+import { readDeviceSigningKey } from "./credential-store.mjs";
 import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
@@ -190,13 +191,12 @@ function archiveSalt() {
   try { const made = randomBytes(32).toString("hex"); createPrivateFile(file, `${made}\n`); return made; } catch { try { return readPrivateFile(file)?.trim() ?? null; } catch { return null; } }
 }
 /** The device key, when this computer is coupled: its private half signs, its public half goes into the proof. */
-function deviceKey() {
-  try {
-    const key = JSON.parse(Buffer.from(readPrivateFile(home(".worktrust", "key.json")), "base64").toString("utf8"));
-    const privateKey = createPrivateKey(key.device);
-    return { privateKey, publicX: createPublicKey(privateKey).export({ format: "jwk" }).x, kind: "device" };
-  } catch { return null; }
+let cachedDeviceKey;
+function deviceKey(required = false) {
+  try { if (cachedDeviceKey === undefined) cachedDeviceKey = readDeviceSigningKey(home(".worktrust", "key.json")); return cachedDeviceKey; }
+  catch (error) { if (required) throw error; return null; }
 }
+
 /**
  * THE LOCAL ARCHIVE KEY (owner, 2026-10-10): a computer that is not coupled still signs its archive, with an Ed25519 key made
  * here (~/.worktrust/archive-key.json, mode 600, folder 700), so a day's root can be told from an edit and the chain stays one
@@ -308,6 +308,9 @@ function archive(dir) {
     fresh.push(line);
   }
   fresh.sort((a, b) => a.started_at.localeCompare(b.started_at) || a.client.localeCompare(b.client) || a.stretch_ref.localeCompare(b.stretch_ref));
+  let key;
+  try { key = deviceKey(true) ?? archiveKey(true); }
+  catch { say("  Signing key unavailable. Unlock your OS vault and retry. No archive data was changed."); process.exitCode = 1; return; }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   let prev = existing.lines.at(-1)?.hash ?? null, seq = existing.lines.length;
   const all = [...existing.lines];
@@ -322,9 +325,7 @@ function archive(dir) {
   // A day that gained lines gets its root again over all of its lines; the lines themselves are never rewritten.
   // THIS KEY SIGNS ONLY ITS OWN LINES (0.6.18, audit S7): a day is signed when every earlier line of it was already under
   // this key's signature (or there were none); a day that came into the folder from elsewhere keeps an unsigned root.
-  // THE SIGNING KEY (owner, 2026-10-10): the device key when this computer is coupled, else the local archive key, made now when
-  // there is none. A day or a manifest either of this computer's keys sealed is this computer's to seal again.
-  const key = deviceKey() ?? archiveKey(true);
+  // Either of this computer's keys may reseal its own days; the signer was resolved before mutation.
   const mineX = new Set(ownKeys().map((own) => own.publicX));
   const ours = (document) => !document || (key && typeof document.signature === "string" && mineX.has(document.public_key));
   mkdirSync(join(dir, "proofs"), { recursive: true });

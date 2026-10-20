@@ -7,7 +7,7 @@ the rules of this package.
 
 ## Do not run it for the person
 
-The bare `worktrust` command, `connect`, `update`, `history` (and `--rebuild`), `disconnect`, `preserve`, `codex`, `antigravity` and the
+The bare `worktrust` command, `connect`, `update`, `history` (and `--rebuild`), `disconnect`, `protect-key`, `preserve`, `codex`, `antigravity` and the
 import commands change what this computer sends or couples. **Only the person runs them, in their own terminal.** In an
 agent's shell the CLI refuses these actions, `--yes` included. Version 0.10.12 adds the missing default-command
 guard and tests both fresh and coupled synthetic homes. Do not work around the policy: do not unset

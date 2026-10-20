@@ -1,13 +1,26 @@
 # WorkTrust for Python tool runners
 
-## Candidate 0.10.24: delivery and account limits
+## OS credential storage (0.10.26 candidate, not published)
 
-Not published yet. After an approved update, WorkTrust receives the running version without
+The same `protect-key` command is available through `uvx worktrust protect-key` and
+`pipx run worktrust protect-key`. Update the installed bridge first and quit AI apps before
+migration. macOS Keychain, Windows Credential Manager, or Linux Secret Service protects the
+wrapping key for an encrypted local credential file. Linux needs libsecret-tools and an unlocked
+Secret Service. No separate Node installation is needed by the supported Python wheels.
+
+Existing users are not automatically migrated. A locked or unavailable vault stops credential
+loading without plaintext fallback. Same-user software may still use the vault; this does not
+verify the truth of activity or publish a Passport. Native Windows/Linux checks and publication
+are still pending for this candidate.
+
+## Delivery and account limits
+
+After an approved update, WorkTrust receives the running version without
 an activity upload. Pending metadata batches can be resumed with `worktrust history --resume`,
 even after an AI app removed the original session files. Review-held revisions need review;
 reconnecting does not approve them. Keep archives for work that was never queued.
 
-The corresponding server candidate limits new personal registrations to five active device
+The server limits new personal registrations to five active device
 identities. AI apps sharing one key share one slot; cloned keys share account upload capacity.
 Retiring a device preserves earlier data. Existing accounts above the limit are preserved but
 cannot add another identity. Version labels and device signatures are not independent evidence

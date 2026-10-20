@@ -1,13 +1,18 @@
 # worktrust
 
-## Candidate 0.10.24: delivery and account limits
+## Candidate 0.10.26: OS credential storage
 
-Not published yet. After an approved update, WorkTrust receives the running version without
+Not published yet; 0.10.25 is the preceding live release. This candidate adds explicit
+`worktrust protect-key` migration: an OS-vault wrapping key protects the locally encrypted
+coupling credentials. It does not attest that local activity is truthful. See
+[credential protection](#credential-protection) before enabling it.
+
+After an approved update, WorkTrust receives the running version without
 an activity upload. Pending metadata batches can be resumed with `worktrust history --resume`,
 even after an AI app removed the original session files. Review-held revisions need review;
 reconnecting does not approve them. Keep archives for work that was never queued.
 
-The corresponding server candidate limits new personal registrations to five active device
+The server limits new personal registrations to five active device
 identities. AI apps sharing one key share one slot; cloned keys share account upload capacity.
 Retiring a device preserves earlier data. Existing accounts above the limit are preserved but
 cannot add another identity. Version labels and device signatures are not independent evidence
@@ -24,8 +29,8 @@ npx worktrust@latest
 **The official npm package** is `worktrust`, published by the npm account **worktrustio** with
 provenance from this repository (github.com/fhomey/worktrust-cli). Check it on npmjs.com before you run
 it; a package of another name or from another publisher is not ours. Use the complete package:
-individual support scripts are no longer downloaded and executed during setup. Version 0.10.22
-adds a signed launcher. Check the registry for availability; 0.10.21 does not include this guard.
+individual support scripts are no longer downloaded and executed during setup. The live 0.10.25
+release includes signed startup checks; 0.10.21 does not include this guard.
 
 **Python tool runners:** this repository also builds `worktrust` for `uvx` and `pipx` from the
 same measurement modules. Native wheels (0.10.13+) include a pinned official Node runtime,
@@ -381,20 +386,33 @@ a day it sealed before), but such a day reaches WorkTrust as reconstructed. It i
 pairing: `connect` always mints a fresh pair, because a private key that lived on disk before the pairing would weaken
 the proof of possession the pairing binds, for nothing your record would gain.
 
-## Where the key lives, and why it only works here
+## Credential protection
 
-The key is kept in **one file only you can read**: `~/.worktrust/key.json` (mode 600, in a folder of
-mode 700). No keychain is touched: a keychain tool can offer to "reset" a keychain it cannot find,
-which would delete every password on the computer, and many people rightly keep tools out of it.
+Existing installations keep private file storage until the person opts in. In the 0.10.26
+candidate, run `worktrust update`, quit the AI apps, then run `worktrust protect-key` and restart
+those apps. A new computer can run `worktrust protect-key` before connecting. `worktrust status`
+shows the storage mode. This command is local and does not publish or change a Passport.
 
-- **No AI app holds the key.** Each runs a small local bridge, `node ~/.worktrust/worktrust.mjs mcp`,
-  which reads the file and speaks to WorkTrust for it; the session hook runs through
-  `worktrust.mjs hook` the same way. A config file you share, a dotfiles repository or a screenshot
-  of an app's settings carries no key.
-- **The key only works on this computer.** `connect` makes an Ed25519 key pair; WorkTrust keeps the
-  public half, the private half stays in the key file. Every call is signed (method, path, time, a
-  one-time nonce, the body's hash) and WorkTrust refuses a call through this key without a fresh
-  signature. A key that leaks without the file, from a log, a proxy or a config, is worth nothing.
+Protected mode encrypts the token, pending renewal token, device private key and coupling metadata
+with AES-256-GCM in `~/.worktrust/key.json`. Its random encryption key lives in macOS Keychain,
+Windows Credential Manager, or Linux Secret Service (`/usr/bin/secret-tool` from libsecret-tools,
+with a running, unlocked desktop secret service). No keychain reset is performed. First-time
+protection may require OS approval; background reads never request an unlock prompt. An unavailable
+vault stops uploads without advancing their checkpoints. There is no plaintext fallback.
+
+Migration verifies the vault write before atomically replacing the old file. No plaintext backup
+is created. Existing backups and already running processes can still hold the old secrets; this
+is not secure erasure of an SSD or revocation of previously copied credentials. The local archive's
+separate continuity key (`archive-key.json`) is not migrated by this command. `preserve` remains
+offline and refuses to silently change signing identity when protected credentials are unavailable.
+
+- **AI apps use the bridge.** The bridge and hooks read the protected credentials as the OS user;
+  their settings contain a launcher command, not the credentials. Update every installed bridge
+  first: older releases cannot read the encrypted format. Protected mode refuses `--direct`.
+- **A device signature proves possession.** The server stores the public key and checks fresh
+  signed requests and single-use nonces. Neither file encryption nor an OS vault proves genuine
+  local activity. Software authorized as the same OS user may still obtain or use these secrets.
+  This is not a hardware-bound, non-exportable key. Revoke the connection if it may be compromised.
 - **The key renews itself every week.** A new secret is made here, only its hash is sent, signed,
   and last week's key stops working.
 - `npx worktrust --direct` writes a plain key into the apps' settings instead, for an app
@@ -467,7 +485,8 @@ never as proof.
 ## Undo
 
 `npx worktrust@latest disconnect` removes the WorkTrust entries (Hermes's hook with them), the hook (and Codex's `notify` line and
-Antigravity's `worktrust` hook when WorkTrust set them), the key file and installed bridge scripts.
+Antigravity's `worktrust` hook when WorkTrust set them), the credentials and installed bridge scripts.
+Protected mode retains an encrypted empty slot and its OS wrapping key so reconnecting stays protected.
 A small note of the previous account (masked) remains so that a later coupling by another account
 does not offer its earlier work. Other retained files and your local evidence archive are not an
 automatic server or archive erasure.

@@ -66,6 +66,29 @@ jobs:
       - run: node tests/test-cli-execution-boundary.mjs
         env:
           WORKTRUST_TEST_CLI_SOURCE: .
+      - name: Prepare isolated Linux secret service
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsecret-tools gnome-keyring dbus-x11
+      - name: Native OS credential storage (Linux disposable vault)
+        if: runner.os == 'Linux'
+        env:
+          WORKTRUST_TEST_CLI_SOURCE: .
+        run: >-
+          dbus-run-session -- bash -c 'printf "worktrust-ci-only" | gnome-keyring-daemon --unlock --components=secrets;
+          node tests/test-cli-native-keystore.mjs'
+      - name: Prepare disposable macOS test keychain
+        if: runner.os == 'macOS'
+        run: |
+          security create-keychain -p worktrust-ci-only "$RUNNER_TEMP/worktrust-test.keychain-db"
+          security unlock-keychain -p worktrust-ci-only "$RUNNER_TEMP/worktrust-test.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/worktrust-test.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/worktrust-test.keychain-db"
+          security default-keychain -s "$RUNNER_TEMP/worktrust-test.keychain-db"
+      - name: Native OS credential storage (disposable item)
+        if: runner.os != 'Linux'
+        env:
+          WORKTRUST_TEST_CLI_SOURCE: .
+        run: node tests/test-cli-native-keystore.mjs
       - run: python python/tests/test_runtime_build.py
       - run: python python/build_runtime.py --target ${{ matrix.target }}
       - name: Coupling survives removal of the tool-runner cache

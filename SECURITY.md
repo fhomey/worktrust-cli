@@ -28,12 +28,22 @@ private transcripts or account data in a public issue.
 
 ## Where the key is, and how long it lives
 
-- In `~/.worktrust/key.json`, alongside the software private key. The client requests mode 600 in
-  a 700 folder; Windows permissions need their own access-control check. Base64 is not encryption.
-  No keychain or hardware-backed key is used. Another process running as you may read both secrets.
+- Existing installations use a private local file until explicit `worktrust protect-key` migration
+  (0.10.26 candidate). Base64 in that legacy file is not encryption.
+- Protected mode uses AES-256-GCM for all coupling secrets and OS storage for a separate random
+  wrapping key: macOS Keychain, Windows Credential Manager with local-machine persistence, or
+  Linux Secret Service. Only a random identifier, provider, nonce, ciphertext and authentication
+  tag remain in `key.json`. Private file checks and atomic replacement still apply. Locked,
+  missing or unavailable OS storage fails closed, without a new key or plaintext fallback.
+- This is exportable software credential protection, not hardware attestation. Other software
+  authorized as the OS user can request decryption; an attacker controlling the launcher or OS
+  can bypass local checks. Local activity remains untrusted for independent public claims.
+- The command does not reset a vault, change its ACLs, erase backups, revoke stolen credentials,
+  or move the independent offline archive continuity key. New setup is opt-in; it is not an
+  automatic migration of existing users. Hooks never write vault items or trigger unlock UI.
 - In the default mode, requests carry an Ed25519 proof. WorkTrust refuses a bound token without a
   fresh signature (two minutes, a nonce spent once). A bearer token alone is insufficient; theft of
-  the whole credential file defeats that protection. Profile/device hashes are not hardware
+  the legacy plaintext credentials, or the protected file together with access to its OS wrapping key, defeats that protection. Profile/device hashes are not hardware
   attestation. Revoke the computer in WorkTrust if its credential file may have been copied.
 - `--direct` instead places an unbound bearer token in AI client settings and does not provide the
   same proof requirement. Do not apply the default mode's guarantees to that mode.

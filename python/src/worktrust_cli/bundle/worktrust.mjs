@@ -39,15 +39,12 @@
  * with its secret, can exchange for the key. Nothing is typed, and a link forwarded to someone else
  * approves nothing they can collect. Without a browser (`--device`, or over SSH) the terminal shows
  * a code that you type yourself at app.worktrust.io/connect/computer.
- * WHERE THE KEY LIVES. In one file only you can read (~/.worktrust/key.json, mode 600, folder 700).
- * No keychain is touched. The AI apps never hold it:
- * each runs `worktrust.mjs mcp`, a small local bridge that reads the key and speaks to WorkTrust for
- * them, and the session hook runs through `worktrust.mjs hook` the same way. `--direct` writes the
- * key into each app's settings instead (for an app that cannot run a local command).
- * THE KEY ONLY WORKS ON THIS COMPUTER. connect makes an Ed25519 key pair; the public half goes to
- * WorkTrust, the private half stays in the key file. Every call the bridge, the hook and
- * the counter make carries a fresh signature (`WorkTrust-Proof`), and WorkTrust refuses a call
- * through this key without one: a copied key alone is worth nothing.
+ * WHERE THE KEY LIVES. A private local file until the person runs protect-key; then an encrypted
+ * envelope in that file, with its wrapping key in the OS vault. AI apps run the bridge and never
+ * receive these credentials in their settings. Protected mode refuses --direct.
+ * SIGNATURES PROVE POSSESSION. connect makes an Ed25519 pair and registers the public half.
+ * Requests carry fresh signatures and single-use nonces. Software authorized as the same OS user
+ * may still use the private key; neither file encryption nor signatures prove truthful activity.
  *
  * THE KEY RENEWS ITSELF EVERY WEEK. The bridge or the hook makes a new secret on this computer, sends
  * only its hash, signed with the current key, and stores the new one; a copy of last week's key stops
@@ -78,12 +75,12 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.25";
+const CLI_VERSION = "0.10.26";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs"];
+const SCRIPTS = ["credential-store.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -274,7 +271,7 @@ const KEY_FILE = join(HOME_DIR, "key.json");
 const STABLE_FILE = join(HOME_DIR, "worktrust.mjs");
 let STABLE = join(HERE, "worktrust-launch.mjs"), runtimePrepared = false, NODE_ARGS = [];
 const RENEW_EVERY_MS = 7 * 24 * 3600_000;
-const KEY_PLACE = "~/.worktrust/key.json (only you can read it)";
+const KEY_PLACE = "~/.worktrust/key.json (storage protection is shown by worktrust status)";
 const ensureHome = () => { mkdirSync(HOME_DIR, { recursive: true, mode: 0o700 }); try { chmodSync(HOME_DIR, 0o700); } catch { /* Windows */ } };
 
 /** A tool-runner cache is disposable. Install the whole verified runtime/engine before changing wiring. */
@@ -303,29 +300,22 @@ function saveStableEntry() {
   finally { try { rmSync(temporary); } catch { /* already renamed */ } }
 }
 
-/**
- * THE KEY'S PLACE: one file only you can read (mode 600 in a 700 folder), holding the key, its device
- * private key and when it was last renewed. NO KEYCHAIN (owner, 2026-10-03): a keychain tool can ask
- * the person to "reset" a keychain it cannot find, which deletes every password on the machine, and
- * many will not let a tool near their keychain at all. This file is never written into an AI app's
- * settings: the apps run the bridge, which reads it.
+/** Existing file credentials remain readable until the person explicitly protects them.
+ * The OS wrapping key is never written into an AI app or the encrypted credential file.
  */
-const keyStore = {
-  /** Written whole or not at all: a temporary file renamed over the old one. */
-  save(entry) {
-    writePrivateFile(KEY_FILE, Buffer.from(JSON.stringify(entry)).toString("base64"));
-  },
-  load() {
-    const bytes = readPrivateFile(KEY_FILE);
-    if (bytes === null) return null;
-    try {
-      const entry = JSON.parse(Buffer.from(bytes, "base64").toString("utf8"));
-      if (!entry || Array.isArray(entry) || typeof entry !== "object" || typeof entry.token !== "string" || !entry.token) throw Error();
-      return entry;
-    } catch { throw Error("KEY_FILE_INVALID"); }
-  },
-  erase() { try { rmSync(KEY_FILE); } catch { /* gone */ } },
-};
+const { createCredentialStore } = await import("./credential-store.mjs").catch(() => ({}));
+const keyStore = createCredentialStore?.(KEY_FILE);
+async function protectKey() {
+  say("  Protect the WorkTrust token and signing key with this OS account's credential vault.");
+  say("  Quit AI apps first; restart them after this finishes. Older bridges cannot read protected credentials.");
+  say("  This protects stored secrets. It does not prove that local activity is genuine.");
+  if (has("dry-run")) { say("  Dry run: no vault or credential was changed."); return; }
+  if (keyStore.load() && stableVersion() !== CLI_VERSION) fail("Run worktrust update from this release first, then quit your AI apps and run worktrust protect-key.");
+  if (!(await ask("Protect the local credentials?"))) return;
+  try { keyStore.protect(); }
+  catch { fail("OS credential storage was unavailable or the credential file could not be safely replaced. Existing credentials were preserved. Unlock your OS vault, check worktrust status, and retry. No keychain reset is needed."); }
+  say("  Credentials are protected by the OS vault. Restart your AI apps. No account data or Passport was changed.");
+}
 
 /**
  * WHICH ACCOUNT THIS COMPUTER LAST FED, after `disconnect` (owner, 2026-10-04). The key file goes; this
@@ -487,6 +477,9 @@ async function bridge() {
     let message;
     try { message = JSON.parse(line); } catch { continue; }
     if (message.method === "initialize" && message.params?.clientInfo?.name) agent = `${message.params.clientInfo.name}/${message.params.clientInfo.version ?? "0"} (worktrust-bridge) worktrust-cli/${CLI_VERSION}`;
+    // A long-lived bridge must not keep using a cached key after local disconnect or vault lock.
+    try { key = await freshKey(); }
+    catch { key = null; if (message.id !== undefined) answer(message.id, "WorkTrust credential storage is unavailable. Unlock your OS vault and retry; no request was sent."); continue; }
     if (!key) { if (message.id !== undefined) answer(message.id, "WorkTrust is not connected on this computer: run `npx worktrust connect`."); continue; }
     try {
       const response = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
@@ -602,6 +595,7 @@ async function update() {
 }
 
 async function connect() {
+  if (has("direct") && keyStore.protected()) fail("Protected credentials use the local bridge; --direct would expose them in app settings.");
   const host = (flag("name") ?? hostname()).replace(/\.local$/i, "").slice(0, 64);
   say();
   say(`  WorkTrust · connect ${host} (${OS_NAME})`);
@@ -1032,7 +1026,7 @@ async function disconnect() {
   const plan = await run(paths["setup-mcp.mjs"], ["--remove"], PLACEHOLDER, true);
   say("  1. The WorkTrust door comes out of every AI app here:");
   for (const line of planLines(plan.out)) say(line);
-  say("  2. The session hook comes out of ~/.claude/settings.json (and Codex's notify line and Antigravity's worktrust hook, when WorkTrust set them), the key file is deleted, and ~/.worktrust is emptied");
+  say("  2. The session hook comes out of ~/.claude/settings.json (and Codex's notify line and Antigravity's worktrust hook, when WorkTrust set them), credentials are removed (an encrypted empty slot keeps the OS-vault preference)");
   say("     but for one note of which account this computer fed (masked), so a later coupling by another account starts clean.");
   say("  3. The key itself stays valid until you revoke it: WorkTrust → Sources → Devices → this computer → Revoke.");
   say();
@@ -1104,6 +1098,7 @@ async function status() {
   const door = Object.entries(servers).find(([name, server]) => /worktrust/i.test(`${name} ${server?.url ?? ""} ${(server?.args ?? []).join(" ")}`));
   say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust connect`.");
   const key = keyStore.load();
+  say(`  Credential storage: ${keyStore.protected() ? "OS vault + encrypted local file" : "private local file; use worktrust protect-key after updating"}`);
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
   if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
   let hook = false;
@@ -1188,6 +1183,7 @@ function help() {
   say("                         days this computer's own sessions lack, reconstructed, never verified hours (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
+  say("  worktrust protect-key  after update: move credential protection into the OS vault (asks first)");
   say("  worktrust orchestration report --file recording.jsonl   inspect local agent metadata; sends nothing");
   say("  worktrust mod          the WorkTrust mod for Claude Code: what it counts, and whether it is on");
   say("    install              turn it on: counts permission answers, effort levels, context peaks and subagents (asks first)");
@@ -1206,10 +1202,10 @@ function help() {
 // before anything is read or written, --yes included. The hook and the MCP bridge are started by the agent's client
 // itself and stay as they are; `status` only reads.
 async function main() {
-if (!moduleArgs || !moduleExecutable) fail("Use the complete WorkTrust package from npm/PyPI or the signed preservation kit; individual scripts cannot run.");
+if (!moduleArgs || !moduleExecutable || !createCredentialStore) fail("Use the complete WorkTrust package from npm/PyPI or the signed preservation kit; individual scripts cannot run.");
 if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or later (fetch is built in from 18).");
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
-const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod"]);
+const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod", "protect-key"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
 if (agentShell && PERSON_ONLY.has(command)) {
   say();
@@ -1243,7 +1239,7 @@ if (await relayToNewest()) return;
 
 if (!["version", "help", "preserve"].includes(command)) {
   try { keyStore.load(); }
-  catch { fail("The local WorkTrust key file is unsafe or damaged. Upload stopped. Restore the private key file from your own backup, or reconnect using an official release."); }
+  catch { fail("The local WorkTrust key file is unsafe or damaged, or the OS vault is locked or unavailable. Upload stopped. Unlock your OS vault and retry. Do not delete the key file or reset the keychain."); }
 }
 if (command === "version") say(CLI_VERSION);
 else if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
@@ -1251,6 +1247,7 @@ else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();
 else if (command === "update") await update();
+else if (command === "protect-key") await protectKey();
 else if (command === "history") await history();
 // NOT FROM THE TERMINAL (owner, 2026-10-04): an ACCOUNT is connected under Sources in the app, where the
 // page also says what is already connected: Claude and ChatGPT on the web and their earlier

@@ -1,10 +1,13 @@
 {
-  "version": "0.10.25",
+  "version": "0.10.26",
   "files": {
     "chat-exports.mjs": "04eafe333940ec03d5058d8d51062124aa12ab882bf04db03bcda5613ec69298",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
     "config-edits.mjs": "0eba2f176ef6f7afba071d6e00de0ff19ba2b283180a801dfd957aa38c1edd94",
     "count-behaviour.mjs": "1beaec2a4d0aead76d166f89cc52441a9cf48f2e69da9888ca2091dd3a10a37b",
+    "credential-store.mjs": "a4b3540a61f4ce19e535c7f1d260c0d817686cd066d559a76db2ab108144abba",
+    "credential-vault-scripts.mjs": "7e42fe1db3885c2dec6f1de87bebfbefe2292d29179a68f3da87d19eb6c7704b",
+    "credential-vault.mjs": "5dd584e0149909d0e52d5eb071366225f7c450367c6c4c355d724c2b518d6b2f",
     "history-outbox.mjs": "1bdca17b807c76e4a8e7bf42c6f07e12e8ae8e4466417cafdd26b1f58bf178a5",
     "log-session.mjs": "c5e6e4d44a85768f21c25945b8630f31306ec2665193886870c1010ef6bf3c26",
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",
@@ -13,7 +16,7 @@
     "package-integrity.mjs": "a8210c9494a56bfb9a5ea3d10064c7a269f0b6330c0af7c0700e706c3c0224e3",
     "preserve-lines.mjs": "2df64a69687aa51219bf7b86b88d175cc50990fa29574b31897e41a9ebeecf43",
     "preserve-summary.mjs": "137f781ed7021596a3f0ea67afcf2ab8616ac293f833dbb8f176e838e0ed8321",
-    "preserve.mjs": "9add279352750be94d94873738145e379819d793c20c6c6503219969608e2c2f",
+    "preserve.mjs": "3e369083ba43bcda2fa0622fd526aa64fcf8ad66e7b6e8f23821752c4d47ad27",
     "runtime-install.mjs": "aab47b52c79d726ef428a24f982c648fa3f1c2dc2b574f633611d02924864e5f",
     "session-databases.mjs": "543fd3b82d28d96d789be0a1dc9186c5fafa783e98b87e5b3b17b211542e2b4d",
     "setup-mcp.mjs": "6ecfbf44f001dd433512b26736031ebc855b154e2bb0a401e2512b43623cd9cd",
@@ -21,6 +24,6 @@
     "stretch-evidence.mjs": "5b31a6f29b785d277e92257532f3c7cee366a79759decc7a75cfbaec2686ee13",
     "transcript-readers.mjs": "413948644a74dc0bf1b49548be193bf596bcf82ac7eae668f624345a18e189e7",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "bd208923c08a16ed640f25417ae381d0c3e3dda02e56aad4aee66497cdd494b9"
+    "worktrust.mjs": "78260b4615226ac901211094a908e7535e2d8b8ff18856d907a817f3cb5a1e08"
   }
 }

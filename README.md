@@ -1,10 +1,15 @@
 # worktrust
 
-## Candidate 0.10.26: OS credential storage
+## 0.10.27: history kept on the server
 
-Not published yet; 0.10.25 is the preceding live release. This candidate adds explicit
-`worktrust protect-key` migration: an OS-vault wrapping key protects the locally encrypted
-coupling credentials. It does not attest that local activity is truthful. See
+A re-measure (`worktrust history`) sends its batches as one run; WorkTrust keeps each batch it
+receives and rebuilds the days itself once the run is whole, so no `--resume` is needed. A line
+under no product name is replaced only where the new lines overlap it.
+
+## 0.10.26: OS credential storage
+
+Explicit `worktrust protect-key` migration: an OS-vault wrapping key protects the locally
+encrypted coupling credentials. It does not attest that local activity is truthful. See
 [credential protection](#credential-protection) before enabling it.
 
 After an approved update, WorkTrust receives the running version without
@@ -388,8 +393,8 @@ the proof of possession the pairing binds, for nothing your record would gain.
 
 ## Credential protection
 
-Existing installations keep private file storage until the person opts in. In the 0.10.26
-candidate, run `worktrust update`, quit the AI apps, then run `worktrust protect-key` and restart
+Existing installations keep private file storage until the person opts in. From 0.10.26,
+run `worktrust update`, quit the AI apps, then run `worktrust protect-key` and restart
 those apps. A new computer can run `worktrust protect-key` before connecting. `worktrust status`
 shows the storage mode. This command is local and does not publish or change a Passport.
 

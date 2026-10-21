@@ -38,7 +38,7 @@ export function queuedHistory(target,body,source) {
  const scope=scopeOf(target),id=digest(scope+'\0'+source+'\0'+body);
  const request=join(root,id+'.request.json'),ack=join(root,id+'.ack.json'),state=join(root,id+'.state.json');
  const acknowledged=read(ack);
- if(acknowledged?.id===id)return {status:'acknowledged',confirm(){},defer(){}};
+ if(acknowledged?.id===id)return {status:'acknowledged',confirm(){},close(){},defer(){}};
  const current=read(state);
  reservation(root,()=>{
  if(!existsSync(request)) {
@@ -50,6 +50,8 @@ export function queuedHistory(target,body,source) {
  });
  const status=current?.status==='review'?'review':Number(current?.retryAt)>Date.now()?'waiting':'pending';
  return {status,retryAt:current?.retryAt??null,
+  // close (0.10.27): WorkTrust refused the batch for good (its run closed): kept here it would wait forever, so it is let go.
+  close(){write(ack,{id,closedAt:new Date().toISOString()});if(existsSync(request)){regular(request);unlinkSync(request);}if(existsSync(state)){regular(state);unlinkSync(state);}},
   confirm(){write(ack,{id,confirmedAt:new Date().toISOString()});if(existsSync(request)){regular(request);unlinkSync(request);}if(existsSync(state)){regular(state);unlinkSync(state);}},
   defer(reason,seconds=0){if(existsSync(ack))return;write(state,{id,status:reason==='review'?'review':'retry',retryAt:Date.now()+Math.max(0,Math.min(MAX_RETRY_SECONDS,seconds))*1000});},
  };
@@ -59,14 +61,16 @@ export function historyRefusal(text,response) {
  try {rpc=JSON.parse(text.trim().startsWith('{')?text:text.split(/\r?\n/).find(s=>s.startsWith('data:'))?.slice(5));}catch{/* Unknown reply stays retryable, never acknowledged. */}
  const review=rpc?.id===1 && (rpc?.error?.data?.outcome==='review' || String(rpc?.error?.message??'').startsWith('history replacement held for review:'));
  const raw=Number(response.headers.get('retry-after'));
- return {reason:review?'review':response.status===429?'capacity':'unconfirmed',seconds:Number.isFinite(raw)&&raw>0?Math.min(MAX_RETRY_SECONDS,raw):0};
+ // A staged run WorkTrust closed or refused (0.10.27: another computer's key, seven days without its last batch) is final.
+ const closed=rpc?.id===1 && String(rpc?.error?.message??'').startsWith('history run refused:');
+ return {reason:review?'review':closed?'closed':response.status===429?'capacity':'unconfirmed',seconds:Number.isFinite(raw)&&raw>0?Math.min(MAX_RETRY_SECONDS,raw):0};
 }
 
 /** Explicit recovery, even after the AI client removed its source files. A changed account/key
  * cannot replay another coupling's pending data. Review is retried only on an explicit request. */
-export async function resumeHistory(target, {send, confirmed, note, retryReview=false, dry=false}) {
+export async function resumeHistory(target, {send, confirmed, note, retryReview=false, dry=false, limit=Infinity}) {
  const root=join(homedir(),'.worktrust','history-outbox'),scope=scopeOf(target);
- const totals={received:0,review:0,waiting:0,batches:0};let paused=null;
+ const totals={received:0,review:0,waiting:0,batches:0,refused:0};let paused=null,sent=0;
  if(!existsSync(root))return totals;
  directory(root);
  const files=readdirSync(root);if(files.length>12000)throw Error('HISTORY_QUEUE_FULL');
@@ -78,14 +82,16 @@ export async function resumeHistory(target, {send, confirmed, note, retryReview=
   if(rpc.jsonrpc!=='2.0'||rpc.id!==1||rpc.method!=='tools/call'||rpc.params.name!=='import_history'||!Array.isArray(entries)||!entries.length||entries.length>200)throw Error('HISTORY_QUEUE_CHANGED');
   const queued=queuedHistory(target,item.body,item.source);totals.batches++;
   if(queued.status==='acknowledged')continue;
+  // `limit` (0.10.27): the hook sends a few a run by itself; the rest wait, untouched, for the next run.
+  if(sent>=limit){totals.waiting+=entries.length;continue;}
   if(queued.status==='review'&&!retryReview){totals.review+=entries.length;continue;}
   if(dry){totals.waiting+=entries.length;continue;}
   if(queued.status==='waiting'&&!paused)paused={reason:'unconfirmed',seconds:Math.max(1,Math.ceil((queued.retryAt-Date.now())/1000))};
   if(paused){if(queued.status==='review'){totals.review+=entries.length;continue;}queued.defer(paused.reason,paused.seconds);totals.waiting+=entries.length;continue;}
   try {
-   const response=await send(item.body,item.source),text=await response.text();
+   sent++;const response=await send(item.body,item.source),text=await response.text();
    try{if(!response.ok)throw Error();confirmed(text,entries.length);}
-   catch{const refusal=historyRefusal(text,response);if(refusal.reason!=='review')paused={reason:refusal.reason,seconds:refusal.seconds>0?refusal.seconds:5};queued.defer(refusal.reason,paused?.seconds??refusal.seconds);totals[refusal.reason==='review'?'review':'waiting']+=entries.length;continue;}
+   catch{const refusal=historyRefusal(text,response);if(refusal.reason==='closed'){queued.close();totals.refused+=entries.length;continue;}if(refusal.reason!=='review')paused={reason:refusal.reason,seconds:refusal.seconds>0?refusal.seconds:5};queued.defer(refusal.reason,paused?.seconds??refusal.seconds);totals[refusal.reason==='review'?'review':'waiting']+=entries.length;continue;}
    queued.confirm();totals.received+=entries.length;note(text);
   }catch{paused={reason:'unconfirmed',seconds:5};queued.defer(paused.reason,paused.seconds);totals.waiting+=entries.length;}
  }

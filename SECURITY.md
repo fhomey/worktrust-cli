@@ -29,7 +29,7 @@ private transcripts or account data in a public issue.
 ## Where the key is, and how long it lives
 
 - Existing installations use a private local file until explicit `worktrust protect-key` migration
-  (0.10.26 candidate). Base64 in that legacy file is not encryption.
+  (0.10.26 and later). Base64 in that legacy file is not encryption.
 - Protected mode uses AES-256-GCM for all coupling secrets and OS storage for a separate random
   wrapping key: macOS Keychain, Windows Credential Manager with local-machine persistence, or
   Linux Secret Service. Only a random identifier, provider, nonce, ciphertext and authentication

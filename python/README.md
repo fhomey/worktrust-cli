@@ -1,6 +1,11 @@
 # WorkTrust for Python tool runners
 
-## OS credential storage (0.10.26 candidate, not published)
+## History kept on the server (0.10.27)
+
+`uvx worktrust history` sends a re-measure as one run; WorkTrust keeps each batch and rebuilds
+the days itself once the run is whole. No `--resume` is needed.
+
+## OS credential storage (0.10.26)
 
 The same `protect-key` command is available through `uvx worktrust protect-key` and
 `pipx run worktrust protect-key`. Update the installed bridge first and quit AI apps before

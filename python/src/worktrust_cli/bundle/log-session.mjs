@@ -654,7 +654,7 @@ function batchesOf(group, byDay) {
   return out;
 }
 /** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
-const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0 }; // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
+const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0, staged: 0, kept: 0 }; // 0.10.27: staged, the batches WorkTrust keeps on its server, and kept, their lines // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
 const noteReceipt = (answer) => {
   try {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
@@ -675,6 +675,10 @@ function confirmedReceipt(answer, expectedCount = null) {
     const receipt = JSON.parse(content[0].text);
     if (expectedCount === null) {
       if (!(receipt.receipt === "received" && ["accepted", "flagged", "pending"].includes(receipt.status)) && !(receipt.receipt === "unchanged" && receipt.reason === "duplicate")) throw Error();
+    } else if (receipt.staged === true) {
+      // KEPT ON THE SERVER (0.10.27): a batch of a run WorkTrust holds and rebuilds itself; every line counted as kept or refused.
+      if (receipt.receipt !== "received" || receipt.received !== expectedCount || !Number.isInteger(receipt.kept) || receipt.kept < 0
+        || !Number.isInteger(receipt.refused) || receipt.refused < 0 || receipt.kept + receipt.refused > expectedCount) throw Error();
     } else if (receipt.receipt !== "received" || receipt.received !== expectedCount || receipt.refused !== 0
       || !Number.isInteger(receipt.new) || receipt.new < 0 || !Number.isInteger(receipt.alreadyHeld) || receipt.alreadyHeld < 0
       || receipt.new + receipt.alreadyHeld !== expectedCount) throw Error();
@@ -699,29 +703,43 @@ function retainMeasurement(payload, source) {
     }
   } finally { closeSync(fd); unlinkSync(temporary); }
 }
-const HISTORY_DELIVERY = { review: 0, waiting: 0 };
+const HISTORY_DELIVERY = { review: 0, waiting: 0, refused: 0 };
+/**
+ * ONE RUN PER COUPLING (0.10.27; owner, 2026-10-21: re-measured history is kept on the server). The batches of a re-measure
+ * to one key are one run: an id, each batch's number and the run's count ride in every batch, and WorkTrust keeps each batch
+ * it receives and rebuilds the run's days itself, every AI app of the run together, once all of them have arrived. The id is
+ * a digest of the UTC day and the run's batches, never of a key: the same plan sent again the same day is the same run, so a
+ * batch already received is neither uploaded nor kept twice. Never an export, a copied folder or the hook's late days.
+ */
+const historyRunId = (bodies) => {
+  const h = createHash("sha256").update(`worktrust-history-run|${new Date().toISOString().slice(0, 10)}|${bodies.join("\n")}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${(8 | (parseInt(h[16], 16) & 3)).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+};
 async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
   let accepted = 0;
   const { queuedHistory, historyRefusal } = await import("./history-outbox.mjs");
   // Keep each source and its approved coupling separate.
   const groups = [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS, ...EXPORT_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])];
-  const encodeBatch = batch => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }) } } });
+  // Imported entries carry no live commit/session join.
+  const encodeBatch = (batch, run = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }), ...(run ? { run } : {}) } } });
+  const plan = groups.flatMap(([source, group]) => { const target = source === "codex" ? codexDoor ?? door : door; return group.length > 0 && target ? batchesOf(group, byDay).map((batch) => ({ source, target, batch, run: null })) : []; });
+  if (rebuild && !byDay) for (const token of new Set(plan.map((item) => item.target.token))) {
+    const run = plan.filter((item) => item.target.token === token), id = historyRunId(run.map((item) => encodeBatch(item.batch)));
+    run.forEach((item, index) => { item.run = { id, index, count: run.length }; });
+  }
+  for (const item of plan) item.body = encodeBatch(item.batch, item.run);
   // Persist the approved plan before sending, so later batches survive removed source files too.
-  try { for (const [source, group] of groups) { const target = source === "codex" ? codexDoor ?? door : door; if (target) for (const batch of batchesOf(group, byDay)) queuedHistory(target, encodeBatch(batch), source); } }
+  try { for (const item of plan) queuedHistory(item.target, item.body, item.source); }
   catch { console.error("History queue is full, busy or unavailable. Resume the saved batches before retrying this import; nothing was marked complete."); HISTORY_DELIVERY.waiting += entries.length; return 0; }
-  for (const [source, group] of groups) {
-  const target = source === "codex" ? codexDoor ?? door : door;
-  if (group.length === 0 || !target) continue;
-  let number = 0;
-  for (const batch of batchesOf(group, byDay)) {
-    number += 1;
-    // Imported entries carry no live commit/session join.
-    const body = encodeBatch(batch);
+  const numbers = new Map(), stopped = new Set();
+  for (const { source, target, batch, body } of plan) {
+    if (stopped.has(source)) continue;
+    const number = (numbers.get(source) ?? 0) + 1; numbers.set(source, number);
     for (const entry of batch) retainMeasurement(entry, source);
     // `named` (0.10.10): a copied folder's lines name their client too, so the record says which app the copy came from.
     let queued;
     try { queued = queuedHistory(target, body, source); }
-    catch { console.error("Pending history could not be stored safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); HISTORY_DELIVERY.waiting += batch.length; break; }
+    catch { console.error("Pending history could not be stored safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue; }
     if (queued.status === "acknowledged" && !byDay) { accepted += batch.length; RECEIPTS.alreadyHeld += batch.length; continue; }
     if (queued.status === "review" && !flag("retry-review")) { HISTORY_DELIVERY.review += batch.length; continue; }
     if (queued.status === "waiting") { HISTORY_DELIVERY.waiting += batch.length; continue; }
@@ -730,16 +748,34 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
       const text = await response.text();
       try { if (!response.ok) throw Error(); confirmedReceipt(text, batch.length); }
       catch {
-        const refusal = historyRefusal(text, response); queued.defer(refusal.reason, refusal.seconds);
+        const refusal = historyRefusal(text, response);
+        // A run WorkTrust closed (seven days without its last batch, another computer's key) is final: kept here it would wait forever.
+        if (refusal.reason === "closed") { queued.close(); HISTORY_DELIVERY.refused += batch.length; continue; }
+        queued.defer(refusal.reason, refusal.seconds);
         if (refusal.reason === "review") { HISTORY_DELIVERY.review += batch.length; continue; }
-        HISTORY_DELIVERY.waiting += batch.length; break;
+        HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue;
       }
       queued.confirm(); accepted += batch.length; noteReceipt(text);
       if (announce) console.log(`batch ${number}: received ${batch.length}`);
-    } catch { queued.defer("unconfirmed"); HISTORY_DELIVERY.waiting += batch.length; break; }
-  }
+    } catch { queued.defer("unconfirmed"); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); }
   }
   return accepted;
+}
+
+/** The outbox's batches for one coupling, sent as `--resume` and the hook send them: signed, named, bounded in time. */
+const sendQueued = (target, ms = 65_000) => (body, source) => fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, true), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(ms) });
+/**
+ * PENDING HISTORY GOES BY ITSELF (0.10.27; owner, 2026-10-21). A batch the server did not receive (no network, a closed lid,
+ * the upload limit) stays in ~/.worktrust/history-outbox and is sent again by the next hook run, a few at a time, without a
+ * question: the person said yes when the run was planned, and once WorkTrust has the batch nothing waits here. A batch held
+ * for review is never resent this way (`--retry-review` is the person's own).
+ */
+async function resendPending(limit) {
+  try {
+    const { resumeHistory } = await import("./history-outbox.mjs");
+    for (const target of [door, ...(codexDoor && codexDoor.token !== door?.token ? [codexDoor] : [])].filter(Boolean))
+      await resumeHistory(target, { limit, confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target, 20_000) });
+  } catch (error) { if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`); }
 }
 
 /** Whether the door's import_history takes `from_archive` (0.8.0): asked with tools/list, never assumed. */
@@ -1148,12 +1184,10 @@ if (!door && !codexDoor && !DRY) { return await exitFlushed(0); } // Not coupled
  */
 if (flag("history") && flag("resume")) {
   const { resumeHistory } = await import("./history-outbox.mjs");
-  const totals = { received: 0, review: 0, waiting: 0, batches: 0 };
+  const totals = { received: 0, review: 0, waiting: 0, batches: 0, refused: 0 };
   try {
     for (const target of [door, ...(codexDoor && codexDoor.token !== door?.token ? [codexDoor] : [])].filter(Boolean)) {
-      const result = await resumeHistory(target, { dry: DRY, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt,
-        send: (body, source) => fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, true), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(65_000) }),
-      });
+      const result = await resumeHistory(target, { dry: DRY, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target) });
       for (const key of Object.keys(totals)) totals[key] += result[key];
     }
     console.log(JSON.stringify({ resumed: totals.received, ...totals, ...RECEIPTS }));
@@ -1291,6 +1325,9 @@ if (!DRY && late.length > 0) {
   if (filed < late.length) for (const [id, mark] of heldBack) { if (mark) state[id] = mark; else delete state[id]; }
 }
 if (!DRY && (sent > 0 || filed > 0)) writeState(state);
+// What an earlier history run left on this computer because the server never received it: a few batches a run, by itself; not in a
+// run that just sent late days itself (a batch it just tried waits for the next run, as it always did).
+if (!DRY && late.length === 0) await resendPending(4);
 
 // The counter, at most once a day, detached: reading every transcript takes longer than a hook
 // may hold a session's exit, and its result waits for a click either way. `--stage` and never

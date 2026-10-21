@@ -1,5 +1,5 @@
 {
-  "version": "0.10.26",
+  "version": "0.10.27",
   "files": {
     "chat-exports.mjs": "04eafe333940ec03d5058d8d51062124aa12ab882bf04db03bcda5613ec69298",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -8,8 +8,8 @@
     "credential-store.mjs": "a4b3540a61f4ce19e535c7f1d260c0d817686cd066d559a76db2ab108144abba",
     "credential-vault-scripts.mjs": "7e42fe1db3885c2dec6f1de87bebfbefe2292d29179a68f3da87d19eb6c7704b",
     "credential-vault.mjs": "279baabb217e2a3f170e8d7f2b271a88484531f9031c441360ea91561a70da99",
-    "history-outbox.mjs": "1bdca17b807c76e4a8e7bf42c6f07e12e8ae8e4466417cafdd26b1f58bf178a5",
-    "log-session.mjs": "c5e6e4d44a85768f21c25945b8630f31306ec2665193886870c1010ef6bf3c26",
+    "history-outbox.mjs": "013885af8239da9fbd0f7fb339383f6dbcb462f439d8900c9290757f63fb597a",
+    "log-session.mjs": "87066a26e9d2d3947540b24e34139f63b25a1e4f8e13f389fa5e2d398893c368",
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",
     "orchestration-evidence.mjs": "d0d06cecf0eb08e5c6e653c62a4f45b1eddf2119c2acb8341056b34f488d214a",
     "orchestration-report.mjs": "d4e0a9ad8e4a01b462d22c6b1866aac291565c533ff476085d3367cb6d59bc1b",
@@ -24,6 +24,6 @@
     "stretch-evidence.mjs": "5b31a6f29b785d277e92257532f3c7cee366a79759decc7a75cfbaec2686ee13",
     "transcript-readers.mjs": "413948644a74dc0bf1b49548be193bf596bcf82ac7eae668f624345a18e189e7",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "78260b4615226ac901211094a908e7535e2d8b8ff18856d907a817f3cb5a1e08"
+    "worktrust.mjs": "4fc0b26c65394591ef13a354c53792926c43a4c829357c6dac12570181ac0e47"
   }
 }

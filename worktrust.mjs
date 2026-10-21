@@ -75,7 +75,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.26";
+const CLI_VERSION = "0.10.27";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -712,8 +712,12 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
     : n(did.new) === 0 ? `Nothing changed: the same measurement${n(did.filled) > 0 ? `; ${n(did.filled)} lines gained what was missing (the stack, the tools seen, a layer)` : ""}; ${n(did.alreadyHeld)} lines already held.`
     : `${n(did.new)} new lines${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}; ${n(did.alreadyHeld)} already held.`;
   if (Number(did?.delivery?.review) > 0) say(`  ${did.delivery.review} lines are waiting for review. Earlier measurements remain unchanged. Reconnecting or repeating the import does not approve them.`);
-  if (Number(did?.delivery?.waiting) > 0) say("  Pending batches remain on this computer. Run npx worktrust history --resume after the upload limit or connection recovers.");
-  if (rebuild && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
+  // KEPT ON THE SERVER (0.10.27; owner, 2026-10-21): what did not arrive stays here and goes again by itself; nothing to resume by hand.
+  if (Number(did?.delivery?.waiting) > 0) say("  Some batches did not reach WorkTrust yet. They stay on this computer and are sent again by themselves the next time npx worktrust or your AI app's hook runs.");
+  if (Number(did?.delivery?.refused) > 0) say(`  WorkTrust closed an earlier run of ${did.delivery.refused} lines (it missed a batch for seven days): run npx worktrust@latest history again to send them as a new run.`);
+  // A STAGED RUN (0.10.27): WorkTrust holds every batch and rebuilds the days itself once the run is whole; the receipts say what it kept.
+  if (rebuild && n(did?.staged) > 0 && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(`  ✓ Re-measured. WorkTrust holds all ${n(did.staged)} batches (${n(did.kept)} lines) and rebuilds these days itself, every AI app together, a day counted once. Sources › Logs shows it while it works.`);
+  else if (rebuild && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
   else if (!rebuild) say(sent.code === 0 ? "  ✓ Sent as history. Activity is recorded with its origin; independent verification and passport publication are separate. A day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
   if (did && Number(did.measuredSeconds) > 0) say(`  Measured by WorkTrust: ${(Number(did.measuredSeconds) / 3600).toFixed(1)} h for what this send stored${n(did.corrected) > 0 ? ` (${n(did.corrected)} lines corrected: a figure sent beside the timeline differed)` : ""}.`);
 }
@@ -760,6 +764,7 @@ const historyComplete = () => { try { const state = JSON.parse(readFileSync(HIST
 async function again() {
   const before = stableVersion();
   if (before && before !== CLI_VERSION) { await update(); return; }
+  { const key = await freshKey(); if (key) await resendHistory(key); }
   if (!historyComplete()) {
     const key = await freshKey();
     if (key) { say(); say(`  Your earlier sessions are not yet measured by worktrust ${CLI_VERSION} in WorkTrust, or did not all arrive. This finishes them.`); await offerHistory(await scripts(), key.token, key.device ?? null, key.url, true); }
@@ -770,6 +775,19 @@ async function again() {
   await status();
   say();
   say("  This computer is coupled. `npx worktrust connect` couples it again; `npx worktrust disconnect` takes it out.");
+}
+
+/**
+ * PENDING HISTORY GOES BY ITSELF (0.10.27; owner, 2026-10-21): batches an earlier history run planned and the server never
+ * received (no network, a closed lid, the upload limit) are sent again here, without a question: the person said yes when the
+ * run was planned. Held-for-review batches stay held. Quiet when nothing was pending.
+ */
+async function resendHistory(key) {
+  const paths = await scripts(), sent = await run(paths["log-session.mjs"], ["--history", "--resume"], key.token, true, { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) });
+  let did = null;
+  try { did = JSON.parse(sent.out.trim().split("\n").reverse().find((line) => line.startsWith('{"resumed"')) ?? "null"); } catch { /* nothing pending, or an older hook */ }
+  if (Number(did?.resumed) > 0) { say(); say(`  ✓ ${did.resumed} lines of earlier history that had not reached WorkTrust were sent; WorkTrust keeps them and rebuilds the days itself.`); }
+  if (Number(did?.waiting) > 0) say("  Some earlier history is still on this computer; it is sent again by itself the next time npx worktrust or your AI app's hook runs.");
 }
 
 async function history() {

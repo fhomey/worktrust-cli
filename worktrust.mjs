@@ -75,7 +75,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.27";
+const CLI_VERSION = "0.10.28";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -707,10 +707,15 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
   // "replaced". The hook sums the receipts of every batch and prints one line; without it (an older hook) the sentence stays neutral.
   const did = (() => { try { return JSON.parse(sent.out.trim().split("\n").reverse().find((line) => line.startsWith('{"history_sent"')) ?? "null"); } catch { return null; } })();
   const n = (value) => Number(value) || 0;
+  // AN HONEST RECEIPT (owner, 2026-10-22; 0.10.28): a re-measure that landed as new lines over lines WorkTrust had withdrawn or
+  // cut off is said as new lines, never as "Nothing changed"; `restored` counts the ones WorkTrust landed over a support-withdrawn
+  // original with its own clock (the withdrawn line stays withdrawn). `untimed` names entries refused for carrying no timeline.
+  const landed = n(did.new) + n(did.restored);
   const outcome = !did ? "The record shows what changed."
-    : n(did.replaced) > 0 ? `${n(did.replaced)} of this computer's earlier lines were replaced (withdrawn and kept, never deleted)${n(did.new) > 0 ? `, ${n(did.new)} new` : ""}${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}.`
-    : n(did.new) === 0 ? `Nothing changed: the same measurement${n(did.filled) > 0 ? `; ${n(did.filled)} lines gained what was missing (the stack, the tools seen, a layer)` : ""}; ${n(did.alreadyHeld)} lines already held.`
-    : `${n(did.new)} new lines${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}; ${n(did.alreadyHeld)} already held.`;
+    : n(did.replaced) > 0 ? `${n(did.replaced)} of this computer's earlier lines were replaced (withdrawn and kept, never deleted)${landed > 0 ? `, ${landed} new` : ""}${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}.`
+    : landed === 0 ? `Nothing changed: the same measurement${n(did.filled) > 0 ? `; ${n(did.filled)} lines gained what was missing (the stack, the tools seen, a layer)` : ""}; ${n(did.alreadyHeld)} lines already held.`
+    : `${landed} new lines${n(did.restored) > 0 ? ` (${n(did.restored)} timed by WorkTrust in place of lines it had withdrawn)` : ""}${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}; ${n(did.alreadyHeld)} already held.`;
+  if (n(did?.untimed) > 0) say(`  ${n(did.untimed)} lines were refused: they carried no timeline, so WorkTrust could not time them itself. This CLI sends every session's timeline; a line without one came from an older copy or an archive.`);
   if (Number(did?.delivery?.review) > 0) say(`  ${did.delivery.review} lines are waiting for review. Earlier measurements remain unchanged. Reconnecting or repeating the import does not approve them.`);
   // KEPT ON THE SERVER (0.10.27; owner, 2026-10-21): what did not arrive stays here and goes again by itself; nothing to resume by hand.
   if (Number(did?.delivery?.waiting) > 0) say("  Some batches did not reach WorkTrust yet. They stay on this computer and are sent again by themselves the next time npx worktrust or your AI app's hook runs.");

@@ -64,9 +64,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 
-import { moduleArgs, moduleExecutable } from "./package-integrity.mjs";
+import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs";
 
 async function main() {
 const args = process.argv.slice(2), NODE_FLAGS = process.versions.node === "26.5.0" ? ["--no-concurrent-sparkplug"] : [];
@@ -319,6 +319,32 @@ const repoOf = (cwd) => {
   if (!CODE_HOSTS.test(remote)) return null;
   const match = /[:/]([^/:]+)\/([^/]+?)(?:\.git)?$/.exec(remote);
   return match ? `${match[1]}/${match[2]}` : null;
+};
+/**
+ * A REPOSITORY IT MAY NOT NAME, AS A CODE ONLY THIS COMPUTER CAN MAKE (owner, 2026-10-21). For a git repository whose remote is
+ * on no host WorkTrust can couple (or that has no remote), the name still never travels (0.8.6); what travels is 16 hex of an
+ * HMAC-SHA256, keyed with this computer's own secret (~/.worktrust/archive-salt, the archive's, made once with mode 600, never
+ * sent), over the normalised remote (host and path, no user, no secret, no .git) or, without one, the repository's root. The
+ * same repository gives the same code here, so its lines can be grouped and filed once; WorkTrust cannot turn a code back into
+ * a name, because it never holds the key. A folder that is no git repository gets no code.
+ */
+let repoSecret;
+const repoCodeSecret = () => {
+  if (repoSecret !== undefined) return repoSecret;
+  const file = join(homedir(), ".worktrust", "archive-salt");
+  try { const kept = readPrivateFile(file)?.trim(); if (/^[0-9a-f]{64}$/.test(kept ?? "")) return (repoSecret = kept); } catch { /* first run */ }
+  try { const made = randomBytes(32).toString("hex"); createPrivateFile(file, `${made}\n`); return (repoSecret = made); } catch { try { const kept = readPrivateFile(file)?.trim(); return (repoSecret = /^[0-9a-f]{64}$/.test(kept ?? "") ? kept : null); } catch { return (repoSecret = null); } }
+};
+const repoCodeOf = (cwd) => {
+  const root = git(cwd, "rev-parse", "--show-toplevel");
+  if (!root) return null;
+  const remote = git(cwd, "remote", "get-url", "origin");
+  if (remote && CODE_HOSTS.test(remote)) return null;
+  const name = remote
+    ? `remote:${remote.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/^[^@/]+@/, "").replace(/:(?!\d)/, "/").replace(/\.git$/, "").replace(/\/+$/, "")}`
+    : `root:${root}`;
+  const secret = repoCodeSecret();
+  return secret ? createHmac("sha256", secret).update(`worktrust-repo-code|${name}`).digest("hex").slice(0, 16) : null;
 };
 /** The paths this stretch touched: what was committed inside it, else what is still uncommitted. */
 const pathsTouched = (cwd, from, to) => {
@@ -573,6 +599,7 @@ const STEERED_HERE = process.env.SSH_CONNECTION || process.env.SSH_CLIENT || pro
 function payloadFor(stretch) {
   const cwd = stretch.cwd && existsSync(stretch.cwd) ? stretch.cwd : null;
   const repo = cwd ? repoOf(cwd) : null;
+  const repoCode = cwd && !repo ? repoCodeOf(cwd) : null; // a code, never a name, for a repository it may not name
   const touched = cwd ? pathsTouched(cwd, new Date(stretch.from).toISOString(), new Date(stretch.to).toISOString()) : { paths: [], committed: false, shas: [] };
   const { layer, layers } = layersOf(touched.paths), stack = stackOfFiles(touched.paths), toolsSeen = displayStackOfFiles(touched.paths); // 0.10.11: the stack and the tools seen, from the same paths, keys only, two fields
   // The seventh kind, used as it is defined: a stretch that changed no artefact is knowing
@@ -606,6 +633,7 @@ function payloadFor(stretch) {
     ...(stretch.shapeKnown && stretch.cacheWrite > 0 ? { tokens_cache_write: stretch.cacheWrite } : {}),
     ...(stretch.model ? { model: stretch.model } : {}),
     ...(repo ? { repo } : {}),
+    ...(repoCode ? { repo_code: repoCode } : {}),
     ...(touched.shas.length > 0 ? { commits: touched.shas.slice(0, 50) } : {}),
     ...(stretch.ref ? { stretch_ref: stretch.ref } : {}), ...(stretch.steered ? { steered_from: stretch.steered } : {}),
     // WHICH CODE SENT IT (0.10.20): a version and a digest of this hook's own files, signals never proof.
@@ -654,7 +682,7 @@ function batchesOf(group, byDay) {
   return out;
 }
 /** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
-const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0, staged: 0, kept: 0 }; // 0.10.27: staged, the batches WorkTrust keeps on its server, and kept, their lines // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
+const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0, staged: 0, kept: 0, restored: 0, untimed: 0 }; // 0.10.27: staged, the batches WorkTrust keeps on its server, and kept, their lines // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
 const noteReceipt = (answer) => {
   try {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");

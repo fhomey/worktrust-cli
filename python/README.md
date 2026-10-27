@@ -1,5 +1,11 @@
 # WorkTrust for Python tool runners
 
+## History in calls WorkTrust takes; how each session was started (0.10.29)
+
+`uvx worktrust history` cuts every call under WorkTrust's history ceilings and cuts a batch an
+earlier version queued larger before sending it. Each line says how its session was started
+(interactive, headless or scheduled) when the AI app recorded it.
+
 ## History kept on the server (0.10.27)
 
 `uvx worktrust history` sends a re-measure as one run; WorkTrust keeps each batch and rebuilds

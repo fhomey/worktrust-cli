@@ -222,7 +222,7 @@ const excluded = (path) => excludes.some((text) => text && path.includes(text));
  * reader), the database clients in session-databases.mjs. The install copies both into ~/.worktrust with this hook.
  * Without them this hook still reads Claude Code; the never-matching patterns keep every other client out.
  */
-const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null, codexLive = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
+const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null, codexLive = () => null, sessionKindReader = () => ({ note() {}, kind: () => "unknown" }) } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
 // THE STRETCH'S DERIVED RECORD (0.7.4: split from this file): tool calls named by kind, verification, recovery, delegation,
 // context and routing, for the local archive only. A copy without the module still measures and sends exactly as before.
 const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null, resultOf = (block) => ({ id: block.tool_use_id, failed: block.is_error === true, refusal: null }) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
@@ -368,6 +368,13 @@ const pathsTouched = (cwd, from, to) => {
  * boundary the history path already uses, it needs no guess about where one piece of work ended,
  * and it is the unit the record reads back anyway.
  */
+/**
+ * HOW THE SESSION WAS STARTED (owner, 2026-10-22; 0.10.29; docs/AGENT-HOURS.md): one word the client itself recorded, never a
+ * guess, read by `sessionKindReader` in transcript-readers.mjs over the whole session (its entrypoint, its first turn's origin, a
+ * Codex rollout's source) and sent beside a timeline as `session_kind` when it is interactive, headless or scheduled; unknown is
+ * left unsaid, and WorkTrust reads an unsaid kind as interactive. A copy without the readers reads every session as unknown.
+ * WorkTrust counts a headless or scheduled session as Agent operations, never as the person's hours.
+ */
 function stretchesOf(file, since) {
   // A file we cannot read is no days, never a null the caller has to remember to check: this
   // returns a list now, and one caller forgetting that is one silent crash inside a hook.
@@ -375,9 +382,11 @@ function stretchesOf(file, since) {
   if (!lines) return [];
   const messages = [];
   let cwd = null, steered = STEERED_HERE;
+  const kind = sessionKindReader();
   for (const line of lines) {
     if (typeof line.cwd === "string") cwd = line.cwd;
     if (typeof line.steered === "string") steered = line.steered; // a client that says how it was steered (Hermes's source)
+    kind.note(line);
     if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
     const at = Date.parse(line.timestamp);
     if (!Number.isFinite(at)) continue;
@@ -387,8 +396,8 @@ function stretchesOf(file, since) {
   if (messages.length === 0) return [];
   messages.sort((a, b) => a.at - b.at);
   const byDay = byDayOf(messages);
-  const agents = agentsByDay(file, since);
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+  const agents = agentsByDay(file, since), session = kind.kind();
+  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
 }
 
 /**
@@ -636,6 +645,8 @@ function payloadFor(stretch) {
     ...(repoCode ? { repo_code: repoCode } : {}),
     ...(touched.shas.length > 0 ? { commits: touched.shas.slice(0, 50) } : {}),
     ...(stretch.ref ? { stretch_ref: stretch.ref } : {}), ...(stretch.steered ? { steered_from: stretch.steered } : {}),
+    // HOW THE SESSION WAS STARTED (owner, 2026-10-22): interactive | headless | scheduled, beside the timeline; unknown is unsaid.
+    ...(stretch.timeline && (stretch.session === "interactive" || stretch.session === "headless" || stretch.session === "scheduled") ? { session_kind: stretch.session } : {}),
     // WHICH CODE SENT IT (0.10.20): a version and a digest of this hook's own files, signals never proof.
     ...(CLI_VERSION_SENT ? { cli_version: CLI_VERSION_SENT } : {}),
     ...(selfDigest ? { cli_digest: selfDigest } : {}),
@@ -664,18 +675,31 @@ function payloadFor(stretch) {
  * one day alone exceeds the cap: the door's receipt counts per day what it replaced and how many AI-app lines lie there, and a
  * day in two batches would be counted twice.
  */
-/** A batch stays under the door's body ceiling (4.5 MB) with room for the envelope: a timeline (0.10.20) is up to 200 KB a line, so a batch is cut by bytes as well as by count. */
-const BATCH_BYTES = 3_500_000;
+/**
+ * A batch stays under the door's ceilings for one history call (2026-10-23, docs/INTAKE-HARDENING.md): 2 MB a call and 1.5 MB of
+ * timelines a call, each with room for the envelope. A timeline (0.10.20) is up to 200 KB a line, so a batch is cut by bytes
+ * and by timeline bytes as well as by count. Until 0.10.28 the cut was 3.5 MB, under the door's 4.5 MB outer bound only.
+ */
+const BATCH_BYTES = 1_900_000;
+const BATCH_TIMELINE_BYTES = 1_400_000;
+/** One call's ceiling as the cut reads it: lines, bytes of the lines, bytes of their timelines (0.10.29: a re-split passes a tighter one). */
+const BATCH_LIMIT = { lines: 200, bytes: BATCH_BYTES, timelineBytes: BATCH_TIMELINE_BYTES };
 const bytesOf = (entry) => Buffer.byteLength(JSON.stringify(entry), "utf8");
-const byBytes = (entries) => { const out = []; let current = [], size = 0; for (const entry of entries) { const bytes = bytesOf(entry); if (current.length > 0 && (current.length >= 200 || size + bytes > BATCH_BYTES)) { out.push(current); current = []; size = 0; } current.push(entry); size += bytes; } if (current.length) out.push(current); return out; };
-function batchesOf(group, byDay) {
-  if (!byDay) return byBytes(group);
+const timelineOfEntry = (entry) => (typeof entry.timeline === "string" ? Buffer.byteLength(entry.timeline, "utf8") : 0);
+const byBytes = (entries, limit = BATCH_LIMIT) => { const out = []; let current = [], size = 0, timelines = 0; for (const entry of entries) { const bytes = bytesOf(entry), timeline = timelineOfEntry(entry); if (current.length > 0 && (current.length >= limit.lines || size + bytes > limit.bytes || timelines + timeline > limit.timelineBytes)) { out.push(current); current = []; size = 0; timelines = 0; } current.push(entry); size += bytes; timelines += timeline; } if (current.length) out.push(current); return out; };
+/** Whether a set of lines fits one call: the count, the bytes and the timelines. */
+const fits = (entries, limit = BATCH_LIMIT) => entries.length <= limit.lines && entries.reduce((n, entry) => n + bytesOf(entry), 0) <= limit.bytes && entries.reduce((n, entry) => n + timelineOfEntry(entry), 0) <= limit.timelineBytes;
+/** HALF OF A BATCH THE DOOR REFUSED (0.10.29): when WorkTrust answers 413 to lines this cut thought fit, the next cut is half of them. */
+const halfOf = (entries) => ({ lines: Math.max(1, Math.ceil(entries.length / 2)), bytes: Math.ceil(entries.reduce((n, entry) => n + bytesOf(entry), 0) / 2), timelineBytes: Math.max(1, Math.ceil(entries.reduce((n, entry) => n + timelineOfEntry(entry), 0) / 2)) });
+function batchesOf(group, byDay, limit = BATCH_LIMIT) {
+  if (!byDay) return byBytes(group, limit);
   const days = new Map();
   for (const entry of group) { const day = String(entry.at).slice(0, 10); days.set(day, [...(days.get(day) ?? []), entry]); }
   const out = []; let current = [];
   for (const ofDay of days.values()) {
-    if (ofDay.length > 200) { if (current.length) { out.push(current); current = []; } for (let i = 0; i < ofDay.length; i += 200) out.push(ofDay.slice(i, i + 200)); continue; }
-    if (current.length + ofDay.length > 200) { out.push(current); current = []; }
+    // A day that alone does not fit one call is cut by bytes on its own; otherwise a day is never split across two calls.
+    if (!fits(ofDay, limit)) { if (current.length) { out.push(current); current = []; } out.push(...byBytes(ofDay, limit)); continue; }
+    if (!fits([...current, ...ofDay], limit)) { out.push(current); current = []; }
     current.push(...ofDay);
   }
   if (current.length) out.push(current);
@@ -743,10 +767,11 @@ const historyRunId = (bodies) => {
   const h = createHash("sha256").update(`worktrust-history-run|${new Date().toISOString().slice(0, 10)}|${bodies.join("\n")}`).digest("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${(8 | (parseInt(h[16], 16) & 3)).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 };
-async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
-  let accepted = 0;
-  const { queuedHistory, historyRefusal } = await import("./history-outbox.mjs");
-  // Keep each source and its approved coupling separate.
+/**
+ * THE PLAN OF A HISTORY SEND (0.10.29: one function, read by the send and by `--summary`, so the numbers a dry run prints are the
+ * batches the send would make). Each source and its approved coupling separate; a re-measure is one staged run per coupling.
+ */
+function historyPlan(door, entries, rebuild = false, { byDay = false, withdrawUnknown = false } = {}) {
   const groups = [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS, ...EXPORT_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])];
   // Imported entries carry no live commit/session join.
   const encodeBatch = (batch, run = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }), ...(run ? { run } : {}) } } });
@@ -756,12 +781,47 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
     run.forEach((item, index) => { item.run = { id, index, count: run.length }; });
   }
   for (const item of plan) item.body = encodeBatch(item.batch, item.run);
+  return plan;
+}
+/**
+ * THE OUTBOX'S CUT (0.10.29). history-outbox.mjs never reads a transcript, so the hook hands it this one: `fits` is the door's
+ * ceiling as above; `split` cuts one plain batch again (an export's by whole days, as it was planned); `replan` cuts a staged
+ * run's batches again, each AI app on its own, under a new run id and count. `tighter` is a batch WorkTrust answered 413 although
+ * it fit here: the next cut is half of it, so every piece is smaller than what was refused and a refused batch never goes again.
+ */
+const outboxCut = {
+  fits: (entries) => fits(entries),
+  split(rpc, source, tighter) {
+    const args = rpc.params.arguments, pieces = batchesOf(args.entries, EXPORT_CLIENTS.includes(source), tighter ? halfOf(tighter) : BATCH_LIMIT);
+    return pieces.length < 2 ? [] : pieces.map((batch) => JSON.stringify({ ...rpc, params: { ...rpc.params, arguments: { ...args, entries: batch } } }));
+  },
+  replan(batches, tighter) {
+    const limit = tighter ? halfOf(tighter) : BATCH_LIMIT, bySource = new Map();
+    for (const { rpc, source } of batches) bySource.set(source, [...(bySource.get(source) ?? []), ...rpc.params.arguments.entries]);
+    const { run: _run, entries: _entries, ...args } = batches[0].rpc.params.arguments; void _run; void _entries;
+    const plan = [...bySource].flatMap(([source, group]) => batchesOf(group, false, limit).map((batch) => ({ source, batch })));
+    if (plan.length > 1000) return [];
+    const encode = (batch, run = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...args, entries: batch, ...(run ? { run } : {}) } } });
+    const id = historyRunId(plan.map(({ batch }) => encode(batch)));
+    return plan.map(({ source, batch }, index) => ({ source, body: encode(batch, { id, index, count: plan.length }) }));
+  },
+};
+async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
+  let accepted = 0;
+  const { queuedHistory, historyRefusal, historyIdOf, resumeHistory } = await import("./history-outbox.mjs");
+  const plan = historyPlan(door, entries, rebuild, { byDay, withdrawUnknown });
   // Persist the approved plan before sending, so later batches survive removed source files too.
   try { for (const item of plan) queuedHistory(item.target, item.body, item.source); }
   catch { console.error("History queue is full, busy or unavailable. Resume the saved batches before retrying this import; nothing was marked complete."); HISTORY_DELIVERY.waiting += entries.length; return 0; }
   const numbers = new Map(), stopped = new Set();
-  for (const { source, target, batch, body } of plan) {
+  // TOO LARGE FOR ONE CALL (0.10.29): a batch WorkTrust answered 413, or one an earlier run already cut, is handed after the loop to
+  // the outbox's cut with the rest of its run, never sent again as it was. `stoppedRuns`: a run with a refused batch sends no more.
+  const later = new Map(), stoppedRuns = new Set();
+  const handLater = (item) => { const row = later.get(item.target.token) ?? { target: item.target, ids: [] }; row.ids.push(historyIdOf(item.target, item.body, item.source)); later.set(item.target.token, row); };
+  for (const item of plan) {
+    const { source, target, batch, body } = item;
     if (stopped.has(source)) continue;
+    if (item.run && stoppedRuns.has(item.run.id)) { handLater(item); continue; }
     const number = (numbers.get(source) ?? 0) + 1; numbers.set(source, number);
     for (const entry of batch) retainMeasurement(entry, source);
     // `named` (0.10.10): a copied folder's lines name their client too, so the record says which app the copy came from.
@@ -769,6 +829,7 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
     try { queued = queuedHistory(target, body, source); }
     catch { console.error("Pending history could not be stored safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue; }
     if (queued.status === "acknowledged" && !byDay) { accepted += batch.length; RECEIPTS.alreadyHeld += batch.length; continue; }
+    if (queued.status === "replaced" || queued.status === "oversize") { handLater(item); if (item.run) stoppedRuns.add(item.run.id); continue; }
     if (queued.status === "review" && !flag("retry-review")) { HISTORY_DELIVERY.review += batch.length; continue; }
     if (queued.status === "waiting") { HISTORY_DELIVERY.waiting += batch.length; continue; }
     try {
@@ -779,13 +840,23 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
         const refusal = historyRefusal(text, response);
         // A run WorkTrust closed (seven days without its last batch, another computer's key) is final: kept here it would wait forever.
         if (refusal.reason === "closed") { queued.close(); HISTORY_DELIVERY.refused += batch.length; continue; }
+        if (refusal.reason === "oversize") { queued.oversize(); handLater(item); if (item.run) stoppedRuns.add(item.run.id); continue; }
         queued.defer(refusal.reason, refusal.seconds);
         if (refusal.reason === "review") { HISTORY_DELIVERY.review += batch.length; continue; }
         HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue;
       }
-      queued.confirm(); accepted += batch.length; noteReceipt(text);
+      queued.confirm(batch.length); accepted += batch.length; noteReceipt(text);
       if (announce) console.log(`batch ${number}: received ${batch.length}`);
     } catch { queued.defer("unconfirmed"); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); }
+  }
+  for (const { target, ids } of later.values()) {
+    try {
+      const totals = await resumeHistory(target, { only: ids, cutter: outboxCut, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target) });
+      accepted += totals.received + totals.held; RECEIPTS.alreadyHeld += totals.held;
+      HISTORY_DELIVERY.waiting += totals.waiting; HISTORY_DELIVERY.review += totals.review; HISTORY_DELIVERY.refused += totals.refused;
+      if (announce && totals.split) console.log(`${totals.split} batch${totals.split === 1 ? "" : "es"} too large for one call: cut smaller and sent again in pieces`);
+      if (announce && totals.refused) console.log(`${totals.refused} line${totals.refused === 1 ? "" : "s"} could not be sent in a call WorkTrust takes; the earlier lines keep counting. Run npx worktrust@latest history again to measure them anew.`);
+    } catch { console.error("Pending history could not be read safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); }
   }
   return accepted;
 }
@@ -802,7 +873,7 @@ async function resendPending(limit) {
   try {
     const { resumeHistory } = await import("./history-outbox.mjs");
     for (const target of [door, ...(codexDoor && codexDoor.token !== door?.token ? [codexDoor] : [])].filter(Boolean))
-      await resumeHistory(target, { limit, confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target, 20_000) });
+      await resumeHistory(target, { limit, cutter: outboxCut, confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target, 20_000) });
   } catch (error) { if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`); }
 }
 
@@ -865,10 +936,11 @@ function historyEntries(floor = null, all = false) {
     const lines = parsedLines(file);
     if (!lines) continue;
     let cwd = null, steered = null;
-    const read = [];
+    const read = [], kind = sessionKindReader();
     for (const line of lines) {
       if (typeof line.cwd === "string") cwd = line.cwd;
       if (typeof line.steered === "string") steered = line.steered;
+      kind.note(line);
       if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
       const at = Date.parse(line.timestamp);
       if (!Number.isFinite(at)) continue;
@@ -876,7 +948,7 @@ function historyEntries(floor = null, all = false) {
     }
     read.sort((a, b) => a.at - b.at);
     const byDay = byDayOf(read);
-    const agents = agentsByDay(file, null);
+    const agents = agentsByDay(file, null), session = kind.kind();
     for (const [day, messages] of byDay) {
       if (messages.length === 0) continue;
       // Under-reporting is the safe side (THE FLOORS): a day that began before the account changed is not offered at all.
@@ -885,7 +957,7 @@ function historyEntries(floor = null, all = false) {
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
       if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
       // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
-      const entry = payloadFor({ ...measure(cwd, messages), ref: stretchRef(file, day), steered, agents: agents.get(day) ?? null, live: liveOf(file, day) });
+      const entry = payloadFor({ ...measure(cwd, messages), ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) });
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
       if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));
@@ -1212,10 +1284,10 @@ if (!door && !codexDoor && !DRY) { return await exitFlushed(0); } // Not coupled
  */
 if (flag("history") && flag("resume")) {
   const { resumeHistory } = await import("./history-outbox.mjs");
-  const totals = { received: 0, review: 0, waiting: 0, batches: 0, refused: 0 };
+  const totals = { received: 0, review: 0, waiting: 0, batches: 0, refused: 0, split: 0 };
   try {
     for (const target of [door, ...(codexDoor && codexDoor.token !== door?.token ? [codexDoor] : [])].filter(Boolean)) {
-      const result = await resumeHistory(target, { dry: DRY, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target) });
+      const result = await resumeHistory(target, { dry: DRY, retryReview: flag("retry-review"), cutter: outboxCut, confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target) });
       for (const key of Object.keys(totals)) totals[key] += result[key];
     }
     console.log(JSON.stringify({ resumed: totals.received, ...totals, ...RECEIPTS }));
@@ -1271,7 +1343,17 @@ if (flag("history")) {
   // ONE LINE FOR `npx worktrust` TO ASK WITH (2026-10-03): sessions, days, first and last month; per client its days (the rebuild's plan,
   // 2026-10-07); nothing sent. NO HOURS (0.10.20): the hours are WorkTrust's to compute; the receipt after the send carries them.
   const clients = [...entries.reduce((map, entry) => { const client = entrySource.get(entry) ?? "claude", row = map.get(client) ?? { client, days: new Set() }; row.days.add(entry.at.slice(0, 10)); return map.set(client, row); }, new Map()).values()].map((row) => ({ client: row.client, days: row.days.size, first: [...row.days].sort()[0], last: [...row.days].sort().at(-1) }));
-  if (flag("summary")) { console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry).file)).size, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients })); return await exitFlushed(0); }
+  if (flag("summary")) {
+    // 0.10.29: the batches this send would make (lines, bytes, timeline bytes of each, the largest) and how many day-stretches carry
+    // each session kind (`unknown`: none said, or no timeline to say it beside). Counts and sizes only, nothing of the work.
+    const plan = historyPlan(door ?? codexDoor ?? { url: "", token: "" }, entries, flag("rebuild"), fromExports ? { byDay: true, withdrawUnknown: flag("withdraw-unknown") } : {});
+    const sizes = plan.map((item) => ({ lines: item.batch.length, bytes: Buffer.byteLength(item.body, "utf8"), timeline_bytes: item.batch.reduce((n, entry) => n + timelineOfEntry(entry), 0) }));
+    const kinds = { interactive: 0, headless: 0, scheduled: 0, unknown: 0 };
+    for (const entry of entries) kinds[entry.session_kind ?? "unknown"] += 1;
+    console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry)?.file)).size, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients,
+      batches: { count: sizes.length, largest_bytes: Math.max(0, ...sizes.map((one) => one.bytes)), largest_timeline_bytes: Math.max(0, ...sizes.map((one) => one.timeline_bytes)), largest_lines: Math.max(0, ...sizes.map((one) => one.lines)), each: sizes }, session_kinds: kinds }));
+    return await exitFlushed(0);
+  }
   console.log(`${entries.length} day-stretches · ${fromExports || fromFolder ? "reconstructed" : "measured"} by WorkTrust on arrival · ${months.join(", ")}${flag("rebuild") ? " · rebuild: this computer's earlier lines for these days and clients are replaced at the door" : ""}`);
   if (DRY) {
     // One example in full: the shape is the argument for trusting it, and a summary hides it.

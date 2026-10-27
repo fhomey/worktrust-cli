@@ -55,15 +55,60 @@ export const codexToolInput = (name, raw) => {
 };
 export const codexOutputText = (output) => (typeof output === "string" ? output : Array.isArray(output) ? output.map((part) => (typeof part === "string" ? part : part?.text ?? "")).join("\n") : "");
 /** The rollout's raw JSON lines → transcript-shaped line objects, in file order. */
+/**
+ * HOW THE CODEX SESSION WAS STARTED (owner, 2026-10-22/27; docs/AGENT-HOURS.md), from the rollout's own `session_meta`: `cli`,
+ * `vscode` interactive; `exec`, `mcp` (another program's MCP server) and `{ subagent: … }` / `thread_source: "subagent"` (a thread an
+ * agent spawned: Agent operations) headless; no source: the `originator` (`codex_exec`, `codex_cli_rs`, `codex_vscode`); else unknown.
+ */
+export const codexSessionKind = (source, meta = {}) => (source === "cli" || source === "vscode" ? "interactive" : source === "exec" || source === "mcp" || meta.thread_source === "subagent" || (source && typeof source === "object" && Object.hasOwn(source, "subagent")) ? "headless" : source == null ? (meta.originator === "codex_exec" ? "headless" : meta.originator === "codex_cli_rs" || meta.originator === "codex_vscode" ? "interactive" : "unknown") : "unknown");
+/**
+ * HOW A SESSION WAS STARTED, READ LINE BY LINE (0.10.29; docs/AGENT-HOURS.md): interactive | headless | scheduled | unknown, only from
+ * what the AI app wrote, never a guess (WorkTrust counts headless and scheduled as Agent operations, never the person's hours; unknown
+ * is left unsaid). Claude Code: `entrypoint` on every line (`cli`, `claude-*` interactive; `sdk-cli` = `claude -p`, `sdk-ts`, `sdk-py`
+ * headless) and, on the person's role, `turnOrigin` / `origin.kind`. Not read (measured on 586 sessions): `promptSource: "sdk"` (it
+ * rides on editor sessions), `userType` (`external` on every line); a sidechain (subagent) line never decides the first turn.
+ * In order: (1) a headless entrypoint is headless, or scheduled when a timer started its first turn; (2) a turn marked `human`:
+ * interactive; (3) a first turn marked `scheduled`: scheduled; (4) a first turn from another program (`peer`, `coordinator`, a task
+ * notification, `system`): headless; (5) the entrypoint's or a reader's own word; (6) unknown. An unnamed value decides nothing.
+ */
+const ORIGIN_OF = { human: "human", scheduled: "scheduled", task_notification: "program", "task-notification": "program", peer: "program", coordinator: "program", system: "program" };
+const entrypointKind = (value) => (typeof value !== "string" ? null : /^sdk(-|$)/.test(value) ? "headless" : value === "cli" || /^claude-/.test(value) ? "interactive" : "unknown");
+const SESSION_WORDS = new Set(["interactive", "headless", "scheduled", "unknown"]);
+const onlyToolResults = (content) => Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "tool_result");
+export function sessionKindReader() {
+  let entry = null, human = false, first;
+  return {
+    note(line) {
+      if (!line || typeof line !== "object") return;
+      // What the client said on the line: a reader's word (Codex), else Claude Code's entrypoint. Interactive wins over headless,
+      // headless over unknown (a session resumed by hand after `claude -p` is the person's).
+      const said = typeof line.sessionKind === "string" && SESSION_WORDS.has(line.sessionKind) ? line.sessionKind : entrypointKind(line.entrypoint);
+      if (said && entry !== "interactive") entry = said === "interactive" ? "interactive" : entry === null || entry === "unknown" ? said : entry;
+      if (line.type !== "user" || line.isSidechain === true || line.isMeta === true || line.isCompactSummary === true || onlyToolResults(line.message?.content)) return;
+      const origin = ORIGIN_OF[typeof line.turnOrigin === "string" ? line.turnOrigin : typeof line.origin?.kind === "string" ? line.origin.kind : ""] ?? null;
+      if (origin === "human") human = true;
+      if (first === undefined) first = origin; // the session's first turn, marked or not: an unmarked one decides nothing
+    },
+    kind() {
+      if (entry === "headless") return first === "scheduled" && !human ? "scheduled" : "headless";
+      if (human) return "interactive";
+      if (first === "scheduled") return "scheduled";
+      if (first === "program") return "headless";
+      return entry ?? "unknown";
+    },
+  };
+}
+/** One session's kind from its lines, in file order (the hook and the tests read it the same way). */
+export const sessionKindOf = (lines) => { const reader = sessionKindReader(); for (const line of lines ?? []) reader.note(line); return reader.kind(); };
 export function* codexLines(records) {
-  let cwd = null, model = null, mode = null;
+  let cwd = null, model = null, mode = null, sessionKind = null;
   const seenResponses = new Set();
   for (const raw of records) {
     if (!raw || !String(raw).trim()) continue;
     let record; try { record = JSON.parse(raw); } catch { continue; }
     const timestamp = typeof record?.timestamp === "string" ? record.timestamp : null;
     const payload = record?.payload && typeof record.payload === "object" ? record.payload : {};
-    if (record.type === "session_meta") { if (typeof payload.cwd === "string") cwd = payload.cwd; continue; }
+    if (record.type === "session_meta") { if (typeof payload.cwd === "string") cwd = payload.cwd; sessionKind ??= codexSessionKind(payload.source, payload); continue; } // the rollout's own (first) meta: a fork's copied history never renames it
     if (record.type === "turn_context") {
       if (typeof payload.cwd === "string") cwd = payload.cwd; if (typeof payload.model === "string") model = payload.model;
       // 0.8.7: Codex's approval policy and sandbox, as one word on the common scale (never asks and full access is "full").
@@ -77,7 +122,7 @@ export function* codexLines(records) {
       if (!usage || typeof usage !== "object" || (id && seenResponses.has(id))) continue;
       if (id) seenResponses.add(id);
       const n = (key) => (typeof usage[key] === "number" && Number.isFinite(usage[key]) ? usage[key] : 0);
-      yield { type: "assistant", timestamp, cwd, uuid: id ? `codex-usage-${id}` : undefined, message: { ...(model ? { model } : {}), content: [], usage: { input_tokens: Math.max(0, n("input_tokens") - n("cached_input_tokens")), output_tokens: n("output_tokens"), cache_read_input_tokens: n("cached_input_tokens"), cache_creation_input_tokens: n("cache_write_input_tokens") } } };
+      yield { ...(sessionKind ? { sessionKind } : {}), type: "assistant", timestamp, cwd, uuid: id ? `codex-usage-${id}` : undefined, message: { ...(model ? { model } : {}), content: [], usage: { input_tokens: Math.max(0, n("input_tokens") - n("cached_input_tokens")), output_tokens: n("output_tokens"), cache_read_input_tokens: n("cached_input_tokens"), cache_creation_input_tokens: n("cache_write_input_tokens") } } };
       continue;
     }
     if (record.type !== "response_item") continue;
@@ -86,18 +131,18 @@ export function* codexLines(records) {
       if (payload.role !== "user" && payload.role !== "assistant") continue;
       const text = Array.isArray(payload.content) ? payload.content.filter((part) => typeof part?.text === "string").map((part) => part.text).join("\n") : typeof payload.content === "string" ? payload.content : "";
       if (payload.role === "user" && CODEX_HARNESS_TURN.test(text)) continue;
-      yield { type: payload.role, timestamp, cwd, ...(mode ? { permissionMode: mode } : {}), uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(payload.role === "assistant" && model ? { model } : {}), content: [{ type: "text", text }] } };
+      yield { ...(sessionKind ? { sessionKind } : {}), type: payload.role, timestamp, cwd, ...(mode ? { permissionMode: mode } : {}), uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(payload.role === "assistant" && model ? { model } : {}), content: [{ type: "text", text }] } };
       continue;
     }
     if (kind === "custom_tool_call" || kind === "function_call") {
       const input = kind === "function_call" ? (() => { try { return JSON.parse(payload.arguments ?? "{}"); } catch { return {}; } })() : payload.input;
-      yield { type: "assistant", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(model ? { model } : {}), content: [{ type: "tool_use", ...(payload.call_id ? { id: String(payload.call_id) } : {}), name: codexToolName(payload.name), input: codexToolInput(payload.name, input) }] } };
+      yield { ...(sessionKind ? { sessionKind } : {}), type: "assistant", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { ...(model ? { model } : {}), content: [{ type: "tool_use", ...(payload.call_id ? { id: String(payload.call_id) } : {}), name: codexToolName(payload.name), input: codexToolInput(payload.name, input) }] } };
       continue;
     }
     if (kind === "custom_tool_call_output" || kind === "function_call_output") {
       const text = codexOutputText(payload.output);
       const exit = /(?:failed with|exited with|exit code)[:\s]+(-?\d+)/i.exec(text.slice(-400));
-      yield { type: "user", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { content: [{ type: "tool_result", ...(payload.call_id ? { tool_use_id: String(payload.call_id) } : {}), content: text, is_error: exit ? exit[1] !== "0" : false, ...(exit ? {} : { outcome: "unknown" }) }] } }; // 0.8.5: no exit code (Codex code mode never prints one) is an unknown outcome, never a pass
+      yield { ...(sessionKind ? { sessionKind } : {}), type: "user", timestamp, cwd, uuid: payload.id ? `codex-${payload.id}` : undefined, message: { content: [{ type: "tool_result", ...(payload.call_id ? { tool_use_id: String(payload.call_id) } : {}), content: text, is_error: exit ? exit[1] !== "0" : false, ...(exit ? {} : { outcome: "unknown" }) }] } }; // 0.8.5: no exit code (Codex code mode never prints one) is an unknown outcome, never a pass
     }
   }
 }

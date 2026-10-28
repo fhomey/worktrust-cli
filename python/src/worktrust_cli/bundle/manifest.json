@@ -1,5 +1,5 @@
 {
-  "version": "0.10.29",
+  "version": "0.10.30",
   "files": {
     "chat-exports.mjs": "04eafe333940ec03d5058d8d51062124aa12ab882bf04db03bcda5613ec69298",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -19,11 +19,11 @@
     "preserve.mjs": "3e369083ba43bcda2fa0622fd526aa64fcf8ad66e7b6e8f23821752c4d47ad27",
     "runtime-install.mjs": "aab47b52c79d726ef428a24f982c648fa3f1c2dc2b574f633611d02924864e5f",
     "session-databases.mjs": "543fd3b82d28d96d789be0a1dc9186c5fafa783e98b87e5b3b17b211542e2b4d",
-    "setup-mcp.mjs": "6ecfbf44f001dd433512b26736031ebc855b154e2bb0a401e2512b43623cd9cd",
+    "setup-mcp.mjs": "0c29113179561af1c1e9ff8b7a786e7240edf48a2244993e12335e5ee362c812",
     "stack-rules.mjs": "b23c56e72ec56ba02b17ed895f869172d988c468a697e8d6026b0e268f61e489",
     "stretch-evidence.mjs": "5b31a6f29b785d277e92257532f3c7cee366a79759decc7a75cfbaec2686ee13",
     "transcript-readers.mjs": "2f17bb5f234ccd630d51cf3f35c396d1b43240b601330cc3abb193effb5bfc3c",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "9e3c21c144dfc8397da49cf04b0262c4f6e64619b4233a768bc928f6704026ec"
+    "worktrust.mjs": "7ed5f7a4f50b386943b4848d4ed1065b61541f8953bed52eb00fdac04187afcf"
   }
 }

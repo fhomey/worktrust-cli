@@ -1,5 +1,33 @@
 # worktrust
 
+## 0.10.30: an update asks only what is new
+
+`update` remembers what you said yes to. Each AI app's WorkTrust door, the session hook, Codex's `notify` line and
+Antigravity's `Stop` hook that you agreed to are brought onto the new version without a question, each printed as
+`✓ … refreshed (you agreed on <date>)`. Only the launcher's path changes; nothing else about what was agreed. A NEW AI
+app, or a wake hook that is no longer there (you took it out), is shown in full and asked about; `--yes` leaves it as
+it is and lists it as `skipped: new, run without --yes to decide`. A No drops the agreement, and `disconnect` deletes
+the record. It is one small file, `~/.worktrust/consent.json` (see [SECURITY.md](SECURITY.md)). The first update that
+keeps it counts the WorkTrust entries already on this computer as agreed, because only a yes ever wrote them.
+
+The re-measure after a new version is one question, asked after its plan (the plan is counted on this computer and
+sends nothing): `Send them (re-measured; …)? [y/N]`. Enter and `--yes` are No. `--rebuild` agrees in advance.
+
+One line that updates a computer you coupled before, with no question at all:
+
+```
+npx -y worktrust@latest update --yes --rebuild
+```
+
+- `npx -y`: npm's own flag. It answers npm's `Ok to proceed?` before it downloads the package; WorkTrust never sees it.
+- `worktrust@latest`: the newest published version, never a copy npm cached earlier.
+- `update`: this computer onto that version, the same key, no new pairing.
+- `--yes`: every question whose answer is Yes by default. Anything new stays as it is (skipped, and listed).
+- `--rebuild`: yes in advance to re-measuring this computer's sessions with the new version's rules. WorkTrust
+  replaces this computer's earlier lines for those days, each withdrawn and kept, never deleted. Leave it out to
+  be asked.
+- `--codex` and `--antigravity` say yes in advance to a NEW Codex or Antigravity wake hook as well.
+
 ## 0.10.29: history in calls WorkTrust takes; how each session was started
 
 A history call carries at most 1.9 MB and 1.4 MB of timelines (WorkTrust takes 2 MB and 1.5 MB). A batch an earlier
@@ -336,9 +364,9 @@ sends them with one difference: WorkTrust **replaces** this computer's earlier l
 - **Only from this computer's own key.** A connector (an AI signed in on the web) cannot ask for a rebuild; WorkTrust
   refuses it at the door.
 - **Offered once by `update`.** When this computer's earlier lines were made by an earlier version (the copy in
-  `~/.worktrust` says which), `npx worktrust@latest update` says so in plain words and offers the rebuild; Enter is No,
-  and the same version updated again offers nothing. The command cannot read your record, so it is an offer, not a
-  finding.
+  `~/.worktrust` says which), `npx worktrust@latest update` says so in plain words, shows the plan and asks once
+  (0.10.30); Enter and `--yes` are No, `--rebuild` agrees in advance, and the same version updated again offers
+  nothing. The command cannot read your record, so it is an offer, not a finding.
 
 ## A web chat's data export
 
@@ -461,7 +489,7 @@ retried safely. A row kept pending on WorkTrust remains excluded from counted ac
 | | |
 |---|---|
 | **Reads** | Which AI apps are installed (the settings folders of Claude Code, Codex, Cursor, Gemini CLI, Antigravity, VS Code, Windsurf, Hermes Agent, Goose, OpenCode, OpenClaw), and the chats Cursor and Copilot keep (clocks, models and token counts only). Afterwards, the session hook reads Claude Code's, Codex's and Antigravity's session files, the session databases of Hermes, Goose, OpenCode and OpenClaw, and the chats Cursor and Copilot keep, on this computer to measure durations and token counts. |
-| **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`, Hermes's and Goose's `config.yaml`, OpenCode's `opencode.json`, OpenClaw through `openclaw mcp set`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`. |
+| **Writes** | The key file (above). In each AI app's MCP settings (`~/.claude.json` through `claude mcp`, `~/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.gemini/config/mcp_config.json` (Antigravity), VS Code's `mcp.json`, Windsurf's `mcp_config.json`, Hermes's and Goose's `config.yaml`, OpenCode's `opencode.json`, OpenClaw through `openclaw mcp set`) a WorkTrust entry that runs the local bridge, with no key in it; three hooks in `~/.claude/settings.json`; the bridge, the hook and the counter in `~/.worktrust/`; and `~/.worktrust/consent.json`, what you agreed to (names and days only, 0.10.30). |
 | **Sends, to pair** | This computer's system (macOS, Windows, Linux) and host name. WorkTrust also records the network address the request arrives from, as a security record kept 90 days and seen only by WorkTrust staff (to answer a theft or fraud report). |
 | **Sends, afterwards** | Per measured stretch of work, and nothing else: its timeline and basis (`timeline`, `duration_basis`: since 0.10.20 the CLI sends no duration and no hours in layers of its own; WorkTrust computes them from the timeline), token counts (`tokens_in`, `tokens_out`, `tokens_cache_read`, `tokens_cache_write`, `token_basis`), the model's name (`model`), the kind of work and one layer keyword such as frontend or backend (`title`, `kind`, `layer`, `layers`), closed technology keys (`stack`) and separate display-only tool keys (`tools_seen`), how the turns are counted (`turn_basis`; the counts themselves WorkTrust reads from the timeline; the subagents' seconds wait for a timeline per run), when it began and ended and your computer's offset from UTC (`started_at`, `at`, `utc_offset`), what the CLI derived from the stretch as kinds and counts (`evidence`: checks run and failed, delivery steps and whether a check passed first, recoveries, delegation, context, routing, steering, refusals, planning, files and test files changed, the complexity class; with the WorkTrust mod on, its `live` counts from inside Claude Code: permission answers, effort levels, context and plan-limit peaks, subagents and setup; never a word, a command or a path; since 0.8.3, `live` since 0.10.15), a hash of the session and the day (`stretch_ref`), `steered_from` when it ran over SSH, the stretch's clock as step kinds and whole seconds so WorkTrust computes the figures itself (`timeline`, since 0.10.20: never a word, a tool name or a path), how the session was started as the AI app recorded it, beside the timeline (`session_kind`: interactive, headless or scheduled, since 0.10.29; left out when the app did not say), the CLI's version and a digest of its own files as signals (`cli_version`, `cli_digest`), and, so the work can be matched to GitHub, the repository as its remote's owner/name (`repo`, only for a repository on GitHub, GitLab or Bitbucket, the hosts WorkTrust can couple; never one on your own or a client's server), for any other git repository a code in its place (`repo_code`: 16 hex of an HMAC of its remote, or its root, keyed with this computer's own secret in `~/.worktrust/archive-salt`, which is never sent, so WorkTrust can group its lines but cannot tell which repository it is) and the hashes of the commits made in the stretch (`commits`, never their messages). |
 | **Never sends** | Prompts, answers, code, file names or paths, commit messages, branch names, or the name of your local folder (a repository is named only as its remote's owner/name, above). The door has no field for them and refuses a submission that carries them. |
@@ -509,7 +537,8 @@ never as proof.
 ## Undo
 
 `npx worktrust@latest disconnect` removes the WorkTrust entries (Hermes's hook with them), the hook (and Codex's `notify` line and
-Antigravity's `worktrust` hook when WorkTrust set them), the credentials and installed bridge scripts.
+Antigravity's `worktrust` hook when WorkTrust set them), the credentials, installed bridge scripts and the record of
+what you agreed to (`~/.worktrust/consent.json`, 0.10.30).
 Protected mode retains an encrypted empty slot and its OS wrapping key so reconnecting stays protected.
 A small note of the previous account (masked) remains so that a later coupling by another account
 does not offer its earlier work. Other retained files and your local evidence archive are not an

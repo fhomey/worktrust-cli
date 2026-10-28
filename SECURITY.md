@@ -56,6 +56,23 @@ private transcripts or account data in a public issue.
 - Local `disconnect` is distinct from server revocation and archive deletion. Revoke through
   WorkTrust's device settings when the server credential must stop working.
 
+## What you agreed to: `~/.worktrust/consent.json` (0.10.30)
+
+- One private file (mode 0600, written through the same exclusive-temp, atomic-replace path as the credential file,
+  refused when it is a link or not owned by you). Per coupling you said yes to it holds a NAME only
+  (`door:<app>` such as `door:Cursor`, `session-hook`, `codex-notify`, `antigravity-stop`), the day, the CLI version
+  and how the yes was given (`typed`, `flag` for `--yes`, `--codex` or `--antigravity` said in advance, `found` for a
+  WorkTrust entry already on the computer when the file was first made). No key, no token, no path, no command and
+  nothing of any config file. It is never sent.
+- What it changes: `update` refreshes an agreed entry without asking when only the launcher's path moves. It never
+  turns a new AI app or a wake hook that is no longer there into a yes: those are asked about, and `--yes` skips them.
+  It is never read as agreement to send anything: the re-measure of earlier history still needs a typed `y` or
+  `--rebuild`, every time a new version offers it.
+- Who can change it: anyone who can write your home folder, which can already edit the AI apps' settings directly.
+  A forged entry can at most spare the question for a write WorkTrust would offer anyway (the door in an AI app found
+  here, a wake hook); it cannot widen what is written, sent or read. An unreadable or unsafe file counts as no agreement.
+- A No drops the entry it answered; `disconnect` deletes the file; a coupling to another account starts it empty.
+
 ## What measurement signatures establish
 
 The metadata journal introduced in the 0.10.21 candidate preserves observations, not their

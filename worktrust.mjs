@@ -8,7 +8,8 @@
  *   npx worktrust --yes                 no question (for scripts); the computer is still approved in the app
  *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
  *   npx worktrust connect                      couple again, also on a computer already coupled
- *   npx worktrust update                       this computer onto the newest CLI, same key, no new pairing
+ *   npx worktrust update                       this computer onto the newest CLI, same key, no new pairing (0.10.30: what
+ *                                              was agreed before is refreshed unasked; --rebuild agrees to the re-measure)
  *   npx worktrust history                      send this computer's earlier sessions as history (asks first)
  *   npx worktrust history --rebuild            the same as history (0.10.5: history always re-measures); WorkTrust replaces this computer's
  *                                              earlier lines day by day, never counting a day twice (shows the plan, asks first)
@@ -75,7 +76,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.29";
+const CLI_VERSION = "0.10.30";
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -331,6 +332,64 @@ const previousNote = {
 };
 
 /**
+ * WHAT THE PERSON ALREADY AGREED TO (0.10.30, owner 2026-10-28: "an update should need fewer y + Enter"). One small file,
+ * ~/.worktrust/consent.json (0600): per coupling the person said yes to, its name only (`door:<app>`, `session-hook`,
+ * `codex-notify`, `antigravity-stop`), the day, the CLI version and how (`typed`, `flag`: --yes / --codex / --antigravity
+ * said in advance, `found`: a WorkTrust entry already here when this file was first made, which only a yes ever wrote).
+ * Never a key, a path or a config's content. `update` refreshes an agreed entry whose only change is the launcher's path
+ * without asking; a NEW app or hook still asks, and under --yes is skipped. A No drops the entry; disconnect deletes the
+ * file; a coupling to another account starts it empty. An unreadable file counts as no agreement at all.
+ */
+const CONSENT_FILE = join(HOME_DIR, "consent.json");
+const CONSENT_NAME = /^(?:door:[^\n,]{1,80}|session-hook|codex-notify|antigravity-stop)$/;
+const CONSENT_HOW = new Set(["typed", "flag", "found"]);
+let consentLoaded = null;
+async function consent() {
+  if (consentLoaded) return consentLoaded;
+  let file = null;
+  try { const text = readPrivateFile(CONSENT_FILE); file = text === null ? null : JSON.parse(text); } catch { file = {}; }
+  const entries = {};
+  for (const [name, entry] of Object.entries(file?.entries ?? {})) if (CONSENT_NAME.test(name) && /^\d{4}-\d{2}-\d{2}$/.test(entry?.at ?? "") && CONSENT_HOW.has(entry?.how)) entries[name] = { at: entry.at, cli: String(entry.cli ?? "").slice(0, 16), how: entry.how };
+  let dirty = false;
+  const today = () => new Date().toISOString().slice(0, 10);
+  // THE FIRST RUN THAT KEEPS THIS FILE: what WorkTrust already wrote here on an earlier yes counts as that yes, once.
+  if (file === null) { for (const name of await consentFound()) entries[name] = { at: today(), cli: CLI_VERSION, how: "found" }; dirty = Object.keys(entries).length > 0; }
+  const save = () => { if (!dirty || has("dry-run")) return; try { ensureHome(); writePrivateFile(CONSENT_FILE, `${JSON.stringify({ version: 1, entries })}\n`); dirty = false; } catch { /* not kept: the next run asks again */ } };
+  consentLoaded = {
+    has: (name) => Boolean(entries[name]),
+    said: (name) => (entries[name]?.how === "found" ? "you agreed with an earlier version" : `you agreed on ${entries[name]?.at}`),
+    agree(name, how) { if (!entries[name]) { entries[name] = { at: today(), cli: CLI_VERSION, how }; dirty = true; } save(); },
+    drop(name) { if (entries[name]) { delete entries[name]; dirty = true; } save(); },
+    reset() { for (const name of Object.keys(entries)) delete entries[name]; dirty = true; save(); },
+    save,
+  };
+  return consentLoaded;
+}
+function eraseConsent() { try { rmSync(CONSENT_FILE); } catch { /* none */ } consentLoaded = null; }
+/** The WorkTrust entries already standing here: each app's door (setup-mcp's own removal plan), the session hook, Codex's and Antigravity's wake hooks. */
+async function consentFound() {
+  const found = [];
+  try {
+    const plan = await run((await scripts())["setup-mcp.mjs"], ["--remove"], PLACEHOLDER, true);
+    for (const line of plan.out.split("\n")) { const match = /^\s+− ([^:]+): would (?:remove from|run)/.exec(line); if (match && match[1] !== "Claude Code") found.push(`door:${match[1]}`); }
+  } catch { /* no plan: nothing found */ }
+  if (claudeDoorHere()) found.push("door:Claude Code");
+  if (sessionHookHere()) found.push("session-hook");
+  if (existsSync(join(homedir(), ".codex")) && isOurNotify(codexNotify().text ?? "")) found.push("codex-notify");
+  if (antigravityHere() && agyHooks()?.worktrust) found.push("antigravity-stop");
+  return found.filter((name) => CONSENT_NAME.test(name));
+}
+/** Claude Code's own entry for the door, as status reads it; the session hook in its settings. */
+function claudeDoorHere() {
+  const servers = {};
+  try { const config = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8")); Object.assign(servers, config.mcpServers ?? {}); for (const project of Object.values(config.projects ?? {})) Object.assign(servers, project.mcpServers ?? {}); } catch { /* no Claude Code here */ }
+  return Object.entries(servers).find(([name, server]) => /worktrust/i.test(`${name} ${server?.url ?? ""} ${(server?.args ?? []).join(" ")}`)) ?? null;
+}
+function sessionHookHere() { try { return /log-session|worktrust(?:-launch)?\.(?:mjs|py)\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { return false; } }
+/** The app a plan line names: "    ✓ Cursor: …" → Cursor. */
+const labelOf = (line) => /^\s*[↻+✓!−-] ([^:]+):/.exec(line)?.[1] ?? null;
+
+/**
  * THE OLD KEY ENDS WHEN THE COMPUTER IS COUPLED AGAIN (owner, 2026-10-04). Signed with the old key's own
  * device key, which only this computer holds, and naming the new key by its prefix: WorkTrust ends the
  * old one at once (an AI app still open on it is refused, reads the key file again and continues on the
@@ -565,25 +624,40 @@ async function update() {
   say();
   const paths = await scripts();
   const plan = await run(paths["setup-mcp.mjs"], ["--bridge", STABLE], PLACEHOLDER, true);
+  // AGREED BEFORE, REFRESHED WITHOUT A QUESTION (0.10.30): an app or hook the person said yes to is brought onto this
+  // version's launcher; only what is NEW here is shown in full and asked about, and --yes leaves the new ones as they are.
+  const agreed = await consent();
   say("  Every AI app found here gets the WorkTrust door, the local command that reads the key:");
   const found = planLines(plan.out, true).filter((line) => !line.includes("not on this machine"));
-  for (const line of found) say(line);
+  const apps = [...new Set(found.map(labelOf).filter(Boolean))], fresh = apps.filter((app) => !agreed.has(`door:${app}`));
+  for (const app of apps) if (!fresh.includes(app)) say(`    ✓ ${app}: refreshed (${agreed.said(`door:${app}`)})`);
+  for (const line of found) if (fresh.includes(labelOf(line))) say(`${line} · new`);
   if (found.length === 0) say("    (no AI app found here)");
+  const hookFresh = !agreed.has("session-hook");
   say(`  The session hook and ${STABLE} are brought to ${CLI_VERSION}.`);
+  say(hookFresh ? `    + Session hook: ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd and PreCompact run it · new` : `    ✓ Session hook: refreshed (${agreed.said("session-hook")})`);
   say("  The key stays as it is: no new pairing, the same computer in WorkTrust.");
   say();
   if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
-  if (!(await ask("Continue?"))) { say("  Stopped. Nothing was written."); return; }
+  const newOnes = [...fresh, ...(hookFresh ? ["Session hook"] : [])];
+  let takeNew = false;
+  if (newOnes.length > 0 && has("yes")) say(`  skipped: new, run without --yes to decide: ${newOnes.join(", ")}`);
+  else if (newOnes.length > 0) takeNew = await ask(`Couple the new ${newOnes.length === 1 ? "one" : "ones"} marked "new" (${newOnes.join(", ")})?`, false);
+  if (newOnes.length > 0 && !takeNew && !has("yes")) say("  The new ones stay as they are. npx worktrust update asks again.");
+  const skip = takeNew ? [] : fresh, hookOn = !hookFresh || takeNew;
   const previousVersion = stableVersion();
   await prepareBundledRuntime();
   ensureHome();
   saveStableEntry();
   say(`  ✓ ${STABLE} is now ${CLI_VERSION}`);
-  // Out first, then in: an app that held a key of its own (a hand-made entry) moves onto the bridge.
-  await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token, true);
-  if ((await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
+  // Out first, then in: an app that held a key of its own (a hand-made entry) moves onto the bridge. An app not agreed to is not touched.
+  const skipArgs = skip.length > 0 ? ["--skip", skip.join(",")] : [];
+  await run(paths["setup-mcp.mjs"], ["--remove", "--write", ...skipArgs], key.token, true);
+  if ((await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE, ...skipArgs], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
   const hookArgs = ["--install", "--via", STABLE];
-  if ((await run(paths["log-session.mjs"], hookArgs, key.token, false)).code !== 0) fail("installing the session hook failed; the output above says where.");
+  if (hookOn && (await run(paths["log-session.mjs"], hookArgs, key.token, false)).code !== 0) fail("installing the session hook failed; the output above says where.");
+  for (const name of [...apps.filter((app) => !skip.includes(app)).map((app) => `door:${app}`), ...(hookOn ? ["session-hook"] : [])]) agreed.agree(name, "typed");
+  agreed.save();
   // Codex installed since, or a No said at connect: the one question, asked again (or "already set").
   await offerCodex();
   await offerAntigravity();
@@ -632,6 +706,7 @@ async function connect() {
   if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
   if (!(await ask("Continue?"))) { say("  Stopped. Nothing was written and nothing was sent."); return; }
   await prepareBundledRuntime();
+  const agreed = await consent(); // read before anything is written, so what this run writes is not taken for an earlier yes
 
   // The device key: made here, its private half kept with the key, its public half bound at WorkTrust.
   const device = direct ? null : generateKeyPairSync("ed25519");
@@ -662,6 +737,9 @@ async function connect() {
   const floors = !previous || switched ? ["--from-now", ...(switched ? ["--history-floor", "now"] : [])] : [];
   const hookArgs = ["--install", ...floors, "--via", STABLE, ...(direct ? ["--direct"] : [])];
   if ((await run(paths["log-session.mjs"], hookArgs, token, false, { WORKTRUST_CODEX_OFFER: "1" })).code !== 0) fail("installing the session hook failed; the output above says where.");
+  // WHAT WAS AGREED HERE (0.10.30): the apps and the hook this "Continue?" covered; another account starts with none from before.
+  if (switched) agreed.reset();
+  for (const name of [...new Set(foundApps.map(labelOf).filter(Boolean))].map((app) => `door:${app}`).concat("session-hook")) agreed.agree(name, has("yes") ? "flag" : "typed");
   await offerCodex();
   await offerAntigravity();
   if (switched) { say(); say("  Earlier work on this computer is not offered: it was coupled to another account before. Only work from now on goes to this account."); }
@@ -680,7 +758,7 @@ async function connect() {
  * Enter, --yes and a closed terminal all mean No; `--history` says yes in advance. What goes is hours
  * and tokens per day, filed as history (never verified hours, never text).
  */
-async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false) {
+async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false, agreedInAdvance = false) {
   const env = { WORKTRUST_MCP_URL: url, ...(devicePem ? { WORKTRUST_DEVICE_KEY: devicePem } : {}) };
   const counted = await run(paths["log-session.mjs"], ["--history", "--dry-run", "--summary"], token, true, env);
   let found = null;
@@ -698,7 +776,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false)
     say("  never deleted, so a day is counted once. Other computers, web sources and days not listed are not touched.");
   }
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
-  if (!has("history") && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust"); return; }
+  if (!has("history") && !agreedInAdvance && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust"); return; }
   // Marked unfinished before the first batch leaves (0.10.9): a send stopped halfway (Ctrl+C, a closed lid) is finished by the next run.
   historyDone(false);
   const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : []), ...(has("retry-review") ? ["--retry-review"] : [])], token, true, env);
@@ -744,8 +822,9 @@ async function offerRebuild(previousVersion, paths, key) {
   say("  the agent, what the seconds were, more AI apps). You can re-measure the");
   say("  sessions still on this computer and have WorkTrust replace this computer's earlier lines, day by day, never counting");
   say("  a day twice. Later: npx worktrust");
-  if (!(await ask("Show the plan and rebuild now?", false))) { say("  Not now."); return; }
-  await offerHistory(paths, key.token, key.device ?? null, key.url, true);
+  // ONE QUESTION, AFTER THE PLAN (0.10.30): counting the plan reads this computer only and sends nothing, so it is shown
+  // first and the send is asked once, Enter is No; `--rebuild` agrees in advance, --yes alone never does.
+  await offerHistory(paths, key.token, key.device ?? null, key.url, true, has("rebuild"));
 }
 
 /**
@@ -971,17 +1050,24 @@ async function offerCodex() {
     say("  Codex takes one, so it stays as it is; Codex sessions are still sent whenever the Claude Code hook runs.");
     return;
   }
-  say("  Codex can wake the session hook at the end of every turn, so Codex work arrives without Claude Code running:");
-  say(`    ${found.text ? "↻" : "+"} ${CODEX_CONFIG} → ${want}`);
+  // AGREED BEFORE (0.10.30): WorkTrust's own line, already said yes to, whose launcher path moved: refreshed without a question.
+  const agreed = await consent(), known = Boolean(found.text) && agreed.has("codex-notify");
+  if (known) say(`  ✓ Codex wakes the session hook: refreshed (${agreed.said("codex-notify")}).`);
+  else {
+    say("  Codex can wake the session hook at the end of every turn, so Codex work arrives without Claude Code running:");
+    say(`    ${found.text ? "↻" : "+"} ${CODEX_CONFIG} → ${want}`);
+  }
   if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
-  if (!has("codex") && !(await ask("Let Codex wake the session hook?", false))) { say("  Not set. npx worktrust update asks again."); return; }
+  if (!known && !has("codex") && has("yes")) { say("  Not set (skipped: new, run without --yes to decide)."); return; }
+  if (!known && !has("codex") && !(await ask("Let Codex wake the session hook?", false))) { agreed.drop("codex-notify"); say("  Not set. npx worktrust update asks again."); return; }
   await prepareBundledRuntime(); want = desired();
   const rows = [...found.rows];
   if (found.text) rows.splice(found.at, found.end - found.at + 1, want);
   else rows.splice(found.insert, 0, ...(found.insert < rows.length && rows[found.insert] !== "" ? [want, ""] : [want]));
   if (rows.at(-1) !== "") rows.push("");
   writeCodex(rows);
-  say("  ✓ Codex wakes the session hook. Restart Codex to pick it up; the earlier file is kept as config.toml.worktrust-backup.");
+  agreed.agree("codex-notify", has("codex") ? "flag" : "typed");
+  say(known ? "    Restart Codex to pick it up; the earlier file is kept as config.toml.worktrust-backup." : "  ✓ Codex wakes the session hook. Restart Codex to pick it up; the earlier file is kept as config.toml.worktrust-backup.");
 }
 
 /**
@@ -1014,13 +1100,20 @@ async function offerAntigravity() {
   say();
   if (hooks === null) { say(`  ${AGY_HOOKS} is not readable JSON, so it is left as it is; Antigravity sessions are still sent whenever another hook runs.`); return; }
   if (JSON.stringify(hooks.worktrust) === JSON.stringify(want)) { say("  ✓ Antigravity already wakes the session hook when its agent stops."); return; }
-  say("  Antigravity can wake the session hook when its agent stops, so Antigravity work arrives without Claude Code running:");
-  say(`    ${hooks.worktrust ? "↻" : "+"} ${AGY_HOOKS} → worktrust: Stop runs ${want.Stop[0].command}`);
+  // AGREED BEFORE (0.10.30): WorkTrust's own hook, already said yes to, whose launcher path moved: refreshed without a question.
+  const agreed = await consent(), known = Boolean(hooks.worktrust) && agreed.has("antigravity-stop");
+  if (known) say(`  ✓ Antigravity wakes the session hook: refreshed (${agreed.said("antigravity-stop")}).`);
+  else {
+    say("  Antigravity can wake the session hook when its agent stops, so Antigravity work arrives without Claude Code running:");
+    say(`    ${hooks.worktrust ? "↻" : "+"} ${AGY_HOOKS} → worktrust: Stop runs ${want.Stop[0].command}`);
+  }
   if (has("dry-run")) { say("  Dry run: nothing was written."); return; }
-  if (!has("antigravity") && !(await ask("Let Antigravity wake the session hook?", false))) { say("  Not set. npx worktrust update asks again."); return; }
+  if (!known && !has("antigravity") && has("yes")) { say("  Not set (skipped: new, run without --yes to decide)."); return; }
+  if (!known && !has("antigravity") && !(await ask("Let Antigravity wake the session hook?", false))) { agreed.drop("antigravity-stop"); say("  Not set. npx worktrust update asks again."); return; }
   await prepareBundledRuntime(); want = desired();
   writeAgyHooks({ ...hooks, worktrust: want });
-  say(`  ✓ Antigravity wakes the session hook. Restart Antigravity to pick it up${existsSync(`${AGY_HOOKS}.worktrust-backup`) ? "; the earlier file is kept as hooks.json.worktrust-backup" : ""}.`);
+  agreed.agree("antigravity-stop", has("antigravity") ? "flag" : "typed");
+  say(`  ${known ? "  Restart" : "✓ Antigravity wakes the session hook. Restart"} Antigravity to pick it up${existsSync(`${AGY_HOOKS}.worktrust-backup`) ? "; the earlier file is kept as hooks.json.worktrust-backup" : ""}.`);
 }
 /** Disconnect takes the hook named worktrust out of Antigravity's hooks, and nothing else. */
 function removeAntigravityHook() {
@@ -1049,7 +1142,7 @@ async function disconnect() {
   const plan = await run(paths["setup-mcp.mjs"], ["--remove"], PLACEHOLDER, true);
   say("  1. The WorkTrust door comes out of every AI app here:");
   for (const line of planLines(plan.out)) say(line);
-  say("  2. The session hook comes out of ~/.claude/settings.json (and Codex's notify line and Antigravity's worktrust hook, when WorkTrust set them), credentials are removed (an encrypted empty slot keeps the OS-vault preference)");
+  say("  2. The session hook comes out of ~/.claude/settings.json (and Codex's notify line and Antigravity's worktrust hook, when WorkTrust set them), credentials are removed (an encrypted empty slot keeps the OS-vault preference), and so is the record of what you agreed to (consent.json)");
   say("     but for one note of which account this computer fed (masked), so a later coupling by another account starts clean.");
   say("  3. The key itself stays valid until you revoke it: WorkTrust → Sources → Devices → this computer → Revoke.");
   say();
@@ -1063,6 +1156,8 @@ async function disconnect() {
   if (removeAntigravityHook()) say("  ✓ Antigravity no longer wakes the session hook.");
   previousNote.save(keyStore.load());
   keyStore.erase();
+  eraseConsent(); // 0.10.30: what was agreed goes with the coupling; a later connect asks again
+
   // Everything of ours on this computer goes; the folder too, when nothing else is left in it.
   for (const name of [STABLE_FILE, ...SCRIPTS.map((script) => join(HOME_DIR, downloaded(script))), join(HOME_DIR, "pinned")]) { try { rmSync(name); } catch { /* gone */ } }
   try { rmSync(HOME_DIR, { recursive: false }); } catch { /* not empty, or gone */ }
@@ -1112,21 +1207,13 @@ async function mod() {
 }
 
 async function status() {
-  const servers = {};
-  try {
-    const config = JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8"));
-    Object.assign(servers, config.mcpServers ?? {});
-    for (const project of Object.values(config.projects ?? {})) Object.assign(servers, project.mcpServers ?? {});
-  } catch { /* no Claude Code here */ }
-  const door = Object.entries(servers).find(([name, server]) => /worktrust/i.test(`${name} ${server?.url ?? ""} ${(server?.args ?? []).join(" ")}`));
+  const door = claudeDoorHere();
   say(door ? `  Claude Code: coupled (${door[1].url ?? "through the local bridge"})` : "  Claude Code: not coupled. Run `npx worktrust connect`.");
   const key = keyStore.load();
   say(`  Credential storage: ${keyStore.protected() ? "OS vault + encrypted local file" : "private local file; use worktrust protect-key after updating"}`);
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
   if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
-  let hook = false;
-  try { hook = /log-session|worktrust(?:-launch)?\.(?:mjs|py)\\?" hook/.test(readFileSync(join(homedir(), ".claude", "settings.json"), "utf8")); } catch { /* none */ }
-  say(hook ? "  Session hook: installed" : "  Session hook: not installed");
+  say(sessionHookHere() ? "  Session hook: installed" : "  Session hook: not installed");
   if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust update asks)"); }
   if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust(?:-launch)?\.(?:mjs|py)\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust update writes it)"); }
   if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust update asks)");
@@ -1189,7 +1276,11 @@ function help() {
   say("    --direct             put the key in each app's settings instead of the key file");
   say("  worktrust connect      couple again, also when this computer is already coupled (asks first)");
   say("    --replace            yes in advance to coupling a computer that is already coupled");
-  say("  worktrust update       this computer onto the newest CLI: same key, no new pairing");
+  say("  worktrust update       this computer onto the newest CLI: same key, no new pairing; what you agreed to before is");
+  say("                         refreshed without a question, a new AI app or hook is asked about (--yes: skipped)");
+  say("    --rebuild            yes in advance to the re-measure update offers after a new version (the plan is still shown)");
+  say("    --codex              yes in advance to letting Codex wake the session hook (also for connect)");
+  say("    --antigravity        yes in advance to letting Antigravity wake the session hook (also for connect)");
   say("  worktrust history      send this computer's earlier sessions as history (asks first)");
   say("    --resume             retry saved metadata batches, even if source files are gone (asks first)");
   say("    --retry-review       explicitly retry held batches after support resolves their review");

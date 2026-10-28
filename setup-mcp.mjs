@@ -26,6 +26,8 @@ const value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? a
 const WRITE = args.includes("--write");
 const REMOVE = args.includes("--remove");
 const NAME = value("name") ?? "worktrust";
+/** `--skip "Cursor,Zed"` (0.10.30): apps the person has not agreed to yet are left exactly as they are, in and out. */
+const SKIP = new Set((value("skip") ?? "").split(",").map((label) => label.trim()).filter(Boolean));
 /**
  * THE BRIDGE (2026-10-03). With `--bridge <path to worktrust.mjs>` no client is given a key: each
  * gets a local command (`node worktrust.mjs mcp`) that reads the key from ~/.worktrust/key.json
@@ -217,6 +219,7 @@ let touched = 0;
 let standing = 0;
 for (const client of CLIENTS) {
   if (!client.present()) { console.log(`  – ${client.label}: not on this machine`); continue; }
+  if (SKIP.has(client.label)) { console.log(`  · ${client.label}: left as it is (not agreed yet)`); continue; }
   if (client.shape === "openclaw") {
     const text = existsSync(client.file) ? readFileSync(client.file, "utf8") : "";
     const named = new RegExp(`["']?${NAME}["']?\\s*:\\s*\\{`).test(text) && ours(text);

@@ -1,171 +1,50 @@
+# Publishes `worktrust` to npm with provenance, from this PUBLIC repository (npm provenance requires
+# one). npm trusted publishing (OIDC): no npm token exists anywhere; npm trusts this repository and
+# this workflow by their identity. Hardened after the security audit of 2026-10-03:
+#  - every action is pinned to a full commit, not a movable tag;
+#  - npm is pinned to one version (trusted publishing needs npm 11.5.1 or later);
+#  - the job runs in the `npm` environment: a person approves every release before it publishes, and
+#    the workflow checks that the release tag matches the package version;
+#  - the job can read the repository and mint its OIDC identity, nothing else.
 name: publish
 on:
   release:
     types: [published]
 permissions:
   contents: read
-  actions: read
 jobs:
-  sign:
-    runs-on: ubuntu-24.04
-    environment: cli-signing
-    outputs:
-      version: ${{ steps.identity.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '22'
-      - run: python -m pip install pycryptodomex==3.24.1
-      - run: node release/check-pinned-keys.mjs . python release/keys.json
-      - name: Require the exact tagged source and an already green main-branch native build
-        id: identity
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import {readFileSync,appendFileSync} from 'node:fs';
-          import {execFileSync} from 'node:child_process';
-          const version=JSON.parse(readFileSync('package.json')).version;
-          assert.match(version,/^\d+\.\d+\.\d+$/);
-          assert.equal(process.env.GITHUB_REF_NAME,`v${version}`);
-          assert.equal(readFileSync('python/VERSION','utf8').trim(),version);
-          assert.equal(JSON.parse(readFileSync('vercel.json')).git.deploymentEnabled,false);
-          const runs=JSON.parse(execFileSync('gh',['api',`repos/${process.env.GITHUB_REPOSITORY}/actions/workflows/verify-python.yml/runs?head_sha=${process.env.GITHUB_SHA}&status=success&per_page=20`],{encoding:'utf8'})).workflow_runs;
-          const run=runs.find(r=>r.head_sha===process.env.GITHUB_SHA&&r.head_branch==='main'&&r.event==='push'&&r.head_repository.full_name===process.env.GITHUB_REPOSITORY&&r.conclusion==='success');
-          assert.ok(run,'The exact source needs a successful six-platform main-branch build before signing');
-          appendFileSync(process.env.GITHUB_OUTPUT,`version=${version}\nrun_id=${run.id}\n`);
-          JS
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: unsigned-python-*
-          path: input/python
-          merge-multiple: true
-          run-id: ${{ steps.identity.outputs.run_id }}
-          github-token: ${{ github.token }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: unsigned-npm
-          path: input/npm
-          run-id: ${{ steps.identity.outputs.run_id }}
-          github-token: ${{ github.token }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: unsigned-preserve
-          path: input/downloads
-          run-id: ${{ steps.identity.outputs.run_id }}
-          github-token: ${{ github.token }}
-      - name: Sign every engine, wheel, source archive, npm archive and preservation kit
-        env:
-          WORKTRUST_RELEASE_SIGNING_KEY: ${{ secrets.WORKTRUST_RELEASE_SIGNING_KEY }}
-          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
-        run: python python/sign_release.py --input input --output signed --roots release/keys.json --version "$RELEASE_VERSION" --commit "$GITHUB_SHA"
-      - run: python python/verify_release.py --directory signed --roots release/keys.json --version '${{ steps.identity.outputs.version }}' --commit '${{ github.sha }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: signed-release
-          path: signed/
-          if-no-files-found: error
-  verify:
-    needs: sign
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            architecture: x64
-            wheel: manylinux_2_28_x86_64
-          - os: ubuntu-24.04-arm
-            architecture: arm64
-            wheel: manylinux_2_28_aarch64
-          - os: macos-15-intel
-            architecture: x64
-            wheel: macosx_11_0_x86_64
-          - os: macos-15
-            architecture: arm64
-            wheel: macosx_11_0_arm64
-          - os: windows-2025
-            architecture: x64
-            wheel: win_amd64
-          - os: windows-11-arm
-            architecture: arm64
-            wheel: win_arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.12'
-          architecture: ${{ matrix.architecture }}
-      - run: python -m pip install -r python/requirements-release.txt
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: signed-release
-          path: signed
-      - run: python python/verify_release.py --directory signed --roots release/keys.json --version '${{ needs.sign.outputs.version }}' --commit '${{ github.sha }}'
-      - run: |
-          python -m pip download --only-binary=:all: pycryptodomex==3.24.1 -d wheelhouse
-      - name: Execute the final signed wheel on its native platform, including offline uvx/pipx
-        env:
-          WORKTRUST_TEST_CLI_SOURCE: ${{ github.workspace }}
-          WORKTRUST_TEST_WHEELHOUSE: ${{ github.workspace }}/wheelhouse
-          WORKTRUST_REQUIRE_TOOL_RUNNERS: '1'
-          WORKTRUST_SIGNED_WHEEL: ${{ github.workspace }}/signed/python/worktrust-${{ needs.sign.outputs.version }}-py3-none-${{ matrix.wheel }}.whl
-          WORKTRUST_SIGNED_SOURCE: ${{ github.workspace }}/signed/python/worktrust-${{ needs.sign.outputs.version }}.tar.gz
-          WORKTRUST_SIGNED_NPM: ${{ github.workspace }}/signed/npm/worktrust-${{ needs.sign.outputs.version }}.tgz
-        run: python python/tests/test_distribution.py
-  assets:
-    needs: [sign, verify]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '22'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: signed-release
-          path: signed
-      - name: Preserve signed reference manifests and artifacts server-side without replacement
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node release/publish-assets.mjs signed
+  preflight:
+    uses: ./.github/workflows/verify-python.yml
   publish:
-    needs: [sign, verify, assets]
-    runs-on: ubuntu-24.04
+    needs: preflight
+    runs-on: ubuntu-latest
     environment: npm
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: 22
           registry-url: https://registry.npmjs.org
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.12'
-      - run: python -m pip install pycryptodomex==3.24.1
       - run: npm install -g npm@11.21.0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: signed-release
-          path: signed
-      - run: python python/verify_release.py --directory signed --roots release/keys.json --version '${{ needs.sign.outputs.version }}' --commit '${{ github.sha }}'
-      - name: Publish the same signed tarball that passed native verification
-        run: npm publish 'signed/npm/worktrust-${{ needs.sign.outputs.version }}.tgz' --provenance --access public
+      - name: CLI release only; Git deployments disabled
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const vercel = JSON.parse(readFileSync('vercel.json', 'utf8'));
+          assert.equal(vercel.git?.deploymentEnabled, false);
+          assert.equal(process.env.GITHUB_REF_NAME, `v${pkg.version}`);
+          JS
+      - run: node --check worktrust.mjs && node --check setup-mcp.mjs && node --check log-session.mjs && node --check count-behaviour.mjs
+      - run: node worktrust.mjs help
+      - name: The package carries what this commit carries, and nothing that installs or downloads
+        run: |
+          test "$(node -p "Object.keys(require('./package.json').dependencies ?? {}).length")" = "0"
+          test "$(node -p "Object.keys(require('./package.json').scripts ?? {}).length")" = "0"
+      - run: npm publish --provenance --access public

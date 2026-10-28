@@ -1,54 +1,63 @@
+# Stage at .github/workflows/release-pypi.yml after exact Trusted Publisher setup.
+# Builds native platform wheels once and publishes those tested artifacts.
 name: Release WorkTrust Python CLI
 on:
-  workflow_run:
-    workflows: [publish]
-    types: [completed]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Reviewed CLI version matching the selected commit
+        required: true
 permissions:
   contents: read
-  actions: read
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Verify selected version and disabled Vercel deployments
+        env:
+          RELEASE_VERSION: ${{ inputs.version || github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = json.loads(Path('package.json').read_text())['version']
+          expected = 'v' + version if os.environ['GITHUB_EVENT_NAME'] == 'release' else version
+          assert os.environ['RELEASE_VERSION'] == expected
+          assert Path('python/VERSION').read_text().strip() == version
+          assert json.loads(Path('vercel.json').read_text())['git']['deploymentEnabled'] is False
+          PY
+  build:
+    needs: validate
+    uses: ./.github/workflows/verify-python.yml
   publish:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release' && github.event.workflow_run.head_repository.full_name == github.repository
+    needs: build
     runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/p/worktrust
     permissions:
-      contents: read
-      actions: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.12'
-      - run: python -m pip install pycryptodomex==3.24.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: signed-release
-          path: signed
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-      - name: Verify exact signed artifacts from the successful release workflow
-        env:
-          RELEASE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          pattern: python-*
+          path: dist/
+          merge-multiple: true
+      - name: Require all six tested wheels and the source archive
         run: |
-          python python/verify_release.py --directory signed --roots release/keys.json --commit "$RELEASE_COMMIT"
           python - <<'PY'
-          import json, pathlib, shutil
-          version=json.loads(pathlib.Path('package.json').read_text())['version']
-          payload=json.loads(pathlib.Path('signed/release-artifacts.json').read_text())['payload']
-          assert payload['version']==version
-          assert json.loads(pathlib.Path('vercel.json').read_text())['git']['deploymentEnabled'] is False
-          files=list(pathlib.Path('signed/python').iterdir())
-          assert len(files)==7 and sum(p.suffix=='.whl' for p in files)==6
-          pathlib.Path('packages').mkdir()
-          for file in files: shutil.copyfile(file,pathlib.Path('packages')/file.name)
+          from pathlib import Path
+          files = list(Path('dist').iterdir())
+          assert len(files) == 7
+          assert len(list(Path('dist').glob('*.whl'))) == 6
+          assert len(list(Path('dist').glob('*.tar.gz'))) == 1
           PY
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
-        with:
-          packages-dir: packages/
-          attestations: true

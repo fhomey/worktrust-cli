@@ -1,5 +1,12 @@
 # WorkTrust for Python tool runners
 
+## An update asks only what is new (0.10.30)
+
+`uvx worktrust update` refreshes the couplings and wake hooks you agreed to before without a
+question (kept in `~/.worktrust/consent.json`, names and days only); a new AI app or hook is
+asked about, and `--yes` skips it. The re-measure is one question after its plan; `--rebuild`
+agrees in advance.
+
 ## History in calls WorkTrust takes; how each session was started (0.10.29)
 
 `uvx worktrust history` cuts every call under WorkTrust's history ceilings and cuts a batch an

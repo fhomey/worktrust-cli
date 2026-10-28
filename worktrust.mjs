@@ -76,7 +76,19 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.30";
+const CLI_VERSION = "0.10.31";
+/**
+ * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
+ * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
+ * kinds, the readers. A release that changes consent, coupling or words keeps it. `update` offers the re-measure only when
+ * the earlier install measured by other rules, and names what changed from MEASURE_CHANGES; installed-release.json and
+ * history.json record it. 1 is the rules of 0.10.29, which 0.10.30 and 0.10.31 kept.
+ */
+const MEASURE_RULES = 1;
+/** What each measure-rules version changed, in the words the re-measure offer says (one entry per raise, never rewritten). */
+const MEASURE_CHANGES = {
+  1: ["each answer's tokens counted once", "nothing lost at midnight", "when each stretch began", "how you steered the agent", "what the seconds were", "more AI apps", "how each session was started"],
+};
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
@@ -297,7 +309,7 @@ async function prepareBundledRuntime() {
 }
 function saveStableEntry() {
   const target = join(HOME_DIR, "installed-release.json"), temporary = `${target}.${randomBytes(8).toString("hex")}.tmp`;
-  try { writeFileSync(temporary, JSON.stringify({ version: CLI_VERSION }), { flag: "wx", mode: 0o600 }); renameSync(temporary, target); }
+  try { writeFileSync(temporary, JSON.stringify({ version: CLI_VERSION, measureRules: MEASURE_RULES }), { flag: "wx", mode: 0o600 }); renameSync(temporary, target); }
   finally { try { rmSync(temporary); } catch { /* already renamed */ } }
 }
 
@@ -645,7 +657,7 @@ async function update() {
   else if (newOnes.length > 0) takeNew = await ask(`Couple the new ${newOnes.length === 1 ? "one" : "ones"} marked "new" (${newOnes.join(", ")})?`, false);
   if (newOnes.length > 0 && !takeNew && !has("yes")) say("  The new ones stay as they are. npx worktrust update asks again.");
   const skip = takeNew ? [] : fresh, hookOn = !hookFresh || takeNew;
-  const previousVersion = stableVersion();
+  const previous = stableInstall();
   await prepareBundledRuntime();
   ensureHome();
   saveStableEntry();
@@ -663,7 +675,7 @@ async function update() {
   await offerAntigravity();
   const reported = await accepted(key.url, key.token, key.device);
   say(reported === true ? `  ✓ WorkTrust received CLI version ${CLI_VERSION}.` : "  ! Installed locally. WorkTrust could not confirm the version yet; it will be reported on the next connection.");
-  await offerRebuild(previousVersion, paths, key);
+  await offerRebuild(previous, paths, key);
   say();
   say("  Done. Quit your AI apps completely and open them again to use the updated CLI.");
 }
@@ -809,19 +821,39 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
 const stableVersion = () => { try { const installed = JSON.parse(readFileSync(join(HOME_DIR, "installed-release.json"), "utf8")); if (/^\d+\.\d+\.\d+$/.test(installed.version)) return installed.version; } catch { /* older registration */ } try { return /const CLI_VERSION = "([^"]+)";/.exec(readFileSync(STABLE_FILE, "utf8"))?.[1] ?? null; } catch { return null; } };
 
 /**
- * OFFERED ONCE, BY `update`, IN PLAIN WORDS (owner, 2026-10-07): when the computer's earlier lines were made by an earlier CLI
- * (the version the stable copy carried before this update). The CLI cannot read the record, so it is an offer, not a
- * finding: the plan is shown and the question asked by the same path as `history --rebuild`; Enter is No. The same
- * version updated again offers nothing.
+ * THE RULES AN EARLIER CLI MEASURED BY (0.10.31). Recorded since 0.10.31 (installed-release.json, history.json, or the
+ * stable copy's own MEASURE_RULES); before that, read from its version: 0.10.29 and 0.10.30 measured by rules 1, anything
+ * older by earlier rules (0). Null when the version is unknown too.
  */
-async function offerRebuild(previousVersion, paths, key) {
-  if (!previousVersion || previousVersion === CLI_VERSION) return;
+const rulesOf = (record) => (Number.isInteger(record?.measureRules) && record.measureRules >= 0 ? record.measureRules
+  : typeof record?.version === "string" && /^\d+\.\d+\.\d+$/.test(record.version) ? (record.version.split(".").map(Number).reduce((order, part, at) => order || Math.sign(part - [0, 10, 29][at]), 0) < 0 ? 0 : 1) : null);
+/** The stable copy's version and measure rules, what this computer ran before an update; both null without one. */
+function stableInstall() {
+  const version = stableVersion();
+  if (!version) return { version: null, rules: null };
+  try { const installed = JSON.parse(readFileSync(join(HOME_DIR, "installed-release.json"), "utf8")); if (installed.version === version && rulesOf(installed) !== null) return { version, rules: rulesOf(installed) }; } catch { /* older registration */ }
+  try { const own = /const MEASURE_RULES = (\d+);/.exec(readFileSync(STABLE_FILE, "utf8"))?.[1]; if (own) return { version, rules: Number(own) }; } catch { /* no stable copy */ }
+  return { version, rules: rulesOf({ version }) };
+}
+/** What changed between two measure-rules versions, in MEASURE_CHANGES' words, oldest first. */
+const measureChanges = (from, to) => Object.keys(MEASURE_CHANGES).map(Number).filter((rules) => rules > Math.min(from, to) && rules <= Math.max(from, to)).sort((x, y) => x - y).flatMap((rules) => MEASURE_CHANGES[rules]);
+
+/**
+ * OFFERED ONCE, BY `update`, IN PLAIN WORDS (owner, 2026-10-07): when the computer's earlier lines were measured by OTHER
+ * RULES than this CLI's (0.10.31: the measure-rules version, not the CLI version; 0.10.30 offered on every version and
+ * invited a re-send of history measured exactly as before). The CLI cannot read the record, so it is an offer, not a
+ * finding: the plan is shown and the question asked by the same path as `history --rebuild`; Enter is No. The offer
+ * names what changed. The same rules updated again offer nothing.
+ */
+async function offerRebuild(previous, paths, key) {
+  if (!previous?.version || previous.rules === null || previous.rules === MEASURE_RULES) return;
+  const changes = measureChanges(previous.rules, MEASURE_RULES);
   say();
-  say(`  This computer's earlier lines in WorkTrust were measured by worktrust ${previousVersion}. Version ${CLI_VERSION} measures`);
-  say("  differently (each answer's tokens counted once, nothing lost at midnight, when each stretch began, how you steered");
-  say("  the agent, what the seconds were, more AI apps). You can re-measure the");
-  say("  sessions still on this computer and have WorkTrust replace this computer's earlier lines, day by day, never counting");
-  say("  a day twice. Later: npx worktrust");
+  say(`  This computer's earlier lines in WorkTrust were measured by worktrust ${previous.version}. Version ${CLI_VERSION} measures`);
+  say(changes.length > 0 ? "  differently:" : "  differently.");
+  for (const change of changes) say(`    · ${change}`);
+  say("  You can re-measure the sessions still on this computer and have WorkTrust replace this computer's earlier lines,");
+  say("  day by day, never counting a day twice. Later: npx worktrust");
   // ONE QUESTION, AFTER THE PLAN (0.10.30): counting the plan reads this computer only and sends nothing, so it is shown
   // first and the send is asked once, Enter is No; `--rebuild` agrees in advance, --yes alone never does.
   await offerHistory(paths, key.token, key.device ?? null, key.url, true, has("rebuild"));
@@ -833,11 +865,12 @@ async function offerRebuild(previousVersion, paths, key) {
  */
 const HISTORY_STATE = join(HOME_DIR, "history.json");
 function historyDone(complete) {
-  try { ensureHome(); writeFileSync(HISTORY_STATE, JSON.stringify({ version: CLI_VERSION, at: new Date().toISOString(), complete }), { mode: 0o600 }); } catch { /* the next run asks again */ }
+  try { ensureHome(); writeFileSync(HISTORY_STATE, JSON.stringify({ version: CLI_VERSION, measureRules: MEASURE_RULES, at: new Date().toISOString(), complete }), { mode: 0o600 }); } catch { /* the next run asks again */ }
 }
-/** Complete AND measured by this very CLI (0.10.9): a run stopped after the update, before the history, leaves the history
- *  measured by an older version, and the next run must offer it again rather than read "complete" as done. */
-const historyComplete = () => { try { const state = JSON.parse(readFileSync(HISTORY_STATE, "utf8")); return state.complete === true && state.version === CLI_VERSION; } catch { return false; } };
+/** Complete AND measured by this CLI's rules (0.10.9; the rules, not the version, since 0.10.31): a run stopped after the
+ *  update, before the history, leaves the history measured by older rules, and the next run must offer it again rather
+ *  than read "complete" as done. A version that measures as the one before finds its history done. */
+const historyComplete = () => { try { const state = JSON.parse(readFileSync(HISTORY_STATE, "utf8")); return state.complete === true && rulesOf(state) === MEASURE_RULES; } catch { return false; } };
 
 /**
  * THE SAME COMMAND AGAIN DOES WHAT IS LEFT (0.10.5). On a computer already coupled, `npx worktrust@latest` brings it onto

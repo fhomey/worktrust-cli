@@ -1,5 +1,11 @@
 # WorkTrust for Python tool runners
 
+## A re-measure only when measuring changed (0.10.31)
+
+`uvx worktrust update` offers to re-measure this computer's sessions only when the new version
+measures differently from the one before, and lists what changed. 0.10.31 measures as 0.10.29
+and 0.10.30 do, so updating from either offers nothing.
+
 ## An update asks only what is new (0.10.30)
 
 `uvx worktrust update` refreshes the couplings and wake hooks you agreed to before without a

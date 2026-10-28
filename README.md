@@ -1,5 +1,15 @@
 # worktrust
 
+## 0.10.31: a re-measure is offered only when measuring changed
+
+`update` offers to re-measure this computer's sessions only when the new version MEASURES differently from the one it
+replaces: a different timeline, seconds, tokens, steering, session kinds or readers. A release that changes something
+else (consent, coupling, words) offers nothing. The offer lists what changed, one line each. The CLI carries the
+version of its measuring rules beside its own version and records it in `~/.worktrust/installed-release.json` and
+`~/.worktrust/history.json`; an install from before 0.10.31, which did not record it, counts as measuring by 0.10.29's
+rules, so 0.10.29 or 0.10.30 updated to 0.10.31 is offered nothing. A history sent completely by a version with the
+same rules counts as done, so the bare `npx worktrust` does not offer it again either.
+
 ## 0.10.30: an update asks only what is new
 
 `update` remembers what you said yes to. Each AI app's WorkTrust door, the session hook, Codex's `notify` line and
@@ -363,10 +373,11 @@ sends them with one difference: WorkTrust **replaces** this computer's earlier l
   token counts, model names, a layer keyword, counts; never text.
 - **Only from this computer's own key.** A connector (an AI signed in on the web) cannot ask for a rebuild; WorkTrust
   refuses it at the door.
-- **Offered once by `update`.** When this computer's earlier lines were made by an earlier version (the copy in
-  `~/.worktrust` says which), `npx worktrust@latest update` says so in plain words, shows the plan and asks once
-  (0.10.30); Enter and `--yes` are No, `--rebuild` agrees in advance, and the same version updated again offers
-  nothing. The command cannot read your record, so it is an offer, not a finding.
+- **Offered once by `update`.** When this computer's earlier lines were measured by other rules (the copy in
+  `~/.worktrust` says which; 0.10.31: the measuring rules, not the version), `npx worktrust@latest update` says so in
+  plain words, lists what changed, shows the plan and asks once (0.10.30); Enter and `--yes` are No, `--rebuild`
+  agrees in advance, and a version that measures as the one before offers nothing. The command cannot read your
+  record, so it is an offer, not a finding.
 
 ## A web chat's data export
 

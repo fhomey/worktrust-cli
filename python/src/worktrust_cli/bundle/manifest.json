@@ -1,5 +1,5 @@
 {
-  "version": "0.10.30",
+  "version": "0.10.31",
   "files": {
     "chat-exports.mjs": "04eafe333940ec03d5058d8d51062124aa12ab882bf04db03bcda5613ec69298",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -24,6 +24,6 @@
     "stretch-evidence.mjs": "5b31a6f29b785d277e92257532f3c7cee366a79759decc7a75cfbaec2686ee13",
     "transcript-readers.mjs": "2f17bb5f234ccd630d51cf3f35c396d1b43240b601330cc3abb193effb5bfc3c",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "7ed5f7a4f50b386943b4848d4ed1065b61541f8953bed52eb00fdac04187afcf"
+    "worktrust.mjs": "7fdcd2996f0d401a7232467904d2900ee2cc084764ae25d4ffd5f9f4b57da1b3"
   }
 }

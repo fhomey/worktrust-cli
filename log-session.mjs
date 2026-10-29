@@ -60,7 +60,7 @@
  * honoured here too, matched against the transcript's project directory, before a file is read.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, openSync, closeSync, fsyncSync, linkSync, unlinkSync, constants } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, openSync, closeSync, fsyncSync, fstatSync, linkSync, unlinkSync, readSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -159,7 +159,15 @@ const DERIVED = new WeakMap();
  * Running more often costs nothing extra: the watermark means a run with nothing new to say opens
  * no file, and a day still being worked in is never sent twice.
  */
-const HOOK_EVENTS = ["SessionEnd", "SessionStart", "PreCompact"];
+const HOOK_EVENTS = ["SessionEnd", "SessionStart", "PreCompact", "Stop"];
+/**
+ * STOP, AT MOST ONCE AN HOUR (0.10.32, after the owner's session of 2026-10-04 to 10-28). A VS Code session that stays open
+ * for weeks fires SessionStart once and compacts rarely, and the live door takes a day for 48 hours only: every finished
+ * day arrived late. Claude Code's Stop fires after every answer; the hook answers it at once unless an hour has passed
+ * since its last Stop sweep, and then sweeps in a detached copy of itself so the answer is never held. The same hook the
+ * person agreed to (the "session hook" of consent.json), on one more of Claude Code's moments.
+ */
+const STOP_SWEEP_MS = 3600_000;
 
 const STATE = join(homedir(), ".worktrust", "sessions.json");
 const readState = () => { try { return JSON.parse(readFileSync(STATE, "utf8")); } catch { return {}; } }, writeState = (state) => { mkdirSync(dirname(STATE), { recursive: true }); writeFileSync(STATE, JSON.stringify(state, null, 1)); };
@@ -222,10 +230,10 @@ const excluded = (path) => excludes.some((text) => text && path.includes(text));
  * reader), the database clients in session-databases.mjs. The install copies both into ~/.worktrust with this hook.
  * Without them this hook still reads Claude Code; the never-matching patterns keep every other client out.
  */
-const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null, codexLive = () => null, sessionKindReader = () => ({ note() {}, kind: () => "unknown" }) } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
+const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, ""), antigravityIdOf = (file) => String(file).split(/[\\/]/).at(-4), codexLines, codexRolloutFiles = function* () {}, codexCwd = () => null, ANTIGRAVITY_TRANSCRIPT = /(?!)/, antigravityLines, antigravityRoots = () => [], antigravityTranscripts = function* () {}, antigravityContext = () => ({}), rememberAntigravity = () => null, codexLive = () => null, sessionKindReader = () => ({ note() {}, kind: () => "unknown" }), turnByPerson = () => null, timerSchedule = () => null } = (await import("./transcript-readers.mjs").catch(() => null)) ?? {};
 // THE STRETCH'S DERIVED RECORD (0.7.4: split from this file): tool calls named by kind, verification, recovery, delegation,
 // context and routing, for the local archive only. A copy without the module still measures and sends exactly as before.
-const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null, resultOf = (block) => ({ id: block.tool_use_id, failed: block.is_error === true, refusal: null }) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
+const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null, recoveryOf = null, resultOf = (block) => ({ id: block.tool_use_id, failed: block.is_error === true, refusal: null }) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
 const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
 // A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10): chat-exports.mjs reads a ChatGPT or Claude export (the counter
 // imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
@@ -266,15 +274,97 @@ function* antigravityConversations() {
     if (!(cwd && excluded(cwd))) yield { id: `antigravity:${conversationId}`, file };
   }
 }
-/** A transcript's lines as objects, whichever client wrote it; null when the file cannot be read. */
+/**
+ * A FILE'S LINES, READ IN CHUNKS (0.10.32). A whole-file `readFileSync(file, "utf8")` throws past the longest string Node
+ * makes (about 512 MB), and that throw was read as "this file cannot be read": the owner's VS Code session passed it on
+ * 2026-10-18 (797 MB by 10-28) and from then on measured no day at all, live or re-measured. Read 8 MB at a time, one
+ * line at a time; re-iterable (each pass opens the file again); null only when the file cannot be opened.
+ */
+const CHUNK_BYTES = 8 << 20;
+/**
+ * A READ THAT FAILS IS COUNTED, NEVER SILENT (0.10.32): a transcript that exists and cannot be opened or read to its end
+ * is one failure. The run keeps the count in sessions.json (`npx worktrust status` says it) and tells WorkTrust the
+ * count alone, never which file or what was in it (reportUnreadable).
+ */
+const READ_FAILURES = { n: 0 };
+/** The bytes this run read from transcripts (the resume's own measure, below): said on stderr under WORKTRUST_HOOK_DEBUG, never sent. */
+const READ_BYTES = { n: 0 };
+/**
+ * What a resume trusts of the bytes it does not read again: eight 4 KB samples before the offset, the first and the last of
+ * them at its edges and six spread evenly between, hashed with the offset (32 KB read, whatever the file's length).
+ */
+const EDGE_BYTES = 4096, EDGE_SAMPLES = 8;
+const edgesOf = (fd, end) => {
+  const hash = createHash("sha256").update(`worktrust-read-position|${end}|`), buffer = Buffer.allocUnsafe(EDGE_BYTES);
+  const starts = end <= EDGE_BYTES ? [0] : [...new Set(Array.from({ length: EDGE_SAMPLES }, (_, k) => Math.floor((k * (end - EDGE_BYTES)) / (EDGE_SAMPLES - 1))))];
+  for (const from of starts) {
+    const want = Math.min(EDGE_BYTES, end - from);
+    let got = 0;
+    while (got < want) { const n = readSync(fd, buffer, got, want - got, from + got); if (n <= 0) break; got += n; }
+    READ_BYTES.n += got;
+    hash.update(buffer.subarray(0, got));
+  }
+  return hash.digest("base64url").slice(0, 22);
+};
+/**
+ * The lines from byte `from` (a line boundary), split on the newline BYTE, which no UTF-8 sequence holds, and decoded line by
+ * line. `at`, when given, says where each yielded line starts (`at.line`) and, read through the same descriptor the lines came
+ * from: the file's identity (`at.dev`, `at.ino`), the offset after its last newline (`at.end`, set before an unterminated last
+ * line is yielded) and the hash of its edges before that offset (`at.hash`). `at.failed` is a read that failed (counted, as
+ * always); `at.moved` a file that is not the one `expect` names (another identity, shorter than its offset, other bytes at its
+ * edges): nothing is yielded and nothing counted, and the caller reads it whole.
+ */
+function* chunkedLines(file, from = 0, at = null, expect = null) {
+  let fd;
+  try { fd = openSync(file, "r"); } catch { READ_FAILURES.n += 1; if (at) at.failed = true; return; }
+  try {
+    if (at || expect) {
+      let stat; try { stat = fstatSync(fd); } catch { READ_FAILURES.n += 1; if (at) at.failed = true; return; }
+      if (at) { at.dev = String(stat.dev); at.ino = String(stat.ino); }
+      if (expect) {
+        let same = false;
+        try { same = String(stat.dev) === expect.dev && String(stat.ino) === expect.ino && stat.size >= expect.end && expect.end >= from && (expect.end === 0 ? expect.hash === null : edgesOf(fd, expect.end) === expect.hash); } catch { same = false; }
+        if (!same) { if (at) at.moved = true; return; }
+      }
+    }
+    const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
+    let pending = [], position = from, lineStart = from;
+    for (;;) {
+      let n;
+      try { n = readSync(fd, buffer, 0, CHUNK_BYTES, position); } catch { READ_FAILURES.n += 1; if (at) at.failed = true; return; }
+      if (n <= 0) break;
+      READ_BYTES.n += n;
+      const chunk = buffer.subarray(0, n);
+      let start = 0;
+      for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, start)) {
+        const text = pending.length > 0 ? Buffer.concat([...pending, chunk.subarray(start, nl)]).toString("utf8") : chunk.toString("utf8", start, nl);
+        pending = [];
+        if (at) at.line = lineStart;
+        lineStart = position + nl + 1; start = nl + 1;
+        yield text;
+      }
+      if (start < n) pending.push(Buffer.from(chunk.subarray(start)));
+      position += n;
+    }
+    if (at) { at.end = lineStart; try { at.hash = lineStart > 0 ? edgesOf(fd, lineStart) : null; } catch { READ_FAILURES.n += 1; at.failed = true; } }
+    const rest = pending.length > 0 ? Buffer.concat(pending).toString("utf8") : "";
+    if (rest) { if (at) at.line = lineStart; yield rest; }
+  } finally { closeSync(fd); }
+}
+/** A Claude Code transcript's lines as objects from byte `from`, `at` and `expect` as chunkedLines takes them. */
+function* claudeLinesFrom(file, from, at, expect) { for (const raw of chunkedLines(file, from, at, expect)) { if (!raw.trim()) continue; let line; try { line = JSON.parse(raw); } catch { continue; } yield line; } }
+const fileLines = (file) => {
+  try { closeSync(openSync(file, "r")); } catch (error) { if (error?.code !== "ENOENT") READ_FAILURES.n += 1; return null; }
+  return { [Symbol.iterator]: () => chunkedLines(file) };
+};
+/** A transcript's lines as objects, whichever client wrote it; null when the file cannot be read. A Claude Code transcript is parsed lazily, as it is read. */
 const parsedLines = (file) => {
   if (DATABASE_SESSION.test(file)) return databaseLines(file);
-  let lines; try { lines = readFileSync(file, "utf8").split("\n"); } catch { return null; }
+  const lines = fileLines(file);
+  if (!lines) return null;
   if (CODEX_ROLLOUT.test(file)) return [...codexLines(lines)];
   if (ANTIGRAVITY_TRANSCRIPT.test(file)) { const id = antigravityIdOf(file); return [...antigravityLines(lines, { id, ...antigravityContext(id) })]; }
-  const out = [];
-  for (const raw of lines) { if (!raw.trim()) continue; try { out.push(JSON.parse(raw)); } catch { /* a torn line */ } }
-  return out;
+  return { *[Symbol.iterator]() { for (const raw of lines) { if (!raw.trim()) continue; try { yield JSON.parse(raw); } catch { /* a torn line */ } } } };
 };
 /** The coupling Codex holds, when Claude Code holds none: the same door, read from ~/.codex/config.toml. */
 function codexCoupling() {
@@ -375,7 +465,36 @@ const pathsTouched = (cwd, from, to) => {
  * left unsaid, and WorkTrust reads an unsaid kind as interactive. A copy without the readers reads every session as unknown.
  * WorkTrust counts a headless or scheduled session as Agent operations, never as the person's hours.
  */
-function stretchesOf(file, since) {
+/**
+ * THE READ POSITION (0.10.32, owner 2026-10-28: the owner's session was 805 MB after 24 days, and every hook run and every
+ * hourly Stop sweep read it from its first byte, because the watermark is a TIME filter). Beside a Claude Code transcript's
+ * watermark the hook keeps where its last read ended, and the next run reads only what it has to. Per file (the session's
+ * own and each of its subagents'):
+ *   d, i   the file's identity (device and inode), read through the descriptor the lines came from;
+ *   e      the offset after the last newline read (an unterminated last line is read again next time);
+ *   h      a hash of eight 4 KB samples before `e` (its edges and six between): a file truncated, rewritten, rotated or compacted
+ *          fails it, or its identity or length does (a change between the samples of a file the client only appends to is not seen);
+ *   c / s  the CARRY: what a full read would know at `e` of the lines it does not read again (the session's last cwd, the last
+ *          `steered` a line said, the session-kind reader's state; a subagent's first moment);
+ *   b      the offset of the first line holding a message after `t`: every line before it holds none, so a run whose watermark
+ *          is `t` or later skips it unread. `b` is at or before the start of the earliest day not yet sent, and a day that spans
+ *          the offset is therefore read again whole, from its first message: nothing of a stretch is kept between runs.
+ * and per transcript: `t` (the watermark `b` was cut for) and `v` (this hook's digest and the measure rules it ran under).
+ * A run resumes only with the same `v`, a watermark at or past `t`, and a file whose identity, length (at least `e`) and edges
+ * agree; it then reads from `b`, letting the lines between `b` and `e` add messages only and the lines from `e` on add both
+ * messages and carry. Anything else is a full read, as before 0.10.32: a new CLI, other measure rules, a state written without
+ * positions, a watermark moved back, a file that changed. The re-measure (`--history`, `--history --rebuild`, the offer after
+ * an update) never resumes. Proven equal to a full read by scripts/test-cli-read-position.mjs.
+ */
+const positionKey = () => (selfDigest ? `${selfDigest.slice(0, 16)}|${DAY_RULES}` : null);
+const resumesHere = (file) => /\.jsonl$/.test(String(file)) && !CODEX_ROLLOUT.test(file) && !ANTIGRAVITY_TRANSCRIPT.test(file) && !DATABASE_SESSION.test(file) && typeof sessionKindReader().state === "function";
+const resumable = (saved, since) => Boolean(saved && typeof saved === "object" && positionKey() !== null && saved.v === positionKey() && (saved.t === null || (Number.isFinite(saved.t) && since !== null && since >= saved.t)));
+const fileMarkOk = (mark) => Boolean(mark && typeof mark === "object" && typeof mark.d === "string" && typeof mark.i === "string" && Number.isSafeInteger(mark.e) && Number.isSafeInteger(mark.b) && mark.b >= 0 && mark.b <= mark.e && (mark.h === null ? mark.e === 0 : typeof mark.h === "string"));
+const expectOf = (mark) => ({ dev: mark.d, ino: mark.i, end: mark.e, hash: mark.h });
+/** The first line holding a message after `t`, among the messages read ([moment, line start]); `end` when there is none. */
+const firstAfter = (pairs, t, end) => { let b = end; for (const [ms, start] of pairs) if ((t === null || ms > t) && start < b) b = start; return b; };
+function stretchesOf(file, since, saved = null) {
+  if (resumesHere(file)) return claudeStretchesOf(file, since, resumable(saved, since) ? saved : null);
   // A file we cannot read is no days, never a null the caller has to remember to check: this
   // returns a list now, and one caller forgetting that is one silent crash inside a hook.
   const lines = parsedLines(file);
@@ -397,7 +516,47 @@ function stretchesOf(file, since) {
   messages.sort((a, b) => a.at - b.at);
   const byDay = byDayOf(messages);
   const agents = agentsByDay(file, since), session = kind.kind();
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay); return stretch && { ...stretch, ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay, session); return stretch && { ...stretch, ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+}
+/** stretchesOf for a Claude Code transcript, from its read position when `saved` holds a usable one; `positionAt(t)` on the list is the position to keep. */
+function claudeStretchesOf(file, since, saved) {
+  if (!fileLines(file)) return [];
+  const prior = saved && fileMarkOk(saved.f) && saved.f.c && typeof saved.f.c === "object" ? saved.f : null;
+  const at = {}, pairs = [], messages = [];
+  let cwd = typeof prior?.c.cwd === "string" ? prior.c.cwd : null, lineSteered = typeof prior?.c.steered === "string" ? prior.c.steered : null, carry = null;
+  const kind = sessionKindReader(prior?.c.kind ?? null), scanFrom = prior ? prior.e : 0;
+  const snap = () => ({ cwd, steered: lineSteered, kind: kind.state() });
+  for (const line of claudeLinesFrom(file, prior ? prior.b : 0, at, prior ? expectOf(prior) : null)) {
+    if (carry === null && at.end !== undefined) carry = snap(); // the unterminated last line is past `e`: the carry stops before it
+    if (at.line >= scanFrom) {
+      if (typeof line.cwd === "string") cwd = line.cwd;
+      if (typeof line.steered === "string") lineSteered = line.steered;
+      kind.note(line);
+    }
+    if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
+    const ms = Date.parse(line.timestamp);
+    if (!Number.isFinite(ms)) continue;
+    if (since && ms <= since) continue;
+    messages.push(messageOf(line, ms)); pairs.push([ms, at.line]);
+  }
+  if (at.moved) return claudeStretchesOf(file, since, null);
+  if (carry === null && at.end !== undefined) carry = snap();
+  const steered = lineSteered ?? STEERED_HERE;
+  let stretches = [], subs = null;
+  if (messages.length > 0) {
+    messages.sort((a, b) => a.at - b.at);
+    const byDay = byDayOf(messages), positions = {};
+    const agents = agentsByDay(file, since, saved?.a ?? null, positions), session = kind.kind();
+    subs = positions;
+    stretches = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay, session); return stretch && { ...stretch, ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+  }
+  // A read that failed keeps no position: the next run reads the file whole.
+  if (!at.failed && at.end !== undefined && carry !== null) {
+    stretches.positionAt = (t) => ({ v: positionKey(), t: t ?? null, f: { d: at.dev, i: at.ino, e: at.end, b: firstAfter(pairs, t ?? null, at.end), h: at.hash ?? null, c: carry },
+      // Subagents not read this run (no message after the watermark) keep the marks they had: each was cut for a watermark at or before this one.
+      a: subs ? Object.fromEntries(Object.entries(subs).map(([name, markAt]) => [name, markAt(t ?? null)]).filter(([, mark]) => mark)) : (saved?.a && typeof saved.a === "object" ? saved.a : {}) });
+  }
+  return stretches;
 }
 
 /**
@@ -445,6 +604,10 @@ const messageOf = (line, at) => {
     // A tool that waits for the PERSON (a question, a plan to approve): the gap to its result is the person's, not the tool's. The name is read, never the input.
     waitsForPerson: line.type === "assistant" && blocks.some((block) => block && block.type === "tool_use" && WAITS_FOR_PERSON.has(String(block.name))),
     agentic: line.agentic === true, cumulative: line.cumulative === true, // the session's running totals (Hermes, Goose without a ledger)
+    // 0.10.32 (owner, 2026-10-28): who wrote a turn on the person's role (true the person, false a program or a timer, null not said),
+    // and an answer that did not complete (the app's own API-error line, a refusal), read for the call's outcome and never kept.
+    byPerson: line.type === "user" ? turnByPerson(line) : null,
+    failedAnswer: line.type === "assistant" && (line.isApiErrorMessage === true || line.message?.stop_reason === "refusal"),
     // 0.7.1: each tool call's kinds (never its command) and each tool result's outcome, joined on the call's id in `measure`.
     // 0.7.2: and the call's FAMILY (the tool, and its check kinds) and a digest of its input, compared here and never kept.
     calls: line.type === "assistant" ? blocks.filter((block) => block && block.type === "tool_use" && typeof block.id === "string").map(callOf) : [],
@@ -453,45 +616,91 @@ const messageOf = (line, at) => {
 };
 
 /**
- * SUBAGENTS AS AGENT TIME, NEVER AS HOURS (owner, 2026-10-06). Claude Code writes each subagent's transcript beside its
- * session (`<session>/subagents/*.jsonl`: 279 of them beside 48 sessions on the computer this was built on), and the
- * sweep read only the sessions, so delegated work was invisible. Each run is read for its clocks: how many runs started
- * that day and how many were open at once at the busiest moment (read here for the complexity class). Their SECONDS are
- * not computed here since 0.10.20 (no counting rule ships in this file); until a timeline per run travels, the agent
- * group is not sent. Only Claude Code keeps subagents this way; every other client answers an empty map.
+ * SUBAGENTS AS AGENT TIME, NEVER AS HOURS (owner, 2026-10-06; AGENTS ACTIVE AT ONCE, 0.10.32, owner 2026-10-28). Claude Code
+ * writes each subagent's transcript beside its session (`<session>/subagents/*.jsonl`, and a `.meta.json` saying how it was
+ * started). Each run that started on a day rides with that day's stretch as one entry of `agents`, by position (the ordinal),
+ * never a name, a prompt, a path or an id: its kind (`fork`, else `background`, else `builtin` or the person's `own` type), its
+ * start in whole seconds from the stretch's start, its ACTIVE intervals from that start ([from, to, from, to, …]; a gap over
+ * 300 s ends one) and its tool failures and recoveries (stretch-evidence's own rule). At most AGENT_RUNS runs a stretch,
+ * AGENT_INTERVALS intervals a run and AGENT_INTERVALS_TOTAL in all, the longest kept: a dropped one reads as less, never more.
+ * WorkTrust counts a run only inside its parent's steered window (docs/AGENT-HOURS.md). Only Claude Code keeps subagents this way.
  */
+const AGENT_RUNS = 64, AGENT_INTERVALS = 12, AGENT_INTERVALS_TOTAL = 256, AGENT_GAP_MS = 300_000, BUILTIN_AGENTS = new Set(["general-purpose", "Explore", "Plan", "statusline-setup", "output-style-setup", "claude-code-guide"]);
+const agentKindOf = (meta) => (meta?.isFork === true || meta?.agentType === "fork" ? "fork" : meta?.requestShape === "background" ? "background" : meta?.isBuiltIn === true || !meta || BUILTIN_AGENTS.has(meta.agentType) ? "builtin" : "own");
 function subagentFiles(file) {
   if (!/\.jsonl$/.test(String(file)) || CODEX_ROLLOUT.test(file) || ANTIGRAVITY_TRANSCRIPT.test(file) || DATABASE_SESSION.test(file)) return [];
   const dir = join(String(file).replace(/\.jsonl$/, ""), "subagents");
   try { return readdirSync(dir).filter((name) => name.endsWith(".jsonl")).map((name) => join(dir, name)); } catch { return []; }
 }
-function agentsByDay(file, since) {
+/** A file whose identity, length and edges are still those of its mark: the bytes before `e` are the ones read then. */
+const unchangedSince = (file, mark) => { let fd; try { fd = openSync(file, "r"); } catch { return false; } try { const stat = fstatSync(fd); return String(stat.dev) === mark.d && String(stat.ino) === mark.i && stat.size >= mark.e && (mark.e === 0 ? mark.h === null : edgesOf(fd, mark.e) === mark.h); } catch { return false; } finally { closeSync(fd); } };
+/** One subagent transcript's lines, from its mark when it has a usable one: its first moment, its stamps and messages after `since`, and the mark to keep. */
+function subagentRead(sub, since, prior) {
+  const at = {}, stamps = [], messages = [], pairs = [];
+  let started = prior ? (Number.isFinite(prior.s) ? prior.s : Infinity) : Infinity, carry = null;
+  for (const line of claudeLinesFrom(sub, prior ? prior.b : 0, at, prior ? expectOf(prior) : null)) {
+    if (carry === null && at.end !== undefined) carry = started;
+    if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
+    const ms = Date.parse(line.timestamp);
+    if (!Number.isFinite(ms)) continue;
+    started = Math.min(started, ms); // a line between `b` and `e` is in the carried minimum already: a minimum taken twice is the same
+    if (!(since && ms <= since)) { stamps.push(ms); messages.push(messageOf(line, ms)); pairs.push([ms, at.line]); }
+  }
+  if (at.moved) return subagentRead(sub, since, null);
+  if (carry === null && at.end !== undefined) carry = started;
+  const markAt = at.failed || at.end === undefined || carry === null ? () => null : (t) => ({ d: at.dev, i: at.ino, e: at.end, b: firstAfter(pairs, t, at.end), h: at.hash ?? null, s: Number.isFinite(carry) ? carry : null });
+  return { started, stamps, messages, markAt };
+}
+function agentsByDay(file, since, saved = null, positions = null) {
   const byDay = new Map();
   for (const sub of subagentFiles(file)) {
+    const name = String(sub).split(/[\\/]/).pop(), prior = positions && saved && typeof saved === "object" && fileMarkOk(saved[name]) && (saved[name].s === null || Number.isFinite(saved[name].s)) ? saved[name] : null;
+    // A RUN THAT STARTED AT OR BEFORE THE WATERMARK is not counted (below), and lines appended since cannot make it start later:
+    // a subagent whose kept first moment is at or before the watermark, its bytes unchanged, is not opened again.
+    if (prior && since && prior.s !== null && prior.s <= since && unchangedSince(sub, prior)) { positions[name] = () => prior; continue; }
+    if (positions ? !fileLines(sub) : false) continue;
+    let stamps, messages, started;
+    if (positions) { const read = subagentRead(sub, since, prior); ({ stamps, messages, started } = read); positions[name] = read.markAt; }
+    else {
     const lines = parsedLines(sub);
     if (!lines) continue;
-    const stamps = [];
-    let started = Infinity;
+    stamps = []; messages = [];
+    started = Infinity;
     for (const line of lines) {
       if (!line.timestamp || (line.type !== "user" && line.type !== "assistant")) continue;
       const at = Date.parse(line.timestamp);
       if (!Number.isFinite(at)) continue;
       started = Math.min(started, at);
-      if (!(since && at <= since)) stamps.push(at);
+      if (!(since && at <= since)) { stamps.push(at); messages.push(messageOf(line, at)); }
     }
-    // A RUN IS COUNTED ONCE, on the side of the watermark where it STARTED (review, 2026-10-06): a run that straddles the
-    // watermark was sent with the day it began and is not a second run on the next sweep; what it did after the
-    // watermark stays unsent, which is the safe direction.
+    }
+    // A RUN IS COUNTED ONCE, on the side of the watermark where it STARTED (review, 2026-10-06), and on the day it started: a run
+    // that straddles the watermark was sent with the day it began; what it did after the watermark stays unsent (the safe direction).
     if (stamps.length === 0 || (since && started <= since)) continue;
-    stamps.sort((a, b) => a - b);
-    // A run is counted on the day it started.
+    stamps.sort((a, b) => a - b); messages.sort((a, b) => a.at - b.at);
     const day = new Date(stamps[0]).toISOString().slice(0, 10);
-    if (!byDay.has(day)) byDay.set(day, { runs: 0, spans: [] });
-    const entry = byDay.get(day);
+    if (!byDay.has(day)) byDay.set(day, { runs: 0, spans: [], list: [] });
+    const entry = byDay.get(day), recovery = recoveryOf ? recoveryOf(messages) : null;
+    let meta = null; try { meta = JSON.parse(readFileSync(sub.replace(/\.jsonl$/, ".meta.json"), "utf8")); } catch { /* an older client wrote none */ }
     entry.runs += 1; entry.spans.push([stamps[0], stamps[stamps.length - 1]]);
+    entry.list.push({ stamps, kind: agentKindOf(meta), failures: recovery?.failures ?? 0, recovered: recovery?.recovered ?? 0 });
   }
   for (const entry of byDay.values()) entry.peak = peakOf(entry.spans);
   return byDay;
+}
+/** A day's runs → the payload's `agents`, from the stretch's first moment: whole seconds, the caps applied, null when none ran. */
+function agentRunsOf(list, from) {
+  const longest = (items, cap, length) => (items.length <= cap ? items : items.map((item, at) => ({ item, at })).sort((a, b) => length(b.item) - length(a.item) || a.at - b.at).slice(0, cap).sort((a, b) => a.at - b.at).map(({ item }) => item));
+  const runs = (list ?? []).map((run) => {
+    const spans = [];
+    for (const at of run.stamps) { const last = spans.at(-1); if (last && at - last[1] <= AGENT_GAP_MS) last[1] = at; else spans.push([at, at]); }
+    return { ...run, spans: spans.map(([lo, hi]) => [Math.max(0, Math.round((lo - from) / 1000)), Math.max(0, Math.round((hi - from) / 1000))]).filter(([lo, hi]) => hi > lo) };
+  }).filter((run) => run.spans.length > 0);
+  const kept = longest(runs, AGENT_RUNS, (run) => run.spans.reduce((total, [lo, hi]) => total + hi - lo, 0)), length = ([lo, hi]) => hi - lo;
+  let per = AGENT_INTERVALS; // the most intervals a run keeps so that all of them together stay inside AGENT_INTERVALS_TOTAL
+  while (per > 1 && kept.reduce((total, run) => total + Math.min(per, run.spans.length), 0) > AGENT_INTERVALS_TOTAL) per -= 1;
+  return kept.length > 0 ? kept.map((run) => { const spans = longest(run.spans, per, length), start = spans[0][0];
+    return { kind: run.kind, start, active: spans.flatMap(([lo, hi]) => [lo - start, hi - start]), failures: run.failures, recovered: Math.min(run.recovered, run.failures) }; }).sort((a, b) => a.start - b.start) : null;
 }
 /** The most spans open at one instant; a span that ends where another starts does not overlap it. */
 const peakOf = (spans) => {
@@ -524,7 +733,7 @@ function isHumanTurn(content) {
 }
 
 /** One day's messages → the stretch: its timeline, its tokens, its model. The server measures it. */
-function measure(cwd, messages) {
+function measure(cwd, messages, session = null) {
   // THE CLOCK IS THE SERVER'S (0.10.20). This hook sends the stretch's timeline and never a duration of its own: every
   // second WorkTrust counts lies between two recorded timestamps in that timeline, under WorkTrust's rules, and a stretch
   // too short to time is a stretch WorkTrust answers without a duration. A stretch whose clocks give nothing is still
@@ -534,7 +743,8 @@ function measure(cwd, messages) {
   const model = [...models.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
   const tokens = tokensOf(messages);
   const from = firstOf(messages);
-  return { cwd, derived: deriveStretch(messages, { isHumanTurn, INTERRUPTED, textOf }), timeline: messages.length > 0 ? timelineOf(messages) : null, ...tokens, cumulative: messages.some((message) => message.cumulative), model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
+  const unattended = session === "headless" || session === "scheduled";
+  return { cwd, derived: deriveStretch(messages, { isHumanTurn, INTERRUPTED, textOf }), timeline: messages.length > 0 ? timelineOf(messages, unattended) : null, outcomes: messages.length > 0 ? callOutcomesOf(messages) : null, lengths: inputLengthsOf(messages, unattended), ...tokens, cumulative: messages.some((message) => message.cumulative), model, from, to: messages[messages.length - 1].at, offset: offsetAt(from) };
 }
 
 /**
@@ -545,15 +755,49 @@ function measure(cwd, messages) {
  * turns from this with its own rules (private to the server); this file sends no figure of its own, so nothing in it can
  * move the passport.
  */
-function timelineOf(messages) {
+// 0.10.32: in a run no person started (headless, scheduled) a turn is H only when the app marked it the person's; a program's or
+// a timer's prompt is U, so WorkTrust's clock steers only from a person's input.
+const stepKindOf = (message, unattended) => message.kind === "assistant" ? (message.waitsForPerson ? "W" : message.toolUse ? "T" : "A") : message.kind === "tool_result" ? "R" : INTERRUPTED.test(textOf(message.content).trim()) && !message.meta ? "I" : !message.meta && isHumanTurn(message.content) && (!unattended || message.byPerson === true) ? "H" : "U";
+function timelineOf(messages, unattended = false) {
   let out = "";
   for (let i = 0; i < messages.length; i += 1) {
     const message = messages[i];
     const gap = i === 0 ? 0 : Math.max(0, Math.round((message.at - messages[i - 1].at) / 1000));
-    const kind = message.kind === "assistant" ? (message.waitsForPerson ? "W" : message.toolUse ? "T" : "A") : message.kind === "tool_result" ? "R" : INTERRUPTED.test(textOf(message.content).trim()) && !message.meta ? "I" : !message.meta && isHumanTurn(message.content) ? "H" : "U";
+    const kind = stepKindOf(message, unattended);
     out += `${message.agentic ? "G" : ""}${message.bridge ? kind.toLowerCase() : kind}${Math.min(999999, gap)}`;
   }
   return out;
+}
+/**
+ * THE PERSON'S INPUTS, AS LENGTH BUCKETS (owner, 2026-10-28; 0.10.32): in a run no person started, one character per H step of
+ * the timeline: s up to 80 characters, m up to 400, l longer. Counted here, never sent as text; WorkTrust's steering cap reads it
+ * to tell a regular rhythm of short nudges from real steering, as a review signal only.
+ */
+function inputLengthsOf(messages, unattended) {
+  if (!unattended) return null;
+  let out = "";
+  for (const message of messages) if (stepKindOf(message, unattended) === "H") { const n = textOf(message.content).trim().length; out += n <= 80 ? "s" : n <= 400 ? "m" : "l"; }
+  return out.length > 0 ? out : null;
+}
+/**
+ * EACH CALL'S OUTCOME (owner, 2026-10-28; 0.10.32; docs/AGENTIC-OPERATIONS.md "2b"): one character per model answer step of the
+ * timeline (A, T, W), in its order. 1: it completed; 0: it did not (a tool result the app marked as an error, a timeout or a
+ * refusal among them; an API-error or refusal answer); ?: not known (a tool call without its result, a result no reader could see).
+ * A question to the person (W) completed when it was put. Read from the app's own markers, never from a duration; nothing of a
+ * message travels.
+ */
+function callOutcomesOf(messages) {
+  const failed = new Map();
+  for (const message of messages) for (const result of message.results ?? []) if (result && typeof result.id === "string") failed.set(result.id, result.failed);
+  let out = "";
+  for (const message of messages) {
+    if (message.kind !== "assistant") continue;
+    if (message.failedAnswer) { out += "0"; continue; }
+    if (message.waitsForPerson || !message.toolUse) { out += "1"; continue; }
+    const outcomes = (message.calls ?? []).map((call) => (failed.has(call.id) ? failed.get(call.id) : null));
+    out += outcomes.some((one) => one === true) ? "0" : outcomes.length > 0 && outcomes.every((one) => one === false) ? "1" : "?";
+  }
+  return /[01]/.test(out) ? out : null;
 }
 /** A digest of this hook and the readers beside it, as installed: the door records it beside each line as a signal of which code ran, never as proof. */
 const selfDigest = (() => { try { const here = dirname(fileURLToPath(import.meta.url)); const hash = createHash("sha256"); for (const name of ["log-session.mjs", ...READER_FILES].sort()) { try { hash.update(`${name}\0`).update(readFileSync(join(here, name))).update("\0"); } catch { hash.update(`${name}\0missing\0`); } } return hash.digest("hex"); } catch { return null; } })();
@@ -621,6 +865,7 @@ function payloadFor(stretch) {
   const coauthored = cwd && touched.shas.length > 0 ? git(cwd, "log", "--no-walk", "--format=%(trailers:key=Co-authored-by,valueonly,separator=%x01)%x00", ...touched.shas.slice(0, 50)).split("\0").filter((entry, index) => index < Math.min(50, touched.shas.length) && AI_COAUTHOR.test(entry)).length : 0;
   const route = { ...(stretch.derived?.route ?? {}), ...(touched.committed ? gitRouteOf(cwd, touched.shas, changed) : {}) };
   const derived = stretch.derived ? { ...stretch.derived, ...(Object.keys(route).length > 0 ? { route } : {}), ...(changed.length > 0 ? { changes: { files: changed.length, test_files: tests } } : {}), ...(touched.shas.length > 0 ? { authorship: { commits: Math.min(50, touched.shas.length), ai_coauthored: coauthored } } : {}), ...(contextFilesOf(changed) ? { context_files: contextFilesOf(changed) } : {}), ...(complexityOf ? { complexity: complexityOf(stretch.derived, { layers: Math.max(layers.length, layer ? 1 : 0), agentRuns: stretch.agents?.runs ?? 0, agentPeak: stretch.agents?.peak ?? 0, seconds: null }) } : {}) } : null;
+  const agents = agentRunsOf(stretch.agents?.list, stretch.from);
   const evidence = derived || stretch.live ? { ...(derived ?? {}), ...(stretch.live ? { live: stretch.live } : {}) } : null; // 0.10.15: the mod's counts ride as their own group
   const payload = {
     title: layer ? `AI-assisted work · ${layer}` : "AI-assisted work",
@@ -647,11 +892,16 @@ function payloadFor(stretch) {
     ...(stretch.ref ? { stretch_ref: stretch.ref } : {}), ...(stretch.steered ? { steered_from: stretch.steered } : {}),
     // HOW THE SESSION WAS STARTED (owner, 2026-10-22): interactive | headless | scheduled, beside the timeline; unknown is unsaid.
     ...(stretch.timeline && (stretch.session === "interactive" || stretch.session === "headless" || stretch.session === "scheduled") ? { session_kind: stretch.session } : {}),
+    // EACH CALL'S OUTCOME and THE TIMER'S SCHEDULE (owner, 2026-10-28; 0.10.32): beside the timeline; a schedule only for a run no person started.
+    ...(stretch.timeline && stretch.outcomes ? { call_outcomes: stretch.outcomes } : {}),
+    ...(stretch.timeline && stretch.lengths && (stretch.session === "headless" || stretch.session === "scheduled") ? { input_lengths: stretch.lengths } : {}),
+    ...(stretch.timeline && stretch.schedule && (stretch.session === "headless" || stretch.session === "scheduled") ? { schedule_cadence: stretch.schedule.cadence, schedule_ref: stretch.schedule.ref } : {}),
+    // AGENTS ACTIVE AT ONCE (0.10.32, owner 2026-10-28): the subagent runs that started this day, beside the timeline (agentRunsOf).
+    ...(stretch.timeline && agents ? { agents } : {}),
     // WHICH CODE SENT IT (0.10.20): a version and a digest of this hook's own files, signals never proof.
     ...(CLI_VERSION_SENT ? { cli_version: CLI_VERSION_SENT } : {}),
     ...(selfDigest ? { cli_digest: selfDigest } : {}),
-    // WHEN (0.6.18): the stretch's first moment and the computer's UTC offset then. The interruptions and the mid-task turns are
-    // read by WorkTrust from the timeline; the subagents' seconds wait for a timeline per run (0.10.20).
+    // WHEN (0.6.18): the stretch's first moment and the computer's UTC offset then; the interruptions and mid-task turns are WorkTrust's.
     started_at: new Date(stretch.from).toISOString(), utc_offset: stretch.offset,
     // THE STRETCH'S EVIDENCE (0.8.3): what the CLI derived from it here, kinds and counts only (stretch-evidence.mjs); the door keeps it from a CLI key alone.
     ...(evidence ? { evidence } : {}),
@@ -712,8 +962,13 @@ const noteReceipt = (answer) => {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
     const receipt = JSON.parse(json?.result?.content?.[0]?.text ?? "{}");
     for (const key of Object.keys(RECEIPTS)) RECEIPTS[key] += Number(receipt[key]) || 0;
+    // THE QUEUE (0.10.32): the receipt of the batch that completes a run says where the run waits; the last one seen is kept.
+    const queued = receipt.queued;
+    if (queued && Number.isInteger(queued.position) && queued.position >= 1 && Number.isFinite(Number(queued.eta_minutes)) && Number(queued.eta_minutes) >= 0) QUEUED.at = { position: queued.position, eta_minutes: Math.max(1, Math.ceil(Number(queued.eta_minutes))) };
   } catch { /* a receipt unread leaves the counts short, never the send */ }
 };
+/** Where the last completed run waits in WorkTrust's queue (0.10.32): null when no receipt said so (an older server, or not complete yet). */
+const QUEUED = { at: null };
 /** Only explicit durable receipts authorize a checkpoint. HTTP 200 alone says nothing. */
 function confirmedReceipt(answer, expectedCount = null) {
   try {
@@ -739,7 +994,7 @@ function confirmedReceipt(answer, expectedCount = null) {
 }
 /** A private metadata journal survives retries, an edited transcript and a later CLI update. */
 function retainMeasurement(payload, source) {
-  const fields = ["stretch_ref", "at", "started_at", "timeline", "seconds", "client_seconds", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write", "exchanges", "interrupts", "steers", "agent_runs", "agent_seconds", "agent_peak", "duration_basis", "token_basis", "turn_basis", "cli_version", "cli_digest"];
+  const fields = ["stretch_ref", "at", "started_at", "timeline", "seconds", "client_seconds", "model_seconds", "tool_seconds", "human_seconds", "idle_seconds", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write", "exchanges", "interrupts", "steers", "agent_runs", "agent_seconds", "agent_peak", "agents", "duration_basis", "token_basis", "turn_basis", "cli_version", "cli_digest"];
   const metadata = Object.fromEntries(fields.filter(key => Object.hasOwn(payload, key)).map(key => [key, payload[key]]));
   const body = JSON.stringify({ format: "worktrust-measurement/1", source: source ?? "claude", metadata }) + "\n";
   const parent = join(homedir(), ".worktrust"), dir = join(parent, "measurements");
@@ -756,6 +1011,80 @@ function retainMeasurement(payload, source) {
   } finally { closeSync(fd); unlinkSync(temporary); }
 }
 const HISTORY_DELIVERY = { review: 0, waiting: 0, refused: 0 };
+const HISTORY_PERSISTED = { n: 0 }; // 0.10.32: entries this run put in the outbox on disk (sent now or later, never lost)
+/**
+ * ONLY THE DAYS THAT CHANGED (0.10.32; owner, 2026-10-28: an identical re-run sends 0 days). Each UTC day of each AI app gets a
+ * digest of its entries exactly as they are sent (the canonical JSON of each, `commits` gone, the CLI's own version and digest
+ * left out, so an update that measures the same sends nothing), under the measure rules the command started this hook with.
+ * Before a re-measure the door is asked, per AI app, which of this computer's days it still holds as current; it answers the
+ * digests this computer sent with them (its own submissions, never the record). A day whose digest is the same is not sent.
+ * An answer that is not one (an error, an older WorkTrust, no network) is NOT KNOWN, and every day goes, as before.
+ */
+const DAY_RULES = /^[1-9][0-9]{0,3}$/.test(process.env.WORKTRUST_MEASURE_RULES ?? "") ? process.env.WORKTRUST_MEASURE_RULES : "unknown";
+const canonical = (value) => (Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value) ?? "null");
+const entryDigest = (entry) => { const { commits: _commits, cli_version: _version, cli_digest: _digest, ...rest } = entry; void _commits; void _version; void _digest; return createHash("sha256").update(canonical(rest)).digest("hex"); };
+const dayOf = (entry) => new Date(entry.at).toISOString().slice(0, 10);
+/** One AI app's entries → day → digest, over all of that app's entries of the day (a day cut across two batches has one digest). */
+function dayDigests(entries) {
+  const byDay = new Map();
+  for (const entry of entries) { const day = dayOf(entry); byDay.set(day, [...(byDay.get(day) ?? []), entryDigest(entry)]); }
+  return new Map([...byDay].map(([day, digests]) => [day, createHash("sha256").update(`worktrust-day/1|rules=${DAY_RULES}|${digests.sort().join("\n")}`).digest("hex")]));
+}
+/** The days the door holds as current for this computer and this AI app, or null when that is not known. Never throws. */
+async function heldDays(target, source) {
+  try {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { rebuild: true, fingerprint: true } } });
+    const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, true), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(20_000) });
+    if (!response.ok) return null;
+    const text = await response.text();
+    const json = JSON.parse(text.trim().startsWith("{") ? text : text.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
+    if (json?.jsonrpc !== "2.0" || json.error || !json.result || json.result.isError === true) return null;
+    const answer = JSON.parse(json.result.content?.[0]?.text ?? "null");
+    if (answer?.receipt !== "fingerprint" || !answer.days || typeof answer.days !== "object" || Array.isArray(answer.days)) return null;
+    const held = new Map();
+    for (const [day, digest] of Object.entries(answer.days)) if (/^\d{4}-\d{2}-\d{2}$/.test(day) && typeof digest === "string" && /^[0-9a-f]{64}$/.test(digest)) held.set(day, digest);
+    return held;
+  } catch { return null; }
+}
+/**
+ * A READ FAILURE, KEPT AND TOLD (0.10.32): the count lands in sessions.json (`__unreadable`, which `npx worktrust status`
+ * prints) and, at most once a day, reaches WorkTrust as the fingerprint question with the count beside it
+ * (`unreadable: n`): a number, never a file name, a path or a line. A run that read everything clears the count.
+ */
+async function settleReadFailures(target, held = null) {
+  // `held`: the hook's own state object, which later steps write back whole; the count goes into it, not beside it.
+  const state = held ?? readState(), now = new Date().toISOString();
+  if (READ_FAILURES.n === 0) { if (state.__unreadable?.count) { state.__unreadable = { count: 0, at: now }; writeState(state); } return; }
+  state.__unreadable = { count: READ_FAILURES.n, at: now };
+  const told = Date.parse(state.__unreadableTold ?? "") || 0;
+  if (target?.url && target?.token && Date.now() - told > 24 * 3600_000) {
+    try {
+      const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { rebuild: true, fingerprint: true, unreadable: Math.min(1000, READ_FAILURES.n) } } });
+      const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(undefined, true), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(20_000) });
+      if (response.ok) state.__unreadableTold = now;
+    } catch { /* told next time */ }
+  }
+  writeState(state);
+}
+/** What the comparison found, for the command's one line: distinct days compared, and of them how many changed. */
+const COMPARED = { days: 0, changed: 0, asked: false };
+/** A re-measure's entries, less every (AI app, day) whose digest WorkTrust holds as current. */
+async function changedOnly(entries) {
+  const bySource = new Map();
+  for (const entry of entries) { const source = entrySource.get(entry) ?? "claude"; bySource.set(source, [...(bySource.get(source) ?? []), entry]); }
+  const keep = new Set(), allDays = new Set(), changedDays = new Set();
+  for (const [source, group] of bySource) {
+    const target = source === "codex" ? codexDoor ?? door : door;
+    const digests = dayDigests(group);
+    const held = target ? await heldDays(target, source) : null;
+    if (held !== null) COMPARED.asked = true;
+    for (const [day, digest] of digests) { allDays.add(day); if (held?.get(day) !== digest) changedDays.add(`${source}|${day}`); }
+    for (const entry of group) if (changedDays.has(`${source}|${dayOf(entry)}`)) keep.add(entry);
+  }
+  COMPARED.days = allDays.size;
+  COMPARED.changed = new Set([...changedDays].map((key) => key.split("|")[1])).size;
+  return entries.filter((entry) => keep.has(entry));
+}
 /**
  * ONE RUN PER COUPLING (0.10.27; owner, 2026-10-21: re-measured history is kept on the server). The batches of a re-measure
  * to one key are one run: an id, each batch's number and the run's count ride in every batch, and WorkTrust keeps each batch
@@ -774,13 +1103,15 @@ const historyRunId = (bodies) => {
 function historyPlan(door, entries, rebuild = false, { byDay = false, withdrawUnknown = false } = {}) {
   const groups = [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS, ...EXPORT_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])];
   // Imported entries carry no live commit/session join.
-  const encodeBatch = (batch, run = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }), ...(run ? { run } : {}) } } });
+  const encodeBatch = (batch, run = null, days = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }), ...(run ? { run } : {}), ...(days ? { days } : {}) } } });
   const plan = groups.flatMap(([source, group]) => { const target = source === "codex" ? codexDoor ?? door : door; return group.length > 0 && target ? batchesOf(group, byDay).map((batch) => ({ source, target, batch, run: null })) : []; });
   if (rebuild && !byDay) for (const token of new Set(plan.map((item) => item.target.token))) {
     const run = plan.filter((item) => item.target.token === token), id = historyRunId(run.map((item) => encodeBatch(item.batch)));
     run.forEach((item, index) => { item.run = { id, index, count: run.length }; });
   }
-  for (const item of plan) item.body = encodeBatch(item.batch, item.run);
+  // 0.10.32: each batch of a staged run names its days' digests (of the AI app's whole plan for the day), only the days it carries.
+  const digestsOf = new Map(groups.map(([source, group]) => [source, dayDigests(group)]));
+  for (const item of plan) item.body = encodeBatch(item.batch, item.run, item.run ? daysOf(item.batch, digestsOf.get(item.source)) : null);
   return plan;
 }
 /**
@@ -789,21 +1120,25 @@ function historyPlan(door, entries, rebuild = false, { byDay = false, withdrawUn
  * run's batches again, each AI app on its own, under a new run id and count. `tighter` is a batch WorkTrust answered 413 although
  * it fit here: the next cut is half of it, so every piece is smaller than what was refused and a refused batch never goes again.
  */
+/** A batch's own days and their digests, from the AI app's day digests. */
+const daysOf = (batch, digests) => Object.fromEntries([...new Set(batch.map(dayOf))].sort().filter((day) => digests?.has(day)).map((day) => [day, digests.get(day)]));
 const outboxCut = {
   fits: (entries) => fits(entries),
   split(rpc, source, tighter) {
     const args = rpc.params.arguments, pieces = batchesOf(args.entries, EXPORT_CLIENTS.includes(source), tighter ? halfOf(tighter) : BATCH_LIMIT);
-    return pieces.length < 2 ? [] : pieces.map((batch) => JSON.stringify({ ...rpc, params: { ...rpc.params, arguments: { ...args, entries: batch } } }));
+    return pieces.length < 2 ? [] : pieces.map((batch) => { const { days, ...rest } = args; const own = days && typeof days === "object" ? Object.fromEntries(Object.entries(days).filter(([day]) => batch.some((entry) => dayOf(entry) === day))) : null; return JSON.stringify({ ...rpc, params: { ...rpc.params, arguments: { ...rest, entries: batch, ...(own ? { days: own } : {}) } } }); });
   },
   replan(batches, tighter) {
     const limit = tighter ? halfOf(tighter) : BATCH_LIMIT, bySource = new Map();
     for (const { rpc, source } of batches) bySource.set(source, [...(bySource.get(source) ?? []), ...rpc.params.arguments.entries]);
-    const { run: _run, entries: _entries, ...args } = batches[0].rpc.params.arguments; void _run; void _entries;
+    const { run: _run, entries: _entries, days: _days, ...args } = batches[0].rpc.params.arguments; void _run; void _entries; void _days;
     const plan = [...bySource].flatMap(([source, group]) => batchesOf(group, false, limit).map((batch) => ({ source, batch })));
     if (plan.length > 1000) return [];
-    const encode = (batch, run = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...args, entries: batch, ...(run ? { run } : {}) } } });
+    // 0.10.32: the days' digests follow the new cut, each batch naming only the days it carries.
+    const digests = new Map([...bySource].map(([source, group]) => [source, dayDigests(group)]));
+    const encode = (batch, run = null, days = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...args, entries: batch, ...(run ? { run } : {}), ...(days ? { days } : {}) } } });
     const id = historyRunId(plan.map(({ batch }) => encode(batch)));
-    return plan.map(({ source, batch }, index) => ({ source, body: encode(batch, { id, index, count: plan.length }) }));
+    return plan.map(({ source, batch }, index) => ({ source, body: encode(batch, { id, index, count: plan.length }, daysOf(batch, digests.get(source))) }));
   },
 };
 async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
@@ -813,6 +1148,9 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
   // Persist the approved plan before sending, so later batches survive removed source files too.
   try { for (const item of plan) queuedHistory(item.target, item.body, item.source); }
   catch { console.error("History queue is full, busy or unavailable. Resume the saved batches before retrying this import; nothing was marked complete."); HISTORY_DELIVERY.waiting += entries.length; return 0; }
+  // Every entry is now in the outbox, on disk, and goes again by itself until WorkTrust takes it (0.10.32: what the hook's
+  // late days may count on, so a late day not yet filed never holds a transcript's newer days back).
+  HISTORY_PERSISTED.n += entries.length;
   const numbers = new Map(), stopped = new Set();
   // TOO LARGE FOR ONE CALL (0.10.29): a batch WorkTrust answered 413, or one an earlier run already cut, is handed after the loop to
   // the outbox's cut with the rest of its run, never sent again as it was. `stoppedRuns`: a run with a refused batch sends no more.
@@ -957,7 +1295,7 @@ function historyEntries(floor = null, all = false) {
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
       if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
       // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
-      const entry = payloadFor({ ...measure(cwd, messages), ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) });
+      const entry = payloadFor({ ...measure(cwd, messages, session), ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) });
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
       if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));
@@ -1350,7 +1688,7 @@ if (flag("history")) {
     const sizes = plan.map((item) => ({ lines: item.batch.length, bytes: Buffer.byteLength(item.body, "utf8"), timeline_bytes: item.batch.reduce((n, entry) => n + timelineOfEntry(entry), 0) }));
     const kinds = { interactive: 0, headless: 0, scheduled: 0, unknown: 0 };
     for (const entry of entries) kinds[entry.session_kind ?? "unknown"] += 1;
-    console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry)?.file)).size, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients,
+    console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry)?.file)).size, unreadable: READ_FAILURES.n, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients,
       batches: { count: sizes.length, largest_bytes: Math.max(0, ...sizes.map((one) => one.bytes)), largest_timeline_bytes: Math.max(0, ...sizes.map((one) => one.timeline_bytes)), largest_lines: Math.max(0, ...sizes.map((one) => one.lines)), each: sizes }, session_kinds: kinds }));
     return await exitFlushed(0);
   }
@@ -1361,17 +1699,34 @@ if (flag("history")) {
     console.log(`\ndry run — nothing sent. Add --history${flag("rebuild") ? " --rebuild" : ""} without --dry-run to ${flag("rebuild") ? "rebuild" : "import"} them.`);
     return await exitFlushed(0);
   }
+  // ONLY THE DAYS THAT CHANGED (0.10.32): a re-measure of this computer's own sessions asks the door first; an export, a copied
+  // folder and a plain history never do. Not known is every day.
+  const staged = flag("rebuild") && !fromExports && !fromFolder;
+  const sending = staged ? await changedOnly(entries) : entries;
+  if (staged && COMPARED.asked && COMPARED.days > COMPARED.changed) console.log(sending.length === 0 ? `nothing changed: WorkTrust holds all ${COMPARED.days} days as this computer measures them` : `${COMPARED.days - COMPARED.changed} of ${COMPARED.days} days unchanged on WorkTrust; sending the ${COMPARED.changed} that changed`);
   // A batch the door refused is a failure the caller must see, not a quiet zero.
-  const accepted = await sendHistory(door, entries, true, flag("rebuild"), Boolean(fromFolder), fromExports ? { byDay: true, withdrawUnknown: flag("withdraw-unknown") } : {});
+  const accepted = sending.length === 0 ? 0 : await sendHistory(door, sending, true, flag("rebuild"), Boolean(fromFolder), fromExports ? { byDay: true, withdrawUnknown: flag("withdraw-unknown") } : {});
   // An export that arrived whole is remembered by its digest (never by a conversation), so the bare command offers it no more.
   if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
   // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
-  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: entries.length, ...RECEIPTS, delivery: HISTORY_DELIVERY })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
-  return await exitFlushed(accepted === entries.length ? 0 : 1);
+  if (!fromExports && !fromFolder) await settleReadFailures(door ?? codexDoor); // 0.10.32: a transcript that could not be read is counted and told
+  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: sending.length, unreadable: READ_FAILURES.n, ...RECEIPTS, delivery: HISTORY_DELIVERY, ...(staged ? { days: { compared: COMPARED.asked ? COMPARED.days : null, changed: COMPARED.asked ? COMPARED.changed : null }, queued: QUEUED.at } : {}) })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
+  return await exitFlushed(accepted === sending.length ? 0 : 1);
 }
 
 const input = hookInput();
 const state = readState();
+if (input?.hook_event_name === "Stop" && !process.env.WORKTRUST_STOP_CHILD) {
+  if (Date.now() - (Date.parse(state.__stopSweep ?? "") || 0) < STOP_SWEEP_MS) return await exitFlushed(0);
+  if (!DRY) { state.__stopSweep = new Date().toISOString(); writeState(state); }
+  // The sweep itself in a detached copy, so the answer that fired Stop is not held while a large transcript is read.
+  if (!DRY && !process.env.WORKTRUST_STOP_INLINE && existsSync(join(RELEASE_DIR, "log-session.mjs"))) {
+    try {
+      spawn(moduleExecutable(RELEASE_DIR), moduleArgs(RELEASE_DIR, "log-session.mjs", []), { detached: true, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, WORKTRUST_STOP_CHILD: "1", WORKTRUST_HOOK_INPUT: JSON.stringify(input) } }).unref();
+      return await exitFlushed(0);
+    } catch { /* no detached copy: the sweep runs here */ }
+  }
+}
 const work = [];
 if (input?.transcript_path && existsSync(input.transcript_path) && !excluded(input.transcript_path)) {
   work.push({ id: String(input.session_id ?? input.transcript_path), file: input.transcript_path });
@@ -1395,7 +1750,14 @@ if (floorOf(state, "__from") === null) {
   if (!DRY) writeState(state);
 }
 const floor = floorOf(state, "__from");
-let sent = 0, filed = 0;
+// THE TIMER THAT STARTED THIS RUN (0.10.32): read once, for the session the hook was called for, and kept beside its watermark, so a
+// day sent by a later run (the day was not finished) still carries it. A run no timer started reads none.
+let scheduleNoted = false;
+if (work.length > 0 && input?.transcript_path && work[0].file === input.transcript_path) {
+  const found = timerSchedule(), secret = found ? repoCodeSecret() : null, timer = found && secret ? { cadence: found.cadence, ref: createHmac("sha256", secret).update(`worktrust-schedule-ref|${found.ref}`).digest("base64url") } : null; // the label's hash keyed with this computer's secret, as repo_code (L4)
+  if (timer &&state[work[0].id]?.schedule?.ref !== timer.ref) { state[work[0].id] = { ...(state[work[0].id] ?? {}), schedule: timer }; scheduleNoted = true; }
+}
+let sent = 0, filed = 0, positioned = false;
 const late = []; // measured days the live door will no longer take: they are not dropped, they are filed
 const heldBack = new Map(); // per transcript with a late day: its state before that day, put back unless history took every late day
 for (const entry of work) {
@@ -1404,7 +1766,8 @@ for (const entry of work) {
   const since = mark !== null && floor !== null ? Math.max(mark, floor) : mark ?? floor;
   // Nothing written since we last read this one: it is not opened. This keeps a sweep over every transcript to one `stat` each.
   if (since !== null && entry.writtenAt && entry.writtenAt <= since) continue;
-  const stretches = stretchesOf(entry.file, since);
+  // THE READ POSITION (0.10.32, at stretchesOf): a Claude Code transcript is read from where the last run left it, when nothing says otherwise.
+  const stretches = stretchesOf(entry.file, since, state[entry.id]?.pos ?? null);
   // THE WATERMARK ADVANCES OVER WHAT WAS ACCEPTED, AND STOPS AT THE FIRST REFUSAL. A door that is
   // down must never cost the person a day, so the loop breaks rather than skipping ahead.
   let through = null, before, reported = state[entry.id]?.reported;
@@ -1413,7 +1776,7 @@ for (const entry of work) {
     // every day but today, on whichever run comes first — it no longer waits for its own end.
     if (Date.now() - stretch.to < IDLE_BEFORE_SWEEP) break;
     const total = grownBy(stretch, reported);
-    const payload = payloadFor(stretch);
+    const payload = payloadFor({ ...stretch, schedule: state[entry.id]?.schedule ?? null });
     const source = LIVE_SOURCE.exec(String(entry.id))?.[1];
     if (source) entrySource.set(payload, source);
     if (DRY) { console.log(JSON.stringify({ ...payload, client: source ?? "claude", route: Date.now() - stretch.to > WINDOW_HOURS * 3600_000 ? "history" : "log_work" }, null, 1)); through = stretch.to; reported = total; continue; }
@@ -1426,18 +1789,28 @@ for (const entry of work) {
     }
   }
   if (before && !heldBack.has(entry.id)) heldBack.set(entry.id, before.mark);
-  if (through !== null) state[entry.id] = { through: new Date(through).toISOString(), ...(reported ? { reported } : {}) };
+  // The position is cut for the watermark kept beside it: the new one, or the one this run read under.
+  const pos = stretches.positionAt?.(through ?? since) ?? null;
+  if (through !== null) state[entry.id] = { through: new Date(through).toISOString(), ...(reported ? { reported } : {}), ...(state[entry.id]?.schedule ? { schedule: state[entry.id].schedule } : {}), ...(pos ? { pos } : {}) };
+  else if (pos && !DRY && canonical(pos) !== canonical(state[entry.id]?.pos ?? null)) { state[entry.id] = { ...(state[entry.id] ?? {}), pos }; positioned = true; }
 }
 // The history door, in batches of two hundred as `--history` sends them. A resend FILLS a line that was missing something, never a twin.
 if (!DRY && late.length > 0) {
   try { filed = await sendHistory(door, late); } catch (error) { if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`); }
-  // A LATE DAY THE HISTORY DOOR REFUSED IS NOT PASSED: its transcript's mark goes back to before it, so the next run sends it again.
-  if (filed < late.length) for (const [id, mark] of heldBack) { if (mark) state[id] = mark; else delete state[id]; }
+  // A LATE DAY THAT IS NOWHERE IS NOT PASSED: when the outbox could not keep it, its transcript's mark goes back to before it, so
+  // the next run reads it again. A late day the outbox KEEPS is passed (0.10.32): the outbox sends it again by itself until
+  // WorkTrust takes it, and putting the mark back made every newer day of a long session late too, a day at a time, so a
+  // session whose first late day waited (the owner's, from 2026-10-18) never moved again.
+  if (filed < late.length && HISTORY_PERSISTED.n < late.length) for (const [id, mark] of heldBack) { if (mark) state[id] = mark; else delete state[id]; }
 }
-if (!DRY && (sent > 0 || filed > 0)) writeState(state);
-// What an earlier history run left on this computer because the server never received it: a few batches a run, by itself; not in a
-// run that just sent late days itself (a batch it just tried waits for the next run, as it always did).
+if (!DRY && (sent > 0 || filed > 0 || scheduleNoted || positioned || (late.length > 0 && HISTORY_PERSISTED.n >= late.length))) writeState(state);
+// What an earlier run left in the outbox because the server never received it: a few batches a run, by itself; not in a run
+// that just sent late days itself (a batch it just tried waits for the next run). Since 0.10.32 the mark passes a late day the
+// outbox keeps, so the next run has no late day of its own and asks; before, a long session always had one and never asked.
 if (!DRY && late.length === 0) await resendPending(4);
+// A transcript that could not be read is counted here and told as a count (0.10.32), never skipped in silence.
+if (!DRY) await settleReadFailures(door, state);
+if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: read ${READ_BYTES.n} transcript bytes`);
 
 // The counter, at most once a day, detached: reading every transcript takes longer than a hook
 // may hold a session's exit, and its result waits for a click either way. `--stage` and never

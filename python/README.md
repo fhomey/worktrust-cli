@@ -1,5 +1,16 @@
 # WorkTrust for Python tool runners
 
+## A re-measure sends only the days that changed; agents at once; call outcomes (0.10.32)
+
+Before `uvx worktrust history` sends a re-measure, it asks WorkTrust which of this computer's
+days it already holds as measured here (a question with no line in it; the answer is only the
+digests this computer sent) and sends the others. Nothing new: nothing is sent.
+
+A Claude Code session's subagent runs travel with the day's stretch as kinds, whole seconds and counts (never a name, a
+prompt, a path or an id), so WorkTrust can show how many agents were active at once. Each model answer's outcome travels
+as one character beside the timeline (completed, failed or not known). The measure rules go to 2:
+`uvx worktrust update` offers a re-measure once, naming these changes.
+
 ## A re-measure only when measuring changed (0.10.31)
 
 `uvx worktrust update` offers to re-measure this computer's sessions only when the new version

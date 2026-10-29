@@ -73,6 +73,19 @@ private transcripts or account data in a public issue.
   here, a wake hook); it cannot widen what is written, sent or read. An unreadable or unsafe file counts as no agreement.
 - A No drops the entry it answered; `disconnect` deletes the file; a coupling to another account starts it empty.
 
+## The question before a re-measure (0.10.32)
+
+Before a re-measure, the hook asks the door, per AI app, which days of this computer WorkTrust holds as current. The
+request is `import_history` with `rebuild: true, fingerprint: true` and nothing else: no line, no hours, no path. It
+goes under the computer's own key and, on a bound computer, with its device proof, like every history batch. The
+answer is a list of UTC days and, for each, the 64-hex digest this computer sent with that day: digests of its own
+submissions, never a line, a figure or anything of the record. A digest is computed here from what this computer would
+send; a day that matches is not sent again. An answer that cannot be read means not known, and every day is sent.
+
+When a transcript on this computer exists but cannot be read (permissions, a disk error), the hook counts it, keeps the
+count in `~/.worktrust/sessions.json`, shows it in `npx worktrust status`, and at most once a day asks the same question
+with the count beside it (`unreadable: N`): a number, never which file, its path or anything in it.
+
 ## What measurement signatures establish
 
 The metadata journal introduced in the 0.10.21 candidate preserves observations, not their

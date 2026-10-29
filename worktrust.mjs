@@ -76,18 +76,20 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.31";
+const CLI_VERSION = "0.10.32";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
  * kinds, the readers. A release that changes consent, coupling or words keeps it. `update` offers the re-measure only when
  * the earlier install measured by other rules, and names what changed from MEASURE_CHANGES; installed-release.json and
- * history.json record it. 1 is the rules of 0.10.29, which 0.10.30 and 0.10.31 kept.
+ * history.json record it. 1 is the rules of 0.10.29, which 0.10.30 and 0.10.31 kept; 2 (0.10.32) adds the subagent runs, each
+ * agent call's outcome and who wrote each turn of a run no person started.
  */
-const MEASURE_RULES = 1;
+const MEASURE_RULES = 2;
 /** What each measure-rules version changed, in the words the re-measure offer says (one entry per raise, never rewritten). */
 const MEASURE_CHANGES = {
   1: ["each answer's tokens counted once", "nothing lost at midnight", "when each stretch began", "how you steered the agent", "what the seconds were", "more AI apps", "how each session was started"],
+  2: ["which subagents were active at once, and how their failed steps were recovered", "whether each agent call completed", "who wrote each turn of a run no person started"],
 };
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
@@ -152,7 +154,7 @@ function historyQueueScope(token) {
 /** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
 function run(path, scriptArgs, token, collect = false, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, basename(path), scriptArgs)], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_NODE_ARGS: JSON.stringify(NODE_ARGS), WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(token), ...extraEnv } });
+    const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, basename(path), scriptArgs)], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_NODE_ARGS: JSON.stringify(NODE_ARGS), WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_MEASURE_RULES: String(MEASURE_RULES), WORKTRUST_HISTORY_SCOPE: historyQueueScope(token), ...extraEnv } });
     let out = "";
     child.stdout?.on("data", (chunk) => { out += chunk; });
     child.stderr?.on("data", (chunk) => { out += chunk; });
@@ -580,7 +582,7 @@ async function hook() {
   if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
   if (!key) return;
-  const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "log-session.mjs", args.filter((arg) => arg !== "hook"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
+  const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "log-session.mjs", args.filter((arg) => arg !== "hook"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_MEASURE_RULES: String(MEASURE_RULES), WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
   process.exitCode = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code) => resolve(code ?? 1)); });
 }
 
@@ -647,7 +649,7 @@ async function update() {
   if (found.length === 0) say("    (no AI app found here)");
   const hookFresh = !agreed.has("session-hook");
   say(`  The session hook and ${STABLE} are brought to ${CLI_VERSION}.`);
-  say(hookFresh ? `    + Session hook: ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd and PreCompact run it · new` : `    ✓ Session hook: refreshed (${agreed.said("session-hook")})`);
+  say(hookFresh ? `    + Session hook: ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd, PreCompact and (at most once an hour) Stop run it · new` : `    ✓ Session hook: refreshed (${agreed.said("session-hook")}; since 0.10.32 it also runs after an answer, at most once an hour, so a long session's finished days arrive the same day)`);
   say("  The key stays as it is: no new pairing, the same computer in WorkTrust.");
   say();
   if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
@@ -709,7 +711,7 @@ async function connect() {
   if (!direct) say(`  3. The key is kept in ${KEY_PLACE}, works only on this computer (every call is signed) and is renewed every week.`);
   say(`  ${direct ? 3 : 4}. The session hook is installed:`);
   say("    + The hook and counter from the checked release, retained outside the package-manager cache");
-  say(`    + ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd and PreCompact run it`);
+  say(`    + ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd, PreCompact and (at most once an hour) Stop run it`);
   say();
   say("  Sent to WorkTrust afterwards: durations, token counts, model names, a layer keyword, counts,");
   say("  and, to match the work to GitHub, the repository's owner/name and the commit hashes.");
@@ -805,13 +807,24 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
     : n(did.replaced) > 0 ? `${n(did.replaced)} of this computer's earlier lines were replaced (withdrawn and kept, never deleted)${landed > 0 ? `, ${landed} new` : ""}${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}.`
     : landed === 0 ? `Nothing changed: the same measurement${n(did.filled) > 0 ? `; ${n(did.filled)} lines gained what was missing (the stack, the tools seen, a layer)` : ""}; ${n(did.alreadyHeld)} lines already held.`
     : `${landed} new lines${n(did.restored) > 0 ? ` (${n(did.restored)} timed by WorkTrust in place of lines it had withdrawn)` : ""}${n(did.filled) > 0 ? `, ${n(did.filled)} lines gained what was missing` : ""}; ${n(did.alreadyHeld)} already held.`;
+  // ONLY THE DAYS THAT CHANGED (0.10.32): the hook asked WorkTrust which of this computer's days it holds as this CLI measures
+  // them and sent the others; every day it compared unchanged is nothing sent, said once. Not asked (an older WorkTrust) says nothing.
+  const compared = Number.isInteger(did?.days?.compared) ? did.days.compared : null, changed = Number.isInteger(did?.days?.changed) ? did.days.changed : null;
+  if (rebuild && sent.code === 0 && compared !== null && compared > 0 && changed === 0 && n(did.of) === 0) { say(`  Nothing changed: WorkTrust holds all ${compared} days as this computer measures them. Nothing was sent.`); return; }
+  if (rebuild && compared !== null && changed !== null && compared > changed) say(`  ${compared - changed} of ${compared} days unchanged on WorkTrust; sending the ${changed} that changed.`);
+  if (n(did?.unreadable) > 0) say(`  ${n(did.unreadable)} transcript${n(did.unreadable) === 1 ? "" : "s"} could not be read; ${n(did.unreadable) === 1 ? "its" : "their"} days were not measured. WorkTrust was told the count, nothing else.`);
   if (n(did?.untimed) > 0) say(`  ${n(did.untimed)} lines were refused: they carried no timeline, so WorkTrust could not time them itself. This CLI sends every session's timeline; a line without one came from an older copy or an archive.`);
   if (Number(did?.delivery?.review) > 0) say(`  ${did.delivery.review} lines are waiting for review. Earlier measurements remain unchanged. Reconnecting or repeating the import does not approve them.`);
   // KEPT ON THE SERVER (0.10.27; owner, 2026-10-21): what did not arrive stays here and goes again by itself; nothing to resume by hand.
   if (Number(did?.delivery?.waiting) > 0) say("  Some batches did not reach WorkTrust yet. They stay on this computer and are sent again by themselves the next time npx worktrust or your AI app's hook runs.");
   if (Number(did?.delivery?.refused) > 0) say(`  WorkTrust closed an earlier run of ${did.delivery.refused} lines (it missed a batch for seven days): run npx worktrust@latest history again to send them as a new run.`);
   // A STAGED RUN (0.10.27): WorkTrust holds every batch and rebuilds the days itself once the run is whole; the receipts say what it kept.
-  if (rebuild && n(did?.staged) > 0 && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(`  ✓ Re-measured. WorkTrust holds all ${n(did.staged)} batches (${n(did.kept)} lines) and rebuilds these days itself, every AI app together, a day counted once. Sources › Logs shows it while it works.`);
+  if (rebuild && n(did?.staged) > 0 && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) {
+    say(`  ✓ Re-measured. WorkTrust holds all ${n(did.staged)} batches (${n(did.kept)} lines) and rebuilds these days itself, every AI app together, a day counted once. Sources › Logs shows it while it works.`);
+    // WHERE IT WAITS (0.10.32): the receipt of the run's last batch names its place in WorkTrust's queue and a time; absent, nothing is guessed.
+    const queued = did?.queued;
+    if (queued && Number.isInteger(queued.position) && queued.position >= 1 && Number.isFinite(Number(queued.eta_minutes))) say(`  queued, position ${queued.position}, about ${Math.max(1, Math.ceil(Number(queued.eta_minutes)))} min`);
+  }
   else if (rebuild && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
   else if (!rebuild) say(sent.code === 0 ? "  ✓ Sent as history. Activity is recorded with its origin; independent verification and passport publication are separate. A day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
   if (did && Number(did.measuredSeconds) > 0) say(`  Measured by WorkTrust: ${(Number(did.measuredSeconds) / 3600).toFixed(1)} h for what this send stored${n(did.corrected) > 0 ? ` (${n(did.corrected)} lines corrected: a figure sent beside the timeline differed)` : ""}.`);
@@ -1247,6 +1260,9 @@ async function status() {
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
   if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
   say(sessionHookHere() ? "  Session hook: installed" : "  Session hook: not installed");
+  // A TRANSCRIPT THE HOOK COULD NOT READ (0.10.32): the count of its last run that had any, never which file; WorkTrust has the count too.
+  { let unread = null; try { unread = JSON.parse(readFileSync(join(HOME_DIR, "sessions.json"), "utf8")).__unreadable ?? null; } catch { /* no state yet */ }
+    if (Number(unread?.count) > 0) say(`  Transcripts: ${unread.count} could not be read on ${String(unread.at).slice(0, 10)}; their days are not measured until they can be (WorkTrust was told the count, nothing else)`); }
   if (existsSync(join(homedir(), ".codex"))) { const notify = codexNotify().text ?? ""; say(isOurNotify(notify) ? "  Codex: wakes the session hook" : "  Codex: does not wake the session hook (npx worktrust update asks)"); }
   if (existsSync(join(homedir(), ".hermes"))) { let text = ""; try { text = readFileSync(join(homedir(), ".hermes", "config.yaml"), "utf8"); } catch { /* none */ } say(/worktrust(?:-launch)?\.(?:mjs|py)\\?" hook --hermes/.test(text) ? "  Hermes Agent: wakes the session hook" : "  Hermes Agent: does not wake the session hook (npx worktrust update writes it)"); }
   if (antigravityHere()) say(agyHooks()?.worktrust ? "  Antigravity: wakes the session hook" : "  Antigravity: does not wake the session hook (npx worktrust update asks)");

@@ -207,7 +207,7 @@ function delegationOf(messages, { isHumanTurn, INTERRUPTED, textOf }) {
  * next: the same input again (a blind retry) or a different one (a changed strategy). Inputs are compared by digest on
  * this computer and never kept. Null when nothing failed.
  */
-function recoveryOf(messages) {
+export function recoveryOf(messages) {
   const calls = [];
   const byId = new Map();
   for (const message of messages) {

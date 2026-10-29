@@ -13,9 +13,12 @@
  * counter's named rules and the hook's measure(), whose payloads are fixed allowlists of numbers,
  * dates and enum values (log-session.mjs, "WHAT CANNOT LEAVE").
  */
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 
 // ── codex rollout reader ──
@@ -75,9 +78,12 @@ const ORIGIN_OF = { human: "human", scheduled: "scheduled", task_notification: "
 const entrypointKind = (value) => (typeof value !== "string" ? null : /^sdk(-|$)/.test(value) ? "headless" : value === "cli" || /^claude-/.test(value) ? "interactive" : "unknown");
 const SESSION_WORDS = new Set(["interactive", "headless", "scheduled", "unknown"]);
 const onlyToolResults = (content) => Array.isArray(content) && content.length > 0 && content.every((part) => part?.type === "tool_result");
-export function sessionKindReader() {
-  let entry = null, human = false, first;
+export function sessionKindReader(saved = null) {
+  // A READ POSITION RESUMES IT (0.10.32): `state()` is what it has read so far, as JSON, and `sessionKindReader(state)` goes on
+  // from there, so a transcript read from an offset decides the kind its whole file decides.
+  let entry = typeof saved?.entry === "string" ? saved.entry : null, human = saved?.human === true, first = saved && "first" in saved ? saved.first : undefined;
   return {
+    state: () => ({ entry, human, ...(first === undefined ? {} : { first }) }),
     note(line) {
       if (!line || typeof line !== "object") return;
       // What the client said on the line: a reader's word (Codex), else Claude Code's entrypoint. Interactive wins over headless,
@@ -100,6 +106,95 @@ export function sessionKindReader() {
 }
 /** One session's kind from its lines, in file order (the hook and the tests read it the same way). */
 export const sessionKindOf = (lines) => { const reader = sessionKindReader(); for (const line of lines ?? []) reader.note(line); return reader.kind(); };
+/**
+ * WHO WROTE THIS TURN (0.10.32): true when the app marked it the person's (`turnOrigin` / `origin.kind` human, or the line's own
+ * entrypoint interactive: a `claude --resume` by hand); false when it marked a program or a timer (an `sdk-*` entrypoint, a
+ * `scheduled` or program origin); null when it said neither. In a run no person started, only a true turn is a human input.
+ */
+export const turnByPerson = (line) => {
+  const origin = ORIGIN_OF[typeof line?.turnOrigin === "string" ? line.turnOrigin : typeof line?.origin?.kind === "string" ? line.origin.kind : ""] ?? null;
+  if (origin) return origin === "human";
+  const kind = entrypointKind(line?.entrypoint);
+  return kind === "interactive" ? true : kind === "headless" ? false : null;
+};
+
+/**
+ * THE TIMER THAT RUNS THIS PROCESS (owner, 2026-10-28; docs/AGENTIC-OPERATIONS.md "2b"; 0.10.32): a run's schedule is read from the
+ * timer's own definition, never guessed from when runs happened.
+ *   launchd  the job's label (XPC_SERVICE_NAME, which launchd sets for the job and its children) names a plist in a LaunchAgents
+ *            or LaunchDaemons folder; its StartInterval (a day, a week) or one StartCalendarInterval entry says the cadence;
+ *   cron     an ancestor process is cron; the command its child runs is exactly one line of the user's crontab; that line's
+ *            fields say the cadence (`@daily`, `@weekly`, `@monthly`, or minute and hour fixed with one of day-of-month or
+ *            day-of-week fixed).
+ * Anything else (an hourly or irregular timer, several entries, no definition found, two crontab lines alike): null. The ref is a
+ * hash of the timer's identity and its cadence (the label, or the cron fields), never of its command: updating what a timer runs
+ * keeps its schedule; a new cadence is a new schedule. Nothing of the definition leaves this computer.
+ */
+export const SCHEDULE_CADENCES = ["daily", "weekly", "monthly"];
+const scheduleRef = (source, identity, cadence) => createHash("sha256").update(`worktrust-schedule|${source}|${identity}|${cadence}`).digest("base64url");
+const whole = (value) => Number.isInteger(value) && value >= 0;
+/** A launchd job definition (the plist as JSON) → its cadence, or null. */
+export function launchdCadence(plist) {
+  if (!plist || typeof plist !== "object") return null;
+  if (plist.StartInterval === 86400) return "daily";
+  if (plist.StartInterval === 604800) return "weekly";
+  if (plist.StartInterval !== undefined) return null;
+  const entries = Array.isArray(plist.StartCalendarInterval) ? plist.StartCalendarInterval : plist.StartCalendarInterval ? [plist.StartCalendarInterval] : [];
+  if (entries.length !== 1 || typeof entries[0] !== "object") return null;
+  const { Minute, Hour, Day, Weekday, Month } = entries[0];
+  if (Month !== undefined || !whole(Minute) || !whole(Hour)) return null;
+  if (whole(Day) && Weekday === undefined) return "monthly";
+  if (whole(Weekday) && Day === undefined) return "weekly";
+  if (Day === undefined && Weekday === undefined) return "daily";
+  return null;
+}
+/** A crontab line's schedule fields (the five, or one @word) → its cadence, or null. */
+export function cronCadence(fields) {
+  const word = { "@daily": "daily", "@midnight": "daily", "@weekly": "weekly", "@monthly": "monthly" };
+  if (fields.length === 1) return word[fields[0]] ?? null;
+  if (fields.length !== 5) return null;
+  const [minute, hour, dom, month, dow] = fields, one = (field) => /^[0-9]{1,2}$/.test(field);
+  if (!one(minute) || !one(hour) || month !== "*") return null;
+  if (dom === "*" && dow === "*") return "daily";
+  if (dom === "*" && one(dow)) return "weekly";
+  if (one(dom) && dow === "*") return "monthly";
+  return null;
+}
+/** The crontab's lines whose command is `command` → their schedule fields (an @word line has one). */
+export const crontabFields = (crontab, command) => String(crontab ?? "").split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#") && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(line))
+  .map((line) => (line.startsWith("@") ? [line.split(/\s+/, 1), line.replace(/^@\S+\s+/, "")] : [line.split(/\s+/).slice(0, 5), line.split(/\s+/).slice(5).join(" ")]))
+  .filter(([, cmd]) => cmd === command).map(([fields]) => fields);
+export function timerSchedule({ env = process.env, home = homedir(), run = spawnSync, pid = process.pid } = {}) {
+  try {
+    const label = typeof env.XPC_SERVICE_NAME === "string" && /^[A-Za-z0-9._-]{1,200}$/.test(env.XPC_SERVICE_NAME) && !/^(0|application\.)/.test(env.XPC_SERVICE_NAME) ? env.XPC_SERVICE_NAME : null;
+    if (label) {
+      const file = [join(home, "Library/LaunchAgents"), "/Library/LaunchAgents", "/Library/LaunchDaemons"].map((dir) => join(dir, `${label}.plist`)).find((path) => existsSync(path));
+      if (!file) return null;
+      const read = run("plutil", ["-convert", "json", "-o", "-", file], { encoding: "utf8", timeout: 2000 });
+      const cadence = read.status === 0 ? launchdCadence(JSON.parse(read.stdout)) : null;
+      return cadence ? { cadence, ref: scheduleRef("launchd", label, cadence) } : null;
+    }
+    // cron: walk up the process tree (one `ps`), at most twelve steps, for cron and the command it started
+    const table = run("ps", ["-A", "-o", "pid=,ppid=,comm="], { encoding: "utf8", timeout: 2000 });
+    if (table.status !== 0) return null;
+    const parent = new Map(), name = new Map();
+    for (const row of table.stdout.split("\n")) { const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(row); if (m) { parent.set(Number(m[1]), Number(m[2])); name.set(Number(m[1]), m[3]); } }
+    let child = pid, at = parent.get(pid);
+    for (let step = 0; step < 12 && at && at > 1; step += 1) {
+      if (/(^|\/)(cron|crond)$/.test(name.get(at) ?? "")) {
+        const args = run("ps", ["-o", "args=", "-p", String(child)], { encoding: "utf8", timeout: 2000 });
+        const command = args.status === 0 ? /^\S*sh -c (.+)$/.exec(args.stdout.trim())?.[1] ?? null : null;
+        if (!command) return null;
+        const tab = run("crontab", ["-l"], { encoding: "utf8", timeout: 2000 });
+        const lines = tab.status === 0 ? crontabFields(tab.stdout, command) : [];
+        const cadence = lines.length === 1 ? cronCadence(lines[0]) : null;
+        return cadence ? { cadence, ref: scheduleRef("cron", lines[0].join(" "), cadence) } : null;
+      }
+      child = at; at = parent.get(at);
+    }
+    return null;
+  } catch { return null; }
+}
 export function* codexLines(records) {
   let cwd = null, model = null, mode = null, sessionKind = null;
   const seenResponses = new Set();
@@ -156,12 +251,37 @@ export function* codexLines(records) {
  * does not say who started them, and a guess is noise. Null when the day shows none of it.
  */
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+/**
+ * A FILE'S LINES, 8 MB AT A TIME (0.10.32): a whole-file read throws past Node's longest string (about 512 MB), which is
+ * how the owner's Claude Code session went unmeasured from 2026-10-18; a rollout is read the same way as a transcript.
+ * Null when the file cannot be opened; a read that fails halfway ends the lines there.
+ */
+export function streamedLines(file) {
+  try { closeSync(openSync(file, "r")); } catch { return null; }
+  return { *[Symbol.iterator]() {
+    let fd; try { fd = openSync(file, "r"); } catch { return; }
+    try {
+      const decoder = new StringDecoder("utf8"), buffer = Buffer.allocUnsafe(8 << 20);
+      let rest = "";
+      for (;;) {
+        let n; try { n = readSync(fd, buffer, 0, buffer.length, null); } catch { return; }
+        if (n <= 0) break;
+        const parts = (rest + decoder.write(buffer.subarray(0, n))).split("\n");
+        rest = parts.pop();
+        yield* parts;
+      }
+      rest += decoder.end();
+      if (rest) yield rest;
+    } finally { closeSync(fd); }
+  } };
+}
 export function codexLive(file, day) {
   if (!CODEX_ROLLOUT.test(String(file)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(day))) return null;
-  let text; try { text = readFileSync(file, "utf8"); } catch { return null; }
+  const lines = streamedLines(file);
+  if (!lines) return null;
   const out = {}, models = new Set();
   const peak = (key, value) => { if (Number.isFinite(value)) { const v = Math.max(0, Math.min(100, Math.round(value))); if (v > 0 && (out[key] ?? 0) < v) out[key] = v; } };
-  for (const raw of text.split("\n")) {
+  for (const raw of lines) {
     if (!raw.includes(day)) continue;
     let record; try { record = JSON.parse(raw); } catch { continue; }
     if (String(record?.timestamp ?? "").slice(0, 10) !== day) continue;

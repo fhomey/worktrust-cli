@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /** Real coupling lifecycle in a synthetic home/mock server. Cache removal must not remove the installed runtime.
  * Public mirror: WORKTRUST_TEST_CLI_SOURCE=<flat CLI source>. Optional WORKTRUST_TEST_CLI_ENTRY proves regressions.
+ * The Node copied into the fixture's runtime is the one running this test, or WORKTRUST_TEST_NODE: it must be an official,
+ * self-contained build within the package's 128 MiB file cap, as the Python distribution bundles (tools/worktrust-python/
+ * runtime-lock.json pins 22.23.3; CI runs this test with that staged binary).
  */
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
@@ -12,12 +15,29 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const modules = ["credential-store.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "worktrust.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "preserve.mjs", "preserve-lines.mjs", "preserve-summary.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs"];
-const source = (name) => name === "runtime-install.mjs" && process.env.WORKTRUST_TEST_RUNTIME_SOURCE ? process.env.WORKTRUST_TEST_RUNTIME_SOURCE : name === "worktrust.mjs" && process.env.WORKTRUST_TEST_CLI_ENTRY ? process.env.WORKTRUST_TEST_CLI_ENTRY : process.env.WORKTRUST_TEST_CLI_SOURCE ? join(process.env.WORKTRUST_TEST_CLI_SOURCE, name) : join(repo, name === "worktrust.mjs" ? "apps/worktrust/app/public/counter" : "scripts", name);
+// A FLAT PACKAGE TREE: the mirror names it (WORKTRUST_TEST_CLI_SOURCE); this file's copy in tools/worktrust-cli/tests (the mirror's
+// tests/, carried by sync.mjs) finds it one folder up. Without one, airproof's own sources: scripts/ and the hosted counter.
+const flat = process.env.WORKTRUST_TEST_CLI_SOURCE ?? (["package.json", "worktrust-launch.mjs"].every((name) => existsSync(join(repo, name))) ? repo : null);
+// THE MODULES ARE THE PACKAGE'S OWN (2026-10-30): the fixture installs exactly what package.json `files` ships, as
+// build-python-cli.mjs does. CLI 0.10.34 failed all six platforms on the mirror because this list was kept by hand there, frozen
+// at 0.10.26: the fixture left git-commits.mjs and commit-rules.mjs out and the CLI refused the incomplete package.
+const modules = JSON.parse(readFileSync(flat ? join(flat, "package.json") : join(repo, "tools/worktrust-cli/package.json"), "utf8")).files.filter((name) => name.endsWith(".mjs"));
+if (!modules.includes("worktrust.mjs") || !modules.includes("worktrust-launch.mjs")) throw Error("cli-runtime: package.json files does not name the CLI's modules");
+const source = (name) => name === "runtime-install.mjs" && process.env.WORKTRUST_TEST_RUNTIME_SOURCE ? process.env.WORKTRUST_TEST_RUNTIME_SOURCE : name === "worktrust.mjs" && process.env.WORKTRUST_TEST_CLI_ENTRY ? process.env.WORKTRUST_TEST_CLI_ENTRY : flat ? join(flat, name) : join(repo, name === "worktrust.mjs" ? "apps/worktrust/app/public/counter" : "scripts", name);
 const python = execFileSync(process.env.WORKTRUST_TEST_PYTHON || "python3", ["-c", "import pathlib,sys; print(pathlib.Path(getattr(sys, '_base_executable', sys.executable)).resolve())"], { encoding: "utf8" }).trim();
 const pair = generateKeyPairSync("ed25519"), publicKey = pair.publicKey.export({type:"spki",format:"pem"});
 const keyId = createHash("sha256").update(pair.publicKey.export({type:"spki",format:"der"})).digest("hex");
 const canonical = x => x && typeof x === "object" ? (Array.isArray(x) ? "["+x.map(canonical).join(",")+"]" : "{"+Object.keys(x).sort().map(k=>JSON.stringify(k)+":"+canonical(x[k])).join(",")+"}") : JSON.stringify(x);
+// A NODE THAT CANNOT BE THE BUNDLED RUNTIME IS NAMED BEFORE IT RUNS (2026-10-21). Homebrew's node links @rpath/libnode.dylib:
+// its copy dies in dyld and on macOS the dying process hangs in the kernel, so every child "timed out" after 45 s and
+// stayed behind. Node 26's official binary is 145 MB, over the 128 MiB cap package-integrity.mjs holds every packaged file
+// to. Both are the machine, not the CLI; the run still FAILS, with the reason, and never starts such a copy.
+const runtimeNode = process.env.WORKTRUST_TEST_NODE || process.execPath;
+const RUNTIME_HINT = "set WORKTRUST_TEST_NODE to an official Node binary (tools/worktrust-python/runtime-lock.json pins 22.23.3)";
+const runtimeBytes = readFileSync(runtimeNode);
+if (runtimeBytes.includes("@rpath/libnode")) throw Error(`cli-runtime: ${runtimeNode} links libnode (a Homebrew build) and cannot run once copied; ${RUNTIME_HINT}`);
+if (runtimeBytes.length > 128 * 1024 * 1024) throw Error(`cli-runtime: ${runtimeNode} is over the 128 MiB a packaged file may be; ${RUNTIME_HINT}`);
+const runtimeVersion = runtimeNode === process.execPath ? process.versions.node : execFileSync(runtimeNode, ["-p", "process.versions.node"], { encoding: "utf8" }).trim();
 const scratch = mkdtempSync(join(tmpdir(), "worktrust runtime "));
 const home = join(scratch, "person home"), cache = join(scratch, "disposable cache"), pathDir = join(scratch, "empty PATH");
 const executable = process.platform === "win32" ? "node.exe" : "node";
@@ -56,10 +76,10 @@ const server = createServer((request, response) => {
 function makeCache(dir, extra = "") {
   const runtime = join(dir, "runtime"), engine = join(dir, "bundle");
   mkdirSync(runtime, { recursive: true }); mkdirSync(engine);
-  copyFileSync(process.execPath, join(runtime, executable)); chmodSync(join(runtime, executable), 0o755);
+  copyFileSync(runtimeNode, join(runtime, executable)); chmodSync(join(runtime, executable), 0o755);
   writeFileSync(join(runtime, "LICENSE"), `Synthetic fixture license${extra}`);
   const files = Object.fromEntries([executable, "LICENSE"].map(name => [name, sha(readFileSync(join(runtime, name)))]));
-  writeFileSync(join(runtime, "runtime.json"), JSON.stringify({ version: process.versions.node, platform: `${process.platform === "win32" ? "win" : process.platform}-${process.arch}`, executable, archive_sha256: "0".repeat(64), files }));
+  writeFileSync(join(runtime, "runtime.json"), JSON.stringify({ version: runtimeVersion, platform: `${process.platform === "win32" ? "win" : process.platform}-${process.arch}`, executable, archive_sha256: "0".repeat(64), files }));
   for (const name of modules) {
     let data = readFileSync(source(name));
     if (["package-integrity.mjs", "worktrust-launch.mjs"].includes(name)) data = Buffer.from(data.toString().replace(/^(export )?const RELEASE_KEYS = .*; \/\/ GENERATED_RELEASE_KEYS$/m, (_, exp) => (exp ?? "") + "const RELEASE_KEYS = " + JSON.stringify({[keyId]:publicKey}) + "; // GENERATED_RELEASE_KEYS"));

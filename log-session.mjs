@@ -242,7 +242,7 @@ const { modCounts = () => null } = (await import("./claude-mod.mjs").catch(() =>
 const liveOf = (file, day) => modCounts(String(file).split(/[\\/]/).pop().replace(/\.jsonl$/, ""), day) ?? codexLive(file, day); // 0.10.16: a Codex rollout's own
 const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await import("./stack-rules.mjs").catch(() => null)) ?? {}; // 0.10.11: core's stack rules and the display-only keys (tools_seen), generated (build-stack-rules --check); absent → nothing named, never a guess
 const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
-const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot"]; // the registry's keys, the name each line carries
+const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot", "gemini-cli"]; // the registry's keys, the name each line carries (0.10.35: Gemini CLI)
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
 const READER_FILES = ["history-outbox.mjs", "transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
 /** The roots this machine's transcripts live under; a test names its own. */
@@ -1177,7 +1177,7 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
       catch {
         const refusal = historyRefusal(text, response);
         // A run WorkTrust closed (seven days without its last batch, another computer's key) is final: kept here it would wait forever.
-        if (refusal.reason === "closed") { queued.close(); HISTORY_DELIVERY.refused += batch.length; continue; }
+        if (refusal.reason === "closed") { queued.close(); HISTORY_DELIVERY.refused += batch.length; if (refusal.said) HISTORY_DELIVERY.said = refusal.said; continue; }
         if (refusal.reason === "oversize") { queued.oversize(); handLater(item); if (item.run) stoppedRuns.add(item.run.id); continue; }
         queued.defer(refusal.reason, refusal.seconds);
         if (refusal.reason === "review") { HISTORY_DELIVERY.review += batch.length; continue; }
@@ -1191,7 +1191,7 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
     try {
       const totals = await resumeHistory(target, { only: ids, cutter: outboxCut, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target) });
       accepted += totals.received + totals.held; RECEIPTS.alreadyHeld += totals.held;
-      HISTORY_DELIVERY.waiting += totals.waiting; HISTORY_DELIVERY.review += totals.review; HISTORY_DELIVERY.refused += totals.refused;
+      HISTORY_DELIVERY.waiting += totals.waiting; HISTORY_DELIVERY.review += totals.review; HISTORY_DELIVERY.refused += totals.refused; if (totals.said) HISTORY_DELIVERY.said = totals.said;
       if (announce && totals.split) console.log(`${totals.split} batch${totals.split === 1 ? "" : "es"} too large for one call: cut smaller and sent again in pieces`);
       if (announce && totals.refused) console.log(`${totals.refused} line${totals.refused === 1 ? "" : "s"} could not be sent in a call WorkTrust takes; the earlier lines keep counting. Run npx worktrust@latest history again to measure them anew.`);
     } catch { console.error("Pending history could not be read safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); }
@@ -1749,9 +1749,9 @@ if (flag("history")) {
     return await exitFlushed(0);
   }
   // ONLY THE DAYS THAT CHANGED (0.10.32): a re-measure of this computer's own sessions asks the door first; an export, a copied
-  // folder and a plain history never do. Not known is every day.
+  // folder and a plain history never do. Not known is every day. `--force-days` (0.10.35) asks nothing and sends every day of every AI app again.
   const staged = flag("rebuild") && !fromExports && !fromFolder;
-  const sending = staged ? await changedOnly(entries) : entries;
+  const sending = staged && !flag("force-days") ? await changedOnly(entries) : entries; // FORCED (0.10.35; owner, 2026-10-30): the lines WorkTrust holds without their app, named; every app at once, so a day loses no app's line
   if (staged && COMPARED.asked && COMPARED.days > COMPARED.changed) console.log(sending.length === 0 ? `nothing changed: WorkTrust holds all ${COMPARED.days} days as this computer measures them` : `${COMPARED.days - COMPARED.changed} of ${COMPARED.days} days unchanged on WorkTrust; sending the ${COMPARED.changed} that changed`);
   // A batch the door refused is a failure the caller must see, not a quiet zero.
   const accepted = sending.length === 0 ? 0 : await sendHistory(door, sending, true, flag("rebuild"), Boolean(fromFolder), fromExports ? { byDay: true, withdrawUnknown: flag("withdraw-unknown") } : {});

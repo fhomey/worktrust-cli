@@ -453,6 +453,20 @@ export function cursorCall(bubble) {
  * a kind of, never kept) with the exit code VS Code recorded; a missing exit code is unknown. Its to-do list is TodoWrite
  * (statuses only), its subagents are Agent. What a confirmation type means is not documented, so no refusal is read.
  */
+/**
+ * A GEMINI CLI TOOL CALL AS THE STRETCH READS IT (0.10.35): its name mapped to the common one (a shell command is Bash, its
+ * to-do list TodoWrite), the command for the CLI to name a KIND of (never kept), the to-do statuses (never their text), and
+ * the status Gemini CLI recorded (`success`; `error` or `cancelled` a failure); any other status is unknown, never a pass.
+ */
+const GEMINI_NAMES = { run_shell_command: "Bash", write_todos: "TodoWrite", replace: "Edit", write_file: "Write", read_file: "Read", read_many_files: "Read", search_file_content: "Grep", grep_search: "Grep", glob: "Glob", list_directory: "LS" };
+export function geminiCall(call) {
+  const id = typeof call?.id === "string" && call.id ? call.id : null;
+  if (!id) return null;
+  const raw = String(call.name ?? "tool"), name = GEMINI_NAMES[raw] ?? raw, args = call.args && typeof call.args === "object" ? call.args : {};
+  const input = name === "Bash" ? { command: typeof args.command === "string" ? args.command : "" } : name === "TodoWrite" && Array.isArray(args.todos) ? { todos: args.todos.map((todo) => ({ status: todo?.status === "completed" ? "completed" : "pending" })) } : {};
+  const failed = call.status === "error" || call.status === "cancelled", known = failed || call.status === "success";
+  return { use: { type: "tool_use", id, name, input }, result: { type: "tool_result", tool_use_id: id, is_error: failed, ...(known ? {} : { outcome: "unknown" }), content: "" } };
+}
 const COPILOT_NAMES = { run_in_terminal: "Bash", manage_todo_list: "TodoWrite", execution_subagent: "Agent", runSubagent: "Agent", copilot_replaceString: "Edit", copilot_createFile: "Write", copilot_readFile: "Read", copilot_findTextInFiles: "Grep", copilot_findFiles: "Glob" };
 export function copilotCall(part) {
   const id = typeof part.toolCallId === "string" && part.toolCallId ? part.toolCallId : null;

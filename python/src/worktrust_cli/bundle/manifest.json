@@ -1,5 +1,5 @@
 {
-  "version": "0.10.34",
+  "version": "0.10.35",
   "files": {
     "chat-exports.mjs": "04eafe333940ec03d5058d8d51062124aa12ab882bf04db03bcda5613ec69298",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -10,8 +10,8 @@
     "credential-vault-scripts.mjs": "7e42fe1db3885c2dec6f1de87bebfbefe2292d29179a68f3da87d19eb6c7704b",
     "credential-vault.mjs": "279baabb217e2a3f170e8d7f2b271a88484531f9031c441360ea91561a70da99",
     "git-commits.mjs": "f9c084c54937a86df8fe30a0db2a58e04eeef0dbae69c54b8e368efc9964d6d8",
-    "history-outbox.mjs": "b88072a28aa1dd94d9fab880f96b711b5fbed76ca62e5de24d612c08171e5b71",
-    "log-session.mjs": "d20e20c4fa5e4dd6a48a2c3b7caf4cefb090063503f38dc4716d8daee6d3bf22",
+    "history-outbox.mjs": "10cdcdcc595fbc3222e39b3d845a2ff16c0e7ae20eb43a2d2794e8c4d3a7353e",
+    "log-session.mjs": "378a2fd38f4eafd8820a85e4bc4490929ceed59c2711e5cfef6e01e2e195ad3d",
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",
     "orchestration-evidence.mjs": "d0d06cecf0eb08e5c6e653c62a4f45b1eddf2119c2acb8341056b34f488d214a",
     "orchestration-report.mjs": "d4e0a9ad8e4a01b462d22c6b1866aac291565c533ff476085d3367cb6d59bc1b",
@@ -20,12 +20,12 @@
     "preserve-summary.mjs": "137f781ed7021596a3f0ea67afcf2ab8616ac293f833dbb8f176e838e0ed8321",
     "preserve.mjs": "3e369083ba43bcda2fa0622fd526aa64fcf8ad66e7b6e8f23821752c4d47ad27",
     "runtime-install.mjs": "aab47b52c79d726ef428a24f982c648fa3f1c2dc2b574f633611d02924864e5f",
-    "session-databases.mjs": "543fd3b82d28d96d789be0a1dc9186c5fafa783e98b87e5b3b17b211542e2b4d",
+    "session-databases.mjs": "b9fe20d7445205bdbf4cf2eaaf9cc770dad01e23d41e644b04930ca34e10426d",
     "setup-mcp.mjs": "0c29113179561af1c1e9ff8b7a786e7240edf48a2244993e12335e5ee362c812",
     "stack-rules.mjs": "b23c56e72ec56ba02b17ed895f869172d988c468a697e8d6026b0e268f61e489",
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
-    "transcript-readers.mjs": "ed6fef364aa28f39361d8f627abcda2162498cbaa13e90cc5860a768cb355fa2",
+    "transcript-readers.mjs": "e9f20415c2b5d62a09f35a63075002ebd1da56edb32f242d52822d58ecbd8ac3",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "dd947a3de77a3db3f17c7027f16a2e5a2da1001ed954808614e20eb871691e6b"
+    "worktrust.mjs": "2a3ea97efabb582ebdc78bcb772e78a5aae06c243a5092563c88904df93003b9"
   }
 }

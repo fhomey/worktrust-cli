@@ -1,5 +1,20 @@
 # worktrust
 
+## 0.10.35: Gemini CLI read; every earlier line can name its AI app
+
+Gemini CLI's sessions are read in place, as Copilot's are: the files Gemini CLI records itself under
+`~/.gemini/tmp/<project>/chats/session-*.jsonl` (or an older `.json`), each message's role and clock, the model and
+the token counts, and each tool call's name and status; the messages, the thoughts and the tool calls' arguments and
+results are parsed with the file and never kept or sent. A subagent's session lies inside its parent's and is not
+counted. The project folder is not read, so these lines name no repository. Their lines go as `gemini-cli`.
+
+WorkTrust now records which AI app each line came from (Copilot in VS Code, Gemini CLI, Antigravity …), so its AI apps
+table can give them their own rows. Lines measured before carry only their product ("Other apps"). The measure rules
+go to 3: `update` offers the re-measure once, and it sends every day again; WorkTrust replaces only the lines of
+"Other apps" and "App not recorded" that name no app, with the same counted seconds, and keeps every other line as it is.
+`npx worktrust history --rebuild --force-days` does the same at any time: every day of every AI app, even the days
+WorkTrust already holds unchanged (every app at once, so no day loses another app's line).
+
 ## 0.10.34: your own commits, measured on this computer (`npx worktrust git`)
 
 GitHub shows an App that reads commits as "Read access to code", and has no narrower permission. `npx worktrust git`
@@ -254,6 +269,9 @@ yourself run a command that sends. See [Keep your history](#keep-your-history).
    (asked, answered), its model and its token counts; the messages and responses are parsed with the file and never
    kept or sent. Neither app runs a hook WorkTrust can give it, so the WorkTrust door, which both start when they
    open, starts the session hook in the background, at most once an hour.
+10. **Gemini CLI, read in place (0.10.35).** Its sessions are the files Gemini CLI records under
+   `~/.gemini/tmp/<project>/chats/`: each message's role and clock, the model, the token counts and each tool
+   call's name and status, never a message, a thought or a tool's output. Subagent sessions are not counted.
 
 ```
 npx worktrust@latest history       send this computer's earlier sessions later (asks first)

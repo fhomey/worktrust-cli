@@ -12,7 +12,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as zlib from "node:zlib"; // zstd since Node 22.15; older Node reads OpenClaw's uncompressed rows only
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { cleanModel, cursorCall, copilotCall } from "./transcript-readers.mjs";
+import { cleanModel, cursorCall, copilotCall, geminiCall } from "./transcript-readers.mjs";
 
 // ── hermes session reader ──
 /**
@@ -450,6 +450,94 @@ export function copilotLines(pseudo) {
 }
 // ── end copilot session reader ──
 
+// ── gemini-cli session reader ──
+/**
+ * GEMINI CLI (0.10.35; owner, 2026-10-30). Gemini CLI records every chat itself (ChatRecordingService,
+ * google-gemini/gemini-cli packages/core/src/services/chatRecordingService.ts and config/storage.ts, read 2026-10-30): one
+ * file per session under `<global temp dir>/<project id>/chats/`, the global temp dir `~/.gemini/tmp`; the file is
+ * `session-<YYYY-MM-DDTHH-MM>-<8 characters of the session id>.jsonl`, a record per line, or a whole `.json`
+ * ConversationRecord from before the JSONL form. A subagent's session is a folder under its parent's
+ * (`chats/<parent id>/<id>.jsonl`): its time lies inside its parent's and it is not read. The records are replayed as
+ * Gemini CLI's own loader does: the first line the session's metadata; a message (`id`, `timestamp`, `type` user | gemini |
+ * info | error | warning) re-appended whole when its tokens or tool calls arrive, the last one per id kept; `$rewindTo`
+ * drops that message and everything after it; `$patch` may remove or reorder messages; `$set` merges metadata (an old
+ * `messages` in it replaces them all). Read for clocks and counts only: a `user` message is the person's turn; a `gemini`
+ * message the model's, with its `model` and its tokens (`input` the prompt, of which `cached` came from the cache, `output`,
+ * `thoughts`, `tool`); each tool call its name, status and clock (a shell command's line for the CLI to name a kind of,
+ * never kept). The `content`, the thoughts, `displayContent`, the tool calls' other arguments and results, `summary` and
+ * `directories` are parsed with the line and never kept. The project folder is not read (its directory under tmp is Gemini
+ * CLI's own short id, and a path never leaves): these lines name no repository.
+ * NOT VERIFIED on a real install here: the paths and records are read from Gemini CLI's source; the tests run on fixtures
+ * of that shape.
+ */
+export function geminiHomes(given) { return given ? [given.replace(/^~(?=\/|$)/, homedir())] : [join(homedir(), ".gemini")]; }
+export function* geminiSessions(homes) {
+  for (const home of homes) {
+    let projects = []; try { projects = readdirSync(join(home, "tmp")); } catch { continue; }
+    for (const project of projects.sort()) {
+      const dir = join(home, "tmp", project, "chats");
+      let names = []; try { names = readdirSync(dir); } catch { continue; }
+      for (const name of names.sort()) {
+        if (!/^session-.*\.jsonl?$/.test(name)) continue;
+        // A session migrated to .jsonl may leave its .json beside it: the .jsonl is the session.
+        if (name.endsWith(".json") && names.includes(`${name}l`)) continue;
+        const id = name.replace(/\.jsonl?$/, "");
+        if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(id)) continue;
+        let writtenAt = 0; try { const st = statSync(join(dir, name)); if (!st.isFile()) continue; writtenAt = st.mtimeMs; } catch { continue; }
+        yield { sessionId: id, file: `gemini-cli:${join(dir, name)}#${id}`, cwd: null, writtenAt };
+      }
+    }
+  }
+}
+/** A session file back into its messages, in order: the JSONL records replayed (the loader's rules), or the old whole file. */
+function geminiMessages(text, jsonl) {
+  if (!jsonl) { const whole = JSON.parse(text); return Array.isArray(whole?.messages) ? whole.messages : []; }
+  let messages = new Map();
+  for (const raw of text.split("\n")) {
+    if (!raw.trim()) continue;
+    let record; try { record = JSON.parse(raw); } catch { continue; }
+    if (!record || typeof record !== "object") continue;
+    if (typeof record.$rewindTo === "string") {
+      const ids = [...messages.keys()], at = ids.indexOf(record.$rewindTo);
+      messages = new Map(at < 0 ? [] : ids.slice(0, at).map((id) => [id, messages.get(id)]));
+      continue;
+    }
+    if (record.$patch && typeof record.$patch === "object") {
+      for (const id of Array.isArray(record.$patch.removeIds) ? record.$patch.removeIds : []) messages.delete(id);
+      if (Array.isArray(record.$patch.orderIds)) { const order = record.$patch.orderIds.filter((id) => messages.has(id)); messages = new Map([...order, ...[...messages.keys()].filter((id) => !order.includes(id))].map((id) => [id, messages.get(id)])); }
+      continue;
+    }
+    if (record.$set && typeof record.$set === "object") { if (Array.isArray(record.$set.messages)) messages = new Map(record.$set.messages.filter((m) => typeof m?.id === "string").map((m) => [m.id, m])); continue; }
+    if (typeof record.id === "string" && typeof record.type === "string") messages.set(record.id, record);
+  }
+  return [...messages.values()];
+}
+export function geminiLines(pseudo) {
+  const { file } = splitSession(pseudo);
+  let messages; try { messages = geminiMessages(readFileSync(file, "utf8"), file.endsWith(".jsonl")); } catch { return null; }
+  const lines = [];
+  const count = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Math.round(Number(value)) : 0);
+  for (const message of messages) {
+    const timestamp = isoOf(message?.timestamp); if (!timestamp) continue;
+    if (message.type === "user") { lines.push({ type: "user", timestamp, message: { content: [{ type: "text" }] } }); continue; }
+    if (message.type !== "gemini") continue;
+    // The prompt's count holds what the cache served: new input is the rest (and the tool-use prompt), the cache read apart;
+    // a thought is output, as every other reader counts reasoning.
+    const t = message.tokens && typeof message.tokens === "object" ? message.tokens : null;
+    const usage = t ? { usage: { input_tokens: Math.max(0, count(t.input) - count(t.cached)) + count(t.tool), output_tokens: count(t.output) + count(t.thoughts), cache_read_input_tokens: count(t.cached), cache_creation_input_tokens: 0 } } : {};
+    for (const raw of Array.isArray(message.toolCalls) ? message.toolCalls : []) {
+      const call = geminiCall(raw), at = isoOf(raw?.timestamp) ?? timestamp;
+      if (!call) continue;
+      lines.push({ type: "assistant", timestamp: at, message: { content: [call.use] } });
+      lines.push({ type: "user", timestamp: at, message: { content: [call.result] } });
+    }
+    lines.push({ type: "assistant", timestamp, message: { model: cleanModel(message.model), ...usage, content: [] } });
+  }
+  // Each line at its own clock: a tool call's moment may fall before or after the message that carries it.
+  return lines.map((line, at) => ({ line, at })).sort((a, b) => Date.parse(a.line.timestamp) - Date.parse(b.line.timestamp) || a.at - b.at).map(({ line }) => line);
+}
+// ── end gemini-cli session reader ──
+
 // ── database clients ──
 /** The clients whose sessions live in a database, one registry: the hook and the counter ask it, not each client. */
 const DATABASE_CLIENTS = {
@@ -459,6 +547,7 @@ const DATABASE_CLIENTS = {
   openclaw: { homes: openclawHomes, sessions: openclawSessions, lines: openclawLines },
   cursor: { homes: cursorHomes, sessions: cursorSessions, lines: cursorLines },
   copilot: { homes: copilotHomes, sessions: copilotSessions, lines: copilotLines },
+  "gemini-cli": { homes: geminiHomes, sessions: geminiSessions, lines: geminiLines },
 };
 export const DATABASE_SESSION = new RegExp(`^(${Object.keys(DATABASE_CLIENTS).join("|")}):.+#[A-Za-z0-9_.:-]{1,120}$`);
 /** Every attended session of every database client; `given` names a client's own home (a test), `onlyGiven` reads no other. */

@@ -73,7 +73,10 @@ export function historyRefusal(text,response) {
  // A staged run WorkTrust closed or refused (0.10.27: another computer's key, seven days without its last batch) is final.
  const closed=rpc?.id===1 && String(rpc?.error?.message??'').startsWith('history run refused:');
  // A 413 (0.10.29) is the batch, not the queue: it is cut smaller, never sent again as it was, and nothing else waits for it.
- return {reason:review?'review':closed?'closed':response.status===413?'oversize':response.status===429?'capacity':'unconfirmed',seconds:Number.isFinite(raw)&&raw>0?Math.min(MAX_RETRY_SECONDS,raw):0};
+ // THE SERVER'S OWN SENTENCE (0.10.35): a re-measure refused for older measure rules says why and the one command that helps;
+ // the CLI prints it instead of guessing (one line, control characters taken out, at most 400 characters).
+ const said=closed&&rpc?.error?.data?.reason==='measure_rules'?String(rpc.error.message).replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').slice(0,400):null;
+ return {reason:review?'review':closed?'closed':response.status===413?'oversize':response.status===429?'capacity':'unconfirmed',seconds:Number.isFinite(raw)&&raw>0?Math.min(MAX_RETRY_SECONDS,raw):0,...(said?{said}:{})};
 }
 
 /** Explicit recovery, even after the AI client removed its source files. A changed account/key
@@ -151,7 +154,7 @@ export async function resumeHistory(target, {send, confirmed, note, retryReview=
    try{if(!response.ok)throw Error();confirmed(text,item.entries.length);}
    catch{
     const refusal=historyRefusal(text,response);
-    if(refusal.reason==='closed'){queued.close();totals.refused+=item.entries.length;continue;}
+    if(refusal.reason==='closed'){queued.close();totals.refused+=item.entries.length;if(refusal.said)totals.said=refusal.said;continue;}
     // Too large (0.10.29): marked and taken again at once, by the cut, never resent as it was. Without a cutter it waits.
     if(refusal.reason==='oversize'){queued.oversize();if(cutter){seen.delete(id);queue.unshift(id);}else totals.waiting+=item.entries.length;continue;}
     if(refusal.reason!=='review')paused={reason:refusal.reason,seconds:refusal.seconds>0?refusal.seconds:5};queued.defer(refusal.reason,paused?.seconds??refusal.seconds);totals[refusal.reason==='review'?'review':'waiting']+=item.entries.length;continue;

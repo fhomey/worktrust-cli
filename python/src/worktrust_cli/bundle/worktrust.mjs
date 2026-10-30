@@ -76,7 +76,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.34";
+const CLI_VERSION = "0.10.35";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -90,12 +90,19 @@ const CLI_VERSION = "0.10.34";
  * existing data a re-measure would repack is 4 headless lines of one person on 2 days, none scheduled, none with a person's
  * second and none under the 60 s floor, so a re-measure would move no figure the passport shows; raising would offer every
  * person a re-measure for nothing. New runs arrive folded from 0.10.33 on.
+ * 0.10.35 RAISES IT TO 3 (owner, 2026-10-30): a new READER, Gemini CLI's own session files, so a computer with Gemini CLI has
+ * days no earlier rules measured; and every line now names its AI app at the door (source_app, 20261031100000), which lines
+ * measured before carry only when re-measured. Raising is what earlier readers would have done had the number existed (it
+ * came with 0.10.31): `update` offers the re-measure once, its day digests change with the rules, so the re-measure sends
+ * every day again; WorkTrust replaces only the lines of the two buckets (other apps, app not recorded) that name no app
+ * (20261031100200) and carries every other line as it is: no figure moves, the Other apps hours move to their app's row.
  */
-const MEASURE_RULES = 2;
+const MEASURE_RULES = 3;
 /** What each measure-rules version changed, in the words the re-measure offer says (one entry per raise, never rewritten). */
 const MEASURE_CHANGES = {
   1: ["each answer's tokens counted once", "nothing lost at midnight", "when each stretch began", "how you steered the agent", "what the seconds were", "more AI apps", "how each session was started"],
   2: ["which subagents were active at once, and how their failed steps were recovered", "whether each agent call completed", "who wrote each turn of a run no person started"],
+  3: ["Gemini CLI's sessions", "which AI app each earlier line came from (Copilot in VS Code, Gemini CLI and the other apps get their own rows)"],
 };
 const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.worktrust.io").replace(/\/$/, "");
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
@@ -799,7 +806,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
   if (!has("history") && !agreedInAdvance && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust"); return; }
   // Marked unfinished before the first batch leaves (0.10.9): a send stopped halfway (Ctrl+C, a closed lid) is finished by the next run.
   historyDone(false);
-  const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : []), ...(has("retry-review") ? ["--retry-review"] : [])], token, true, env);
+  const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : []), ...(rebuild && has("force-days") ? ["--force-days"] : []), ...(has("retry-review") ? ["--retry-review"] : [])], token, true, env);
   historyDone(sent.code === 0);
   // WHAT ACTUALLY HAPPENED, FROM THE DOOR'S RECEIPTS (owner, 2026-10-10): a re-measure in which nothing changed must not say
   // "replaced". The hook sums the receipts of every batch and prints one line; without it (an older hook) the sentence stays neutral.
@@ -823,7 +830,8 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
   if (Number(did?.delivery?.review) > 0) say(`  ${did.delivery.review} lines are waiting for review. Earlier measurements remain unchanged. Reconnecting or repeating the import does not approve them.`);
   // KEPT ON THE SERVER (0.10.27; owner, 2026-10-21): what did not arrive stays here and goes again by itself; nothing to resume by hand.
   if (Number(did?.delivery?.waiting) > 0) say("  Some batches did not reach WorkTrust yet. They stay on this computer and are sent again by themselves the next time npx worktrust or your AI app's hook runs.");
-  if (Number(did?.delivery?.refused) > 0) say(`  WorkTrust closed an earlier run of ${did.delivery.refused} lines (it missed a batch for seven days): run npx worktrust@latest history again to send them as a new run.`);
+  // 0.10.35: a re-measure refused for older measure rules is told in WorkTrust's own words (the hook passes them on, cleaned).
+  if (Number(did?.delivery?.refused) > 0) say(typeof did.delivery.said === "string" ? `  ${did.delivery.said.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 400)}` : `  WorkTrust closed an earlier run of ${did.delivery.refused} lines (it missed a batch for seven days): run npx worktrust@latest history again to send them as a new run.`);
   // A STAGED RUN (0.10.27): WorkTrust holds every batch and rebuilds the days itself once the run is whole; the receipts say what it kept.
   if (rebuild && n(did?.staged) > 0 && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) {
     say(`  ✓ Re-measured. WorkTrust holds all ${n(did.staged)} batches (${n(did.kept)} lines) and rebuilds these days itself, every AI app together, a day counted once. Sources › Logs shows it while it works.`);
@@ -1376,6 +1384,8 @@ function help() {
   say("    --retry-review       explicitly retry held batches after support resolves their review");
   say("    --rebuild            re-measure them with the current rules; WorkTrust replaces this computer's earlier lines,");
   say("                         day by day, never counting a day twice (shows the plan per AI app, asks first; --dry-run: the plan only)");
+  say("    --force-days         with --rebuild: send every day again, also the days WorkTrust holds unchanged, so lines");
+  say("                         measured before an app was named per line get their app (every AI app at once)");
   say("    --from-archive [dir] send what your archive (preserve --archive) holds of sessions your AI apps already deleted,");
   say("                         marked as from your archive: a day this computer's key signed as measured, every other day");
   say("                         as reconstructed, never verified hours (shows the plan, asks first)");

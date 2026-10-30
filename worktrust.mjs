@@ -76,7 +76,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.32";
+const CLI_VERSION = "0.10.33";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -84,6 +84,12 @@ const CLI_VERSION = "0.10.32";
  * the earlier install measured by other rules, and names what changed from MEASURE_CHANGES; installed-release.json and
  * history.json record it. 1 is the rules of 0.10.29, which 0.10.30 and 0.10.31 kept; 2 (0.10.32) adds the subagent runs, each
  * agent call's outcome and who wrote each turn of a run no person started.
+ * 0.10.33 KEEPS 2 (release 9, 2026-10-29): one line per autonomous process per day changes how finished headless and
+ * scheduled runs are PACKED into lines, not what is measured: the timeline, the seconds (the minute compaction keeps every
+ * counted second), the tokens, the steering, the session kinds and the readers are the same. On production (read-only) the
+ * existing data a re-measure would repack is 4 headless lines of one person on 2 days, none scheduled, none with a person's
+ * second and none under the 60 s floor, so a re-measure would move no figure the passport shows; raising would offer every
+ * person a re-measure for nothing. New runs arrive folded from 0.10.33 on.
  */
 const MEASURE_RULES = 2;
 /** What each measure-rules version changed, in the words the re-measure offer says (one entry per raise, never rewritten). */
@@ -233,7 +239,7 @@ async function pairByBrowser(host, extra) {
   server.close();
   if (!code) fail("no approval arrived in time. Run `worktrust connect` again.");
   const exchange = await post("/api/cli/token", { device_code: secret, code, code_verifier: verifier }).catch(() => null);
-  if (exchange?.json?.error === "device_limit") fail("Five devices are already connected. In WorkTrust Sources, disconnect a device, then connect again. Earlier measurements are kept.");
+  if (exchange?.json?.error === "device_limit") fail("The devices your plan allows are already connected. In WorkTrust Sources, disconnect a device (or upgrade to Premium for more), then connect again. Every connected device keeps working and earlier measurements are kept.");
   if (!exchange || exchange.status !== 200 || !exchange.json.token) fail(`the approval could not be exchanged (${exchange?.json?.error ?? "no answer"}). Run \`worktrust connect\` again.`);
   say(`  ✓ Approved as "${exchange.json.label}"${exchange.json.account ? ` for the WorkTrust account ${exchange.json.account}` : ""}`);
   if (exchange.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
@@ -268,7 +274,7 @@ async function pairByCode(host, extra) {
       if (answer.json.account) say("    Not your account? Run `npx worktrust disconnect` now and revoke it in WorkTrust.");
       return paired(answer.json);
     }
-    if (answer.json.error === "device_limit") fail("Five devices are already connected. In WorkTrust Sources, disconnect a device, then connect again. Earlier measurements are kept.");
+    if (answer.json.error === "device_limit") fail("The devices your plan allows are already connected. In WorkTrust Sources, disconnect a device (or upgrade to Premium for more), then connect again. Every connected device keeps working and earlier measurements are kept.");
     if (answer.json.error === "slow_down") wait += 2000;
     else if (answer.json.error === "expired_token") fail("the code expired. Run `worktrust connect` again.");
     else if (answer.json.error === "invalid_grant") fail("this pairing was already used. Run `worktrust connect` again.");

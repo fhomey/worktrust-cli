@@ -1,5 +1,19 @@
 # worktrust
 
+## 0.10.33: one line per autonomous process per day; a fair-use limit keeps the line
+
+A finished headless or scheduled run (a run no person started) is no longer a line of its own. It waits on this
+computer, in `~/.worktrust/process-days`, folded into its process's UTC day: a process is the AI app, how the session
+was started, the timer's opaque reference when a timer started it, and the project folder, as a hash (`process_ref`),
+never a name or a path. Once the day is over and quiet it goes as ONE line with how many runs it holds
+(`process_runs`); the runs' timelines are joined at minute resolution, which keeps every counted second, with each
+run's call outcomes, its turns' length buckets and its subagent runs kept in step (every turn and each minute's first
+completed call stay). A run that
+finishes after its day was sent becomes the day's next part, and once WorkTrust holds its parts it is merged into the
+last one, which goes again whole. When WorkTrust answers a fair-use limit (429 with Retry-After) nothing is lost: the
+line stays where it was and goes after the wait. What is measured is unchanged, so the measure rules stay 2 and no
+re-measure is offered.
+
 ## 0.10.32: a re-measure sends only the days that changed; which subagents were active at once; each call's outcome
 
 Before a re-measure sends anything, the CLI asks WorkTrust, once per AI app, which of this computer's days it holds as

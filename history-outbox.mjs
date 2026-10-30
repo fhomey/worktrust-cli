@@ -163,3 +163,126 @@ export async function resumeHistory(target, {send, confirmed, note, retryReview=
 }
 /** A queued batch's id, as queuedHistory names it, so a send can hand its own batches to resumeHistory (`only`). */
 export const historyIdOf=(target,body,source)=>digest(scopeOf(target)+'\0'+source+'\0'+body);
+
+/**
+ * ONE LINE PER PROCESS PER DAY (0.10.33; owner, 2026-10-28; docs/FAIR-USE.md §1). An autonomous process (a headless or scheduled
+ * session: `claude -p` from cron, an agent every ten minutes) writes a new transcript per run, and every run used to be a line
+ * of its own: 144 a day for one process, a hundred processes 14,400. Its runs of one UTC day are one line now. A process is its
+ * client, its session kind, its schedule (when the client names one) and its project folder, as a hash: never content, never the
+ * path. The runs wait here, on disk, folded as they finish; the day is sent once it is over and quiet. A run is folded once (by
+ * its id), and a run that finishes after its day was sent becomes the day's next part; once the database's PROCESS_PARTS are spent
+ * it is merged into the last part, which goes again whole. Nothing is ever let go before WorkTrust took it.
+ * Nothing here reads a transcript or the network: the hook hands it measured runs and sends what it answers.
+ */
+export const PROCESS_PARTS=3; // the database's analysis.process_day_max_parts()
+const STEP=/(G?)([HIURATWhiuratw])([0-9]{1,6})/g;
+const PART_CHARS=150_000; // a part stays well inside the door's 200,000 characters of timeline
+const b64=s=>createHash('sha256').update(s).digest('base64url');
+export const processRefOf=({source,kind,schedule,cwd,day})=>b64(`worktrust-process/1|${source??'claude'}|${kind}|${schedule??''}|${cwd?digest(String(cwd)):''}|${day}`);
+export const lineRefOf=(ref,part)=>b64(`worktrust-process-line/1|${ref}|${part}`);
+/** A run's timeline at MINUTE RESOLUTION: per wall-clock minute its first and its last step, each with its own kind.
+ * A dropped step lies inside one minute between two kept ones, so every merged gap is under a minute, below the idle cap, and the
+ * seconds WorkTrust counts from the timeline are exactly the same; a day holds at most two steps a minute (2,880). The calls of a
+ * minute whose first and last steps are not the model's answers are not kept: a call counts at most once per five minutes anyway. */
+export function minuteCompact(timeline,fromMs){return minuteCompactRun(timeline,fromMs).timeline;}
+const ANSWER='ATW';
+/** THE SAME, WITH WHAT RIDES ON THE STEPS (release 9 integration, 2026-10-29): 0.10.32's call outcomes (one character per
+ * answer step, A/T/W) and input lengths (one bucket per H) are aligned with the timeline's steps, so a compacted timeline
+ * carries exactly the outcomes of its kept answer steps and the lengths of its kept turns. Every H is kept (a person's turn
+ * starts steered time: dropping one would move it), and in each minute the first answer recorded as completed ('1') is
+ * kept beside the first and last step, so the guardrail never loses a positive call to the compaction. Seconds stay exact:
+ * every kept set holds each minute's first and last step. Without outcomes or lengths, null comes back for them. */
+export function minuteCompactRun(timeline,fromMs,outcomes=null,lengths=null){
+ const steps=[...String(timeline).matchAll(STEP)].map(m=>({g:m[1],k:m[2],K:m[2].toUpperCase(),gap:Number(m[3])}));
+ if(!steps.length)return {timeline:'',outcomes:outcomes==null?null:'',lengths:lengths==null?null:''};
+ let c=0;const at=steps.map(s=>(c+=s.gap));const first=steps.findIndex(s=>s.k===s.K);const base=fromMs-1000*(at[Math.max(0,first)]??0);
+ let ai=0,hi=0;const oc=steps.map(s=>ANSWER.includes(s.K)?(outcomes==null?null:String(outcomes)[ai++]??null):null);
+ const lg=steps.map(s=>s.K==='H'?(lengths==null?null:String(lengths)[hi++]??null):null);
+ const groups=new Map(),keep=new Set();
+ steps.forEach((s,i)=>{const m=Math.floor((base+1000*at[i])/60_000),g=groups.get(m)??{first:i,last:i,done:-1};g.last=i;if(g.done<0&&oc[i]==='1')g.done=i;groups.set(m,g);});
+ for(const g of groups.values()){keep.add(g.first);keep.add(g.last);if(g.done>=0)keep.add(g.done);}
+ steps.forEach((s,i)=>{if(s.K==='H')keep.add(i);});
+ let out='',o='',l='',gap=0;
+ for(let i=0;i<steps.length;i++){gap+=i===0?0:steps[i].gap;if(!keep.has(i))continue;out+=`${steps[i].g}${steps[i].k}${Math.min(999999,gap)}`;gap=0;if(oc[i]!=null)o+=oc[i];if(lg[i]!=null)l+=lg[i];}
+ return {timeline:out,outcomes:outcomes==null?null:o,lengths:lengths==null?null:l};
+}
+const stepsOf=(t,kinds)=>[...String(t??'').matchAll(STEP)].filter(m=>kinds.includes(m[2].toUpperCase())).length;
+/** The runs of one part as ONE stretch: their timelines joined in time order, each run's first step at a zero gap (the time
+ * between two runs belongs to neither, as it did when each was a line), a later run's bridge left out; tokens summed, the model
+ * the one most runs used, the window from the first run's start to the last run's end. Release 9: the runs' call outcomes and
+ * input lengths joined in the same order (a bridge left out takes its own character with it; a run whose steps carry none
+ * makes the part carry none, never a misaligned string), and their subagent runs (wall-clock stamps) listed together. */
+export function combineRuns(runs){
+ const sorted=[...runs].sort((a,b)=>a.from-b.from),models=new Map();let timeline='',shapeKnown=true,outcomes='',lengths='',agents=[];
+ const sum={tokensIn:0,tokensOut:0,cacheRead:0,cacheWrite:0};
+ for(const [i,run] of sorted.entries()){
+  let t=run.timeline,o=run.outcomes??null,l=run.lengths??null;
+  if(o==null&&stepsOf(t,ANSWER)>0)outcomes=null;if(l==null&&stepsOf(t,'H')>0)lengths=null;
+  if(i>0){const bridge=/^G?([hiuratw])[0-9]{1,6}/.exec(t);if(bridge){const K=bridge[1].toUpperCase();if(o!=null&&ANSWER.includes(K))o=o.slice(1);if(l!=null&&K==='H')l=l.slice(1);}
+   t=t.replace(/^G?[hiuratw][0-9]{1,6}/,'').replace(/^(G?[HIURATW])[0-9]{1,6}/,(_,head)=>`${head}0`);}
+  timeline+=t;if(outcomes!=null&&o!=null)outcomes+=o;if(lengths!=null&&l!=null)lengths+=l;
+  for(const key of Object.keys(sum))sum[key]+=Number(run[key])||0;shapeKnown&&=run.shapeKnown!==false;
+  if(run.model)models.set(run.model,(models.get(run.model)??0)+1);
+  if(Array.isArray(run.agents))agents=agents.concat(run.agents);
+ }
+ return {...(shapeKnown?sum:{tokensIn:0,tokensOut:0,cacheRead:0,cacheWrite:0}),shapeKnown,timeline:timeline||null,model:[...models].sort((a,b)=>b[1]-a[1])[0]?.[0]??null,
+  from:sorted[0]?.from,to:Math.max(...sorted.map(r=>r.to)),offset:sorted[0]?.offset,
+  outcomes:outcomes&&outcomes.length===stepsOf(timeline,ANSWER)?outcomes:null,lengths:lengths&&lengths.length===stepsOf(timeline,'H')?lengths:null,
+  agents:agents.length?{list:agents}:null};
+}
+/** A process-day's runs in time order, cut into parts whose timelines stay under PART_CHARS (one part on any real day). */
+export function processParts(runs){
+ const out=[];let part=[],chars=0;
+ for(const run of [...runs].sort((a,b)=>a.from-b.from)){if(part.length&&chars+run.timeline.length>PART_CHARS){out.push(part);part=[];chars=0;}part.push(run);chars+=run.timeline.length;}
+ if(part.length)out.push(part);
+ return out;
+}
+/** One file per process-day under ~/.worktrust/process-days (a hundred processes stay a hundred small files), one lock. */
+function processStore(){
+ const home=join(homedir(),'.worktrust');directory(home);const root=join(home,'process-days');directory(root);
+ const path=ref=>{if(!/^[A-Za-z0-9_-]{43}$/.test(ref))throw Error('PROCESS_DAY_UNSAFE');return join(root,ref+'.json');};
+ return {root,load:ref=>read(path(ref)),save:(ref,value)=>write(path(ref),value),drop:ref=>{const p=path(ref);if(existsSync(p)){regular(p);unlinkSync(p);}},
+  refs:()=>readdirSync(root).filter(f=>/^[A-Za-z0-9_-]{43}\.json$/.test(f)).map(f=>f.slice(0,43))};
+}
+/** Folds one finished run into its process-day, on disk, before the caller passes the transcript's mark. Idempotent by run id. */
+export function foldProcessRun(key,run){
+ const store=processStore();
+ return reservation(store.root,()=>{
+  const day=store.load(key.ref)??{format:'worktrust-process-day/1',day:key.day,source:key.source,kind:key.kind,cwd:key.cwd,steered:key.steered??null,schedule:key.schedule??null,codex:key.codex===true,sent:0,ids:[],runs:[]};
+  const id=digest(run.id).slice(0,20);if(day.ids.includes(id))return 'held';
+  day.ids.push(id);day.runs.push({...run,id});store.save(key.ref,day);return 'folded';
+ });
+}
+/** The process-days to send now: the UTC day over and every run quiet for `quietMs`, not waiting on a retry; each as its parts
+ * (runs cut so a part's timeline stays under PART_CHARS). A sent day is let go thirty days after it ends (its ids and last part kept till then, so a late run merges). */
+export function dueProcessDays(now,quietMs){
+ const store=processStore();
+ return reservation(store.root,()=>{
+  const out=[];
+  for(const ref of store.refs()){
+   const day=store.load(ref);if(!day)continue;
+   const end=Date.parse(`${day.day}T00:00:00Z`)+86_400_000;
+   if(!day.runs.length){if(now>end+30*86_400_000)store.drop(ref);continue;}
+   if(now<end+quietMs||now-Math.max(...day.runs.map(r=>r.to))<quietMs||Number(day.retryAt)>now)continue;
+   // THE PARTS ARE SPENT (the database holds PROCESS_PARTS lines of a day): a later run is MERGED into the last part, sent
+   // again with every run it held, and the database puts the fuller line in its place. Nothing is ever let go unsent.
+   const parts=processParts(day.runs),room=Math.max(0,PROCESS_PARTS-day.sent);
+   if(room===0)out.push({ref,...day,part:PROCESS_PARTS,runs:[...(day.lastRuns??[]),...day.runs],pending:day.runs.map(r=>r.id)});
+   else{const keep=parts.slice(0,room-1),rest=parts.slice(room-1).flat();keep.forEach((runs,i)=>out.push({ref,...day,part:day.sent+i+1,runs,pending:runs.map(r=>r.id)}));
+    if(rest.length)out.push({ref,...day,part:day.sent+keep.length+1,runs:rest,pending:rest.map(r=>r.id)});}
+  }
+  return out;
+ });
+}
+/** WorkTrust took the part: its new runs leave the pending list; the ids stay, so a run is never folded twice. */
+export function markProcessSent(ref,due){
+ const store=processStore();
+ reservation(store.root,()=>{const day=store.load(ref);if(!day)return;const gone=new Set(due.pending);day.runs=day.runs.filter(r=>!gone.has(r.id));
+  // The last part's runs stay (the day's own copy) until the day is let go: a run that comes later is merged into them.
+  day.sent=Math.max(day.sent,due.part);if(due.part>=PROCESS_PARTS)day.lastRuns=due.runs;delete day.retryAt;store.save(ref,day);});
+}
+/** Not taken now (a limit, the network): kept, and asked again after `seconds`. */
+export function deferProcessDay(ref,seconds){
+ const store=processStore();
+ reservation(store.root,()=>{const day=store.load(ref);if(!day)return;day.retryAt=Date.now()+Math.max(1,Math.min(MAX_RETRY_SECONDS,seconds))*1000;store.save(ref,day);});
+}

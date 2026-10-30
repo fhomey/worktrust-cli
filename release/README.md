@@ -2,7 +2,7 @@
 
 **Status, 20 October 2026:** signed 0.10.25 is published on npm/PyPI. The release-history
 paragraphs below describe the earlier rollout, not the current registry version.
-OS credential storage shipped in 0.10.26 (npm/PyPI); 0.10.29 (history re-split, session kind) and 0.10.30 (remembered consent on update) are published on npm; 0.10.31 (re-measure offered only when the measure rules change) is published; 0.10.32 (a re-measure sends only the days that changed, the subagent runs, each call's outcome; measure rules 2) is a local candidate. See
+OS credential storage shipped in 0.10.26 (npm/PyPI); 0.10.29 (history re-split, session kind) and 0.10.30 (remembered consent on update) are published on npm; 0.10.31 (re-measure offered only when the measure rules change) is published; 0.10.32 (a re-measure sends only the days that changed, the subagent runs, each call's outcome; measure rules 2) is published on npm and PyPI; 0.10.33 (one line per autonomous process per day, a fair-use 429 kept and retried; measure rules stay 2) is a local candidate. See
 [its implementation and limits](../../docs/security/CLI-OS-KEYSTORE-2026-10-20.md).
 The observation collector below is still not wired into the existing hooks.
 

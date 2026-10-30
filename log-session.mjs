@@ -981,7 +981,7 @@ function confirmedReceipt(answer, expectedCount = null) {
     if (!Array.isArray(content) || content.length !== 1 || content[0].type !== "text") throw Error();
     const receipt = JSON.parse(content[0].text);
     if (expectedCount === null) {
-      if (!(receipt.receipt === "received" && ["accepted", "flagged", "pending"].includes(receipt.status)) && !(receipt.receipt === "unchanged" && receipt.reason === "duplicate")) throw Error();
+      if (!(receipt.receipt === "received" && ["accepted", "flagged", "pending"].includes(receipt.status)) && !(receipt.receipt === "unchanged" && (receipt.reason === "duplicate" || receipt.reason === "process_day_held"))) throw Error();
     } else if (receipt.staged === true) {
       // KEPT ON THE SERVER (0.10.27): a batch of a run WorkTrust holds and rebuilds itself; every line counted as kept or refused.
       if (receipt.receipt !== "received" || receipt.received !== expectedCount || !Number.isInteger(receipt.kept) || receipt.kept < 0
@@ -1248,10 +1248,50 @@ async function send(door, payload) {
   retainMeasurement(payload, entrySource.get(payload));
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "log_work", arguments: payload } });
   const response = await fetch(door.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${door.token}`, ...clientOf(entrySource.get(payload)), ...proofFor(door.url, body) }, body });
+  // A FAIR-USE LIMIT (0.10.33; owner, 2026-10-28): 429 with Retry-After. Nothing was stored; the line is kept and sent again after the delay.
+  if (response.status === 429) throw Object.assign(new Error("door said 429"), { retryAfter: Math.max(1, Math.min(86_400, Number(response.headers.get("retry-after")) || 60)) });
   if (!response.ok) throw new Error(`door said ${response.status}`);
   const text = await response.text();
   confirmedReceipt(text);
   return text;
+}
+/**
+ * ONE LINE PER PROCESS PER DAY (0.10.33; owner, 2026-10-28; docs/FAIR-USE.md §1): a finished headless or scheduled run is folded
+ * into its process's UTC day on disk (history-outbox.mjs) and the day goes as ONE line once it is over and quiet: live while the
+ * door takes it, else through the history outbox; a refusal keeps it. A copy without that module sends each run as before.
+ */
+const PROCESS = await import("./history-outbox.mjs").then((m) => (m.foldProcessRun ? m : null), () => null);
+const isProcessRun = (stretch) => Boolean(PROCESS && stretch.timeline && (stretch.session === "headless" || stretch.session === "scheduled"));
+const processKey = (source, stretch, codex) => { const day = new Date(stretch.to).toISOString().slice(0, 10); return { ref: PROCESS.processRefOf({ source, kind: stretch.session, schedule: stretch.schedule?.ref ?? null, cwd: stretch.cwd, day }), day, source: source ?? "claude", kind: stretch.session, cwd: stretch.cwd ?? null, steered: stretch.steered ?? null, schedule: stretch.schedule ?? null, codex }; };
+// A RUN KEEPS WHAT RIDES ON ITS STEPS (release 9): its call outcomes and input lengths compacted with the timeline
+// (minuteCompactRun), and its subagent runs as read (wall-clock stamps), so the day's line carries them as each run's did.
+const processRun = (id, stretch) => { const compact = PROCESS.minuteCompactRun ? PROCESS.minuteCompactRun(stretch.timeline, stretch.from, stretch.outcomes ?? null, stretch.lengths ?? null) : { timeline: PROCESS.minuteCompact(stretch.timeline, stretch.from), outcomes: null, lengths: null };
+  return { id: `${id}|${stretch.from}`, from: stretch.from, to: stretch.to, offset: stretch.offset, timeline: compact.timeline, outcomes: compact.outcomes, lengths: compact.lengths, agents: stretch.agents?.list ?? null, tokensIn: stretch.tokensIn, tokensOut: stretch.tokensOut, cacheRead: stretch.cacheRead, cacheWrite: stretch.cacheWrite, shapeKnown: stretch.shapeKnown, model: stretch.model ?? null }; };
+function processPayload(group, part, runs) {
+  const payload = { ...payloadFor({ ...PROCESS.combineRuns(runs), cwd: group.cwd && existsSync(group.cwd) ? group.cwd : null, ref: PROCESS.lineRefOf(group.ref, part), steered: group.steered, session: group.kind, schedule: group.schedule ?? null, derived: null, live: null }), process_ref: group.ref, process_runs: runs.length };
+  if (group.source && group.source !== "claude") entrySource.set(payload, group.source);
+  return payload;
+}
+const liveWaiting = () => Date.parse(state.__liveRetryAt ?? "") > Date.now();
+const liveWait = (seconds) => { state.__liveRetryAt = new Date(Date.now() + seconds * 1000).toISOString(); LIVE_NOTED.n += 1; };
+const LIVE_NOTED = { n: 0 };
+async function sendProcessDays() {
+  let n = 0;
+  for (const due of PROCESS ? PROCESS.dueProcessDays(Date.now(), IDLE_BEFORE_SWEEP) : []) {
+    const payload = processPayload(due, due.part, due.runs);
+    if (DRY) { console.log(JSON.stringify({ ...payload, client: due.source, route: "process-day" }, null, 1)); continue; }
+    if (Date.now() - Date.parse(payload.at) > WINDOW_HOURS * 3600_000 - IDLE_BEFORE_SWEEP) {
+      const before = HISTORY_PERSISTED.n;
+      await sendHistory(door, [payload]).catch(() => 0);
+      if (HISTORY_PERSISTED.n > before) { PROCESS.markProcessSent(due.ref, due); n += 1; } else PROCESS.deferProcessDay(due.ref, 300);
+      continue;
+    }
+    if (liveWaiting()) continue;
+    // HELD IS NOT TAKEN (0.10.33): a day WorkTrust holds whole against this part keeps its runs here and asks again later.
+    try { const held = /process_day_held/.test(await send(due.codex ? codexDoor ?? door : door, payload)); if (held) PROCESS.deferProcessDay(due.ref, 21_600); else { PROCESS.markProcessSent(due.ref, due); n += 1; } }
+    catch (error) { PROCESS.deferProcessDay(due.ref, error.retryAfter ?? 300); if (error.retryAfter) liveWait(error.retryAfter); }
+  }
+  return n;
 }
 
 /**
@@ -1269,7 +1309,7 @@ async function send(door, payload) {
  * average of one. Younger than the live window is left alone — that is `log_work`'s half.
  */
 function historyEntries(floor = null, all = false) {
-  const entries = [];
+  const entries = [], processGroups = new Map();
   for (const { file } of allTranscripts()) {
     const lines = parsedLines(file);
     if (!lines) continue;
@@ -1295,7 +1335,15 @@ function historyEntries(floor = null, all = false) {
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
       if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
       // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
-      const entry = payloadFor({ ...measure(cwd, messages, session), ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) });
+      const stretch = { ...measure(cwd, messages, session), ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) };
+      // ONE LINE PER PROCESS PER DAY (0.10.33), as live: an autonomous run joins its process's day, sent below as one line.
+      if (isProcessRun(stretch)) {
+        const key = processKey(CODEX_ROLLOUT.test(file) ? "codex" : ANTIGRAVITY_TRANSCRIPT.test(file) ? "antigravity" : DATABASE_SESSION.test(file) ? file.slice(0, file.indexOf(":")) : null, stretch, false);
+        const group = processGroups.get(key.ref) ?? { ...key, runs: [], file, from: stretch.from, folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null };
+        group.runs.push(processRun(file, stretch)); processGroups.set(key.ref, group);
+        continue;
+      }
+      const entry = payloadFor(stretch);
       if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
       if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
       if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));
@@ -1303,6 +1351,7 @@ function historyEntries(floor = null, all = false) {
       entries.push(entry);
     }
   }
+  for (const group of processGroups.values()) PROCESS.processParts(group.runs).forEach((runs, i) => { const entry = processPayload(group, i + 1, runs); entryFile.set(entry, { file: group.file, from: group.from, folder: group.folder }); entries.push(entry); });
   const seen = new Set(); // ONE SESSION FILE IN TWO PROJECT FOLDERS (a copied folder) IS ONE STRETCH (0.6.16, audit M6), as live and preserve count it
   return entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at));
 }
@@ -1757,7 +1806,7 @@ if (work.length > 0 && input?.transcript_path && work[0].file === input.transcri
   const found = timerSchedule(), secret = found ? repoCodeSecret() : null, timer = found && secret ? { cadence: found.cadence, ref: createHmac("sha256", secret).update(`worktrust-schedule-ref|${found.ref}`).digest("base64url") } : null; // the label's hash keyed with this computer's secret, as repo_code (L4)
   if (timer &&state[work[0].id]?.schedule?.ref !== timer.ref) { state[work[0].id] = { ...(state[work[0].id] ?? {}), schedule: timer }; scheduleNoted = true; }
 }
-let sent = 0, filed = 0, positioned = false;
+let sent = 0, filed = 0, folded = 0, positioned = false;
 const late = []; // measured days the live door will no longer take: they are not dropped, they are filed
 const heldBack = new Map(); // per transcript with a late day: its state before that day, put back unless history took every late day
 for (const entry of work) {
@@ -1776,14 +1825,24 @@ for (const entry of work) {
     // every day but today, on whichever run comes first — it no longer waits for its own end.
     if (Date.now() - stretch.to < IDLE_BEFORE_SWEEP) break;
     const total = grownBy(stretch, reported);
-    const payload = payloadFor({ ...stretch, schedule: state[entry.id]?.schedule ?? null });
+    // THE TIMER'S SCHEDULE (0.10.32) travels with the run, so a scheduled process-day is its own process and its line names it.
+    const timed = { ...stretch, schedule: state[entry.id]?.schedule ?? null };
+    // ONE LINE PER PROCESS PER DAY (0.10.33): a finished autonomous run waits on disk for its day's line; the mark passes it once it is there.
+    if (isProcessRun(timed)) {
+      if (DRY) { console.log(JSON.stringify({ process_run: true, session_kind: timed.session, stretch_ref: timed.ref ?? null, at: new Date(timed.to).toISOString() })); through = timed.to; reported = total; continue; }
+      try { PROCESS.foldProcessRun(processKey(LIVE_SOURCE.exec(String(entry.id))?.[1], timed, String(entry.id).startsWith("codex:")), processRun(entry.id, timed)); through = timed.to; reported = total; folded += 1; continue; } catch { break; }
+    }
+    const payload = payloadFor(timed);
     const source = LIVE_SOURCE.exec(String(entry.id))?.[1];
     if (source) entrySource.set(payload, source);
     if (DRY) { console.log(JSON.stringify({ ...payload, client: source ?? "claude", route: Date.now() - stretch.to > WINDOW_HOURS * 3600_000 ? "history" : "log_work" }, null, 1)); through = stretch.to; reported = total; continue; }
     // MEASURED TIME IS NEVER DROPPED. The live door refuses anything older than two days, which is right, and used to mean a machine closed
     // for a fortnight lost the fortnight. The same numbers go through the history door instead, standing as history stands. Late is not untrue.
     if (Date.now() - stretch.to > WINDOW_HOURS * 3600_000) { before ??= { mark: through === null ? state[entry.id] : { ...state[entry.id], through: new Date(through).toISOString() } }; late.push(payload); through = stretch.to; reported = total; continue; }
+    // A LIMIT SAID WHEN (0.10.33): while WorkTrust asked to wait, nothing is sent; the mark stays and the next run sends it.
+    if (liveWaiting()) break;
     try { await send(doorFor(entry), payload); through = stretch.to; reported = total; sent += 1; } catch (error) {
+      if (error.retryAfter) liveWait(error.retryAfter);
       if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`);
       break;
     }
@@ -1803,7 +1862,9 @@ if (!DRY && late.length > 0) {
   // session whose first late day waited (the owner's, from 2026-10-18) never moved again.
   if (filed < late.length && HISTORY_PERSISTED.n < late.length) for (const [id, mark] of heldBack) { if (mark) state[id] = mark; else delete state[id]; }
 }
-if (!DRY && (sent > 0 || filed > 0 || scheduleNoted || positioned || (late.length > 0 && HISTORY_PERSISTED.n >= late.length))) writeState(state);
+// THE PROCESS-DAYS THAT ARE OVER (0.10.33): one line each; what WorkTrust does not take now stays on disk for the next run.
+await sendProcessDays();
+if (!DRY && (sent > 0 || filed > 0 || folded > 0 || scheduleNoted || positioned || LIVE_NOTED.n > 0 || (late.length > 0 && HISTORY_PERSISTED.n >= late.length))) writeState(state);
 // What an earlier run left in the outbox because the server never received it: a few batches a run, by itself; not in a run
 // that just sent late days itself (a batch it just tried waits for the next run). Since 0.10.32 the mark passes a late day the
 // outbox keeps, so the next run has no late day of its own and asks; before, a long session always had one and never asked.

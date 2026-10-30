@@ -76,7 +76,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.33";
+const CLI_VERSION = "0.10.34";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -101,9 +101,9 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs"];
+const SCRIPTS = ["credential-store.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "commit-rules.mjs", "git-commits.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
-const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs"]);
+const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
@@ -361,7 +361,7 @@ const previousNote = {
  * file; a coupling to another account starts it empty. An unreadable file counts as no agreement at all.
  */
 const CONSENT_FILE = join(HOME_DIR, "consent.json");
-const CONSENT_NAME = /^(?:door:[^\n,]{1,80}|session-hook|codex-notify|antigravity-stop)$/;
+const CONSENT_NAME = /^(?:door:[^\n,]{1,80}|session-hook|codex-notify|antigravity-stop|git-commits)$/;
 const CONSENT_HOW = new Set(["typed", "flag", "found"]);
 let consentLoaded = null;
 async function consent() {
@@ -1319,6 +1319,41 @@ async function preserve() {
   process.exitCode = await new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
 }
 
+/**
+ * YOUR OWN COMMITS, MEASURED HERE (`npx worktrust git`, 0.10.34; option C, owner 2026-10-29; docs/GITHUB.md). git-commits.mjs
+ * reads them with git log and makes the GitHub walk's keys of them on this computer; this file lends it the key, the signed
+ * send to the CLI's commits door, the question (Enter is No) and the consent file. Nothing is sent without a typed yes.
+ */
+function archiveSalt() {
+  const file = join(HOME_DIR, "archive-salt");
+  try { const kept = readPrivateFile(file)?.trim(); if (/^[0-9a-f]{64}$/.test(kept ?? "")) return kept; } catch { /* first run */ }
+  try { ensureHome(); const made = randomBytes(32).toString("hex"); writePrivateFile(file, `${made}\n`); return made; } catch { return null; }
+}
+async function gitCommits() {
+  if (!["git-commits.mjs", "commit-rules.mjs"].every((name) => existsSync(join(HERE, name)))) fail("worktrust git needs the complete WorkTrust npm/Python package. Nothing was read or sent.");
+  const { gitMain } = await import("./git-commits.mjs");
+  const sub = args.slice(args.indexOf("git") + 1).filter((arg) => !arg.startsWith("--"));
+  const local = ["list", "emails", "remove"].includes(sub[0]) || has("dry-run");
+  const key = local ? keyStore.load() : await freshKey();
+  if (!key && !local) fail("this computer is not coupled. Run `npx worktrust` first.");
+  const url = key ? `${new URL(key.url).origin}/api/cli/commits` : null;
+  const send = async (body) => {
+    if (!key || !url) return null;
+    const text = JSON.stringify({ ...body, cli_version: CLI_VERSION });
+    try {
+      const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, "user-agent": `worktrust-cli/${CLI_VERSION}`, ...proof(key.device, url, text) }, body: text, redirect: "error", signal: AbortSignal.timeout(30_000) });
+      if (response.status === 200) return await response.json();
+      // A fair-use refusal (0.10.34, docs/FAIR-USE.md §2): its own sentence, said as it is; the commits stay for the next run.
+      if (response.status === 429 || response.status === 503) {
+        const refusal = await response.json().catch(() => null);
+        if (typeof refusal?.message === "string") return { refused: { message: refusal.message.slice(0, 400), retryAfter: Number(response.headers.get("retry-after")) || null } };
+      }
+      return null;
+    } catch { return null; }
+  };
+  process.exitCode = await gitMain(sub, { say, ask, send, consent: await consent(), salt: archiveSalt(), dryRun: has("dry-run") });
+}
+
 function help() {
   say("WorkTrust: couple this computer to your record. Metadata only.");
   say();
@@ -1357,6 +1392,10 @@ function help() {
   say("  worktrust mod          the WorkTrust mod for Claude Code: what it counts, and whether it is on");
   say("    install              turn it on: counts permission answers, effort levels, context peaks and subagents (asks first)");
   say("    remove               turn it off and delete what it counted");
+  say("  worktrust git          send your own commits, measured on this computer: counts and kinds, never a file name,");
+  say("                         a message, code or the commit's id (asks once, with the list of repositories; Enter is No)");
+  say("    add <folder>         offer one more repository        remove <folder>   read nothing more from it");
+  say("    list                 what is offered and agreed       emails add <e-mail>   another author e-mail of yours");
   say("  worktrust preserve     keep your AI history: the report, then the settings and a local archive, each on your yes");
   say("    --apply              keep them: asks per change, backs the file up first (--yes: no question)");
   say("    --archive [dir]      a local, metadata-only, hash-chained record of the measured days (~/AI-Evidence)");
@@ -1374,7 +1413,7 @@ async function main() {
 if (!moduleArgs || !moduleExecutable || !createCredentialStore) fail("Use the complete WorkTrust package from npm/PyPI or the signed preservation kit; individual scripts cannot run.");
 if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or later (fetch is built in from 18).");
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
-const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod", "protect-key"]);
+const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod", "protect-key", "git"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
 if (agentShell && PERSON_ONLY.has(command)) {
   say();
@@ -1431,6 +1470,7 @@ else if (command === "disconnect") await disconnect();
 else if (command === "status") await status();
 else if (command === "preserve") await preserve();
 else if (command === "mod") await mod();
+else if (command === "git") await gitCommits();
 else if (command === "orchestration") {
   if (!["orchestration-report.mjs", "orchestration-evidence.mjs", "orchestration-contract.mjs"].every((name) => existsSync(join(HERE, name)))) fail("Local agent reports need the complete WorkTrust npm/Python package or preservation kit. No file was read or sent.");
   const { reportFile } = await import("./orchestration-report.mjs"); reportFile(args.slice(1));

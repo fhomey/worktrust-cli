@@ -1,5 +1,17 @@
 # worktrust
 
+## 0.10.34: your own commits, measured on this computer (`npx worktrust git`)
+
+GitHub shows an App that reads commits as "Read access to code", and has no narrower permission. `npx worktrust git`
+reads your own commits HERE instead, with `git log`, only those whose author e-mail is yours (git's `user.email`, plus
+any you add with `git emails add`), in the repositories your AI sessions ran in or that you add with `git add <folder>`.
+It asks once, with the list; Enter and `--yes` are No, and a No is remembered. Each commit's file names are turned into
+the same closed keys the GitHub sync makes (kinds of files, technologies, architecture and security markers, one-way
+markers per folder and file) on this computer, and what is sent is counts, keys and markers: never a file name, a
+message, code, the commit's id or the remote's address. A commit travels as an owner-keyed reference only WorkTrust's
+side can match against what GitHub saw. `git list` shows what is offered and agreed, `git remove <folder>` reads nothing
+more from it, `--dry-run` reads and sends nothing.
+
 ## 0.10.33: one line per autonomous process per day; a fair-use limit keeps the line
 
 A finished headless or scheduled run (a run no person started) is no longer a line of its own. It waits on this

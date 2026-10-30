@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.10.33",
+  "version": "0.10.34",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -32,6 +32,8 @@
     "claude-mod.mjs",
     "package-integrity.mjs",
     "worktrust-launch.mjs",
+    "git-commits.mjs",
+    "commit-rules.mjs",
     "engine-release.json",
     "package-release.json",
     "history-outbox.mjs",

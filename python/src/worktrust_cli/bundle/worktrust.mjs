@@ -76,7 +76,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.35";
+const CLI_VERSION = "0.10.36";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -445,10 +445,10 @@ function proof(device, url, body) {
 }
 
 /** Whether the door accepts a key: one call that reads nothing back. */
-async function accepted(url, token, device) {
+async function accepted(url, token, device, agentTail = "") {
   try {
     const body = JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list" });
-    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", authorization: `Bearer ${token}`, "user-agent": `worktrust-bridge worktrust-cli/${CLI_VERSION}`, ...proof(device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(5000) });
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", authorization: `Bearer ${token}`, "user-agent": `worktrust-bridge worktrust-cli/${CLI_VERSION}${agentTail}`, ...proof(device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(5000) });
     if (response.status === 401 || response.status === 403) return false;
     if (response.status !== 200) return null;
     const answer = await response.json();
@@ -595,7 +595,8 @@ async function hook() {
   if (has("hermes") || has("goose")) return sessionEnd();
   const key = await freshKey();
   if (!key) return;
-  const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "log-session.mjs", args.filter((arg) => arg !== "hook"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_MEASURE_RULES: String(MEASURE_RULES), WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
+  await followDoorWish(key);
+  const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "log-session.mjs", args.filter((arg) => arg !== "hook"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, ...doorModeEnv(), WORKTRUST_MEASURE_RULES: String(MEASURE_RULES), WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
   process.exitCode = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code) => resolve(code ?? 1)); });
 }
 
@@ -650,16 +651,19 @@ async function update() {
   say(`  WorkTrust · update ${hostname().replace(/\.local$/i, "")} to ${CLI_VERSION}`);
   say();
   const paths = await scripts();
+  if (!doorState() && !has("dry-run")) saveDoorState({ mode: await chooseDoor(), asked: new Date().toISOString() }); // once, for a computer coupled before 0.10.37
+  const doorIsOff = doorOff();
   const plan = await run(paths["setup-mcp.mjs"], ["--bridge", STABLE], PLACEHOLDER, true);
   // AGREED BEFORE, REFRESHED WITHOUT A QUESTION (0.10.30): an app or hook the person said yes to is brought onto this
   // version's launcher; only what is NEW here is shown in full and asked about, and --yes leaves the new ones as they are.
   const agreed = await consent();
   say("  Every AI app found here gets the WorkTrust door, the local command that reads the key:");
-  const found = planLines(plan.out, true).filter((line) => !line.includes("not on this machine"));
+  const found = doorIsOff ? [] : planLines(plan.out, true).filter((line) => !line.includes("not on this machine"));
+  if (doorIsOff) say(`    the door stays off here (hours only, ${DOOR_SWITCH})`);
   const apps = [...new Set(found.map(labelOf).filter(Boolean))], fresh = apps.filter((app) => !agreed.has(`door:${app}`));
   for (const app of apps) if (!fresh.includes(app)) say(`    ✓ ${app}: refreshed (${agreed.said(`door:${app}`)})`);
   for (const line of found) if (fresh.includes(labelOf(line))) say(`${line} · new`);
-  if (found.length === 0) say("    (no AI app found here)");
+  if (found.length === 0 && !doorIsOff) say("    (no AI app found here)");
   const hookFresh = !agreed.has("session-hook");
   say(`  The session hook and ${STABLE} are brought to ${CLI_VERSION}.`);
   say(hookFresh ? `    + Session hook: ${join(homedir(), ".claude", "settings.json")} → SessionStart, SessionEnd, PreCompact and (at most once an hour) Stop run it · new` : `    ✓ Session hook: refreshed (${agreed.said("session-hook")}; since 0.10.32 it also runs after an answer, at most once an hour, so a long session's finished days arrive the same day)`);
@@ -679,8 +683,8 @@ async function update() {
   say(`  ✓ ${STABLE} is now ${CLI_VERSION}`);
   // Out first, then in: an app that held a key of its own (a hand-made entry) moves onto the bridge. An app not agreed to is not touched.
   const skipArgs = skip.length > 0 ? ["--skip", skip.join(",")] : [];
-  await run(paths["setup-mcp.mjs"], ["--remove", "--write", ...skipArgs], key.token, true);
-  if ((await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE, ...skipArgs], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
+  await run(paths["setup-mcp.mjs"], ["--remove", "--write", ...skipArgs], key.token, true); // hours only: nothing is skipped (no app was offered), so every door comes out
+  if (!doorIsOff && (await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE, ...skipArgs], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
   const hookArgs = ["--install", "--via", STABLE];
   if (hookOn && (await run(paths["log-session.mjs"], hookArgs, key.token, false)).code !== 0) fail("installing the session hook failed; the output above says where.");
   for (const name of [...apps.filter((app) => !skip.includes(app)).map((app) => `door:${app}`), ...(hookOn ? ["session-hook"] : [])]) agreed.agree(name, "typed");
@@ -688,9 +692,10 @@ async function update() {
   // Codex installed since, or a No said at connect: the one question, asked again (or "already set").
   await offerCodex();
   await offerAntigravity();
-  const reported = await accepted(key.url, key.token, key.device);
+  const reported = await accepted(key.url, key.token, key.device, doorModeAgent());
   say(reported === true ? `  ✓ WorkTrust received CLI version ${CLI_VERSION}.` : "  ! Installed locally. WorkTrust could not confirm the version yet; it will be reported on the next connection.");
   await offerRebuild(previous, paths, key);
+  doubleDoorNotice();
   say();
   say("  Done. Quit your AI apps completely and open them again to use the updated CLI.");
 }
@@ -732,6 +737,7 @@ async function connect() {
   say();
   if (has("dry-run")) { say("  Dry run: nothing was written and nothing was sent."); return; }
   if (!(await ask("Continue?"))) { say("  Stopped. Nothing was written and nothing was sent."); return; }
+  const doorChoice = await chooseDoor();
   await prepareBundledRuntime();
   const agreed = await consent(); // read before anything is written, so what this run writes is not taken for an earlier yes
 
@@ -755,7 +761,9 @@ async function connect() {
     saveStableEntry();
     say(`  ✓ Key kept in ${KEY_PLACE}`);
   }
-  if ((await run(paths["setup-mcp.mjs"], direct ? ["--write"] : ["--write", "--bridge", STABLE], token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
+  saveDoorState({ mode: doorChoice, asked: new Date().toISOString() });
+  if (doorChoice === "hours_only") say(`  ✓ Hours only: no AI app gets the WorkTrust door (${DOOR_SWITCH})`);
+  else if ((await run(paths["setup-mcp.mjs"], direct ? ["--write"] : ["--write", "--bridge", STABLE], token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
   say();
   // The old key ends now that the new one is in place (never before: a failed pairing must not leave the computer uncoupled).
   if (previous?.token) await releasePrevious(previous, pairing.prefix);
@@ -766,7 +774,7 @@ async function connect() {
   if ((await run(paths["log-session.mjs"], hookArgs, token, false, { WORKTRUST_CODEX_OFFER: "1" })).code !== 0) fail("installing the session hook failed; the output above says where.");
   // WHAT WAS AGREED HERE (0.10.30): the apps and the hook this "Continue?" covered; another account starts with none from before.
   if (switched) agreed.reset();
-  for (const name of [...new Set(foundApps.map(labelOf).filter(Boolean))].map((app) => `door:${app}`).concat("session-hook")) agreed.agree(name, has("yes") ? "flag" : "typed");
+  for (const name of (doorChoice === "hours_only" ? [] : [...new Set(foundApps.map(labelOf).filter(Boolean))].map((app) => `door:${app}`)).concat("session-hook")) agreed.agree(name, has("yes") ? "flag" : "typed");
   await offerCodex();
   await offerAntigravity();
   if (switched) { say(); say("  Earlier work on this computer is not offered: it was coupled to another account before. Only work from now on goes to this account."); }
@@ -775,6 +783,7 @@ async function connect() {
   // ONE LINE, NO CHANGE (2026-10-06): Claude Code deletes what the hook measures from; `preserve --apply` keeps it, on a yes.
   const keeps = claudeKeepsDays();
   if (keeps !== null && keeps < 90) say(`  Claude Code deletes sessions after ${keeps} days. Keep them: npx worktrust@latest preserve --apply`);
+  doubleDoorNotice();
   say("  Done. Quit your AI apps completely and open them again. This computer appears in WorkTrust");
   say("  under Sources → CLI once one of them has spoken.");
 }
@@ -830,16 +839,24 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
   if (Number(did?.delivery?.review) > 0) say(`  ${did.delivery.review} lines are waiting for review. Earlier measurements remain unchanged. Reconnecting or repeating the import does not approve them.`);
   // KEPT ON THE SERVER (0.10.27; owner, 2026-10-21): what did not arrive stays here and goes again by itself; nothing to resume by hand.
   if (Number(did?.delivery?.waiting) > 0) say("  Some batches did not reach WorkTrust yet. They stay on this computer and are sent again by themselves the next time npx worktrust or your AI app's hook runs.");
-  // 0.10.35: a re-measure refused for older measure rules is told in WorkTrust's own words (the hook passes them on, cleaned).
-  if (Number(did?.delivery?.refused) > 0) say(typeof did.delivery.said === "string" ? `  ${did.delivery.said.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 400)}` : `  WorkTrust closed an earlier run of ${did.delivery.refused} lines (it missed a batch for seven days): run npx worktrust@latest history again to send them as a new run.`);
+  // A REFUSAL IN WORKTRUST'S OWN WORDS (0.10.35 for older measure rules; every final refusal since 2026-10-31): the hook passes
+  // the door's sentence on, cleaned. Without one (a batch let go on an earlier send, or one too large for any call) the count
+  // alone, never a guessed reason: 0.10.35 said "it missed a batch for seven days" of a batch refused for its lines.
+  if (Number(did?.delivery?.refused) > 0) say(typeof did.delivery.said === "string" ? `  WorkTrust refused ${did.delivery.refused} lines for good: ${did.delivery.said.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/^history run refused:\s*/, "").slice(0, 400)}` : `  WorkTrust refused ${did.delivery.refused} lines for good; nothing of them was stored and they are not sent again.`);
+  // THE RUN, AS WORKTRUST HOLDS IT (2026-10-31): the hook counts each run's batches against the receipts. A run missing a batch
+  // is never "re-measured" (on 2026-10-30 three receipts of a run of four printed "holds all 3 batches"): WorkTrust rebuilds
+  // a run's days only once every batch has arrived. A batch still on its way is said above, and goes again by itself.
+  const staging = rebuild && did?.run && Number.isInteger(did.run.batches) && Number.isInteger(did.run.arrived) ? did.run : null;
+  const notWhole = staging?.whole === false;
+  if (notWhole && (!Number(did?.delivery?.waiting) || n(staging.refused) > 0)) say(`  ✗ Not re-measured: WorkTrust holds ${staging.arrived} of ${staging.batches} batches of this run and rebuilds nothing until all of them have arrived. Nothing was replaced; your earlier lines keep counting.`);
   // A STAGED RUN (0.10.27): WorkTrust holds every batch and rebuilds the days itself once the run is whole; the receipts say what it kept.
-  if (rebuild && n(did?.staged) > 0 && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) {
-    say(`  ✓ Re-measured. WorkTrust holds all ${n(did.staged)} batches (${n(did.kept)} lines) and rebuilds these days itself, every AI app together, a day counted once. Sources › Logs shows it while it works.`);
+  if (rebuild && staging?.whole === true && n(did?.staged) > 0 && sent.code === 0 && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) {
+    say(`  ✓ Re-measured. WorkTrust holds all ${staging.batches} batches (${n(did.kept)} lines) and rebuilds these days itself, every AI app together, a day counted once. Sources › Logs shows it while it works.`);
     // WHERE IT WAITS (0.10.32): the receipt of the run's last batch names its place in WorkTrust's queue and a time; absent, nothing is guessed.
     const queued = did?.queued;
     if (queued && Number.isInteger(queued.position) && queued.position >= 1 && Number.isFinite(Number(queued.eta_minutes))) say(`  queued, position ${queued.position}, about ${Math.max(1, Math.ceil(Number(queued.eta_minutes)))} min`);
   }
-  else if (rebuild && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
+  else if (rebuild && !notWhole && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
   else if (!rebuild) say(sent.code === 0 ? "  ✓ Sent as history. Activity is recorded with its origin; independent verification and passport publication are separate. A day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
   if (did && Number(did.measuredSeconds) > 0) say(`  Measured by WorkTrust: ${(Number(did.measuredSeconds) / 3600).toFixed(1)} h for what this send stored${n(did.corrected) > 0 ? ` (${n(did.corrected)} lines corrected: a figure sent beside the timeline differed)` : ""}.`);
 }
@@ -988,12 +1005,15 @@ async function offerExport(paths, key, path) {
   if (counted.code !== 0 || !report) { say(`  ${counted.out.trim().split("\n").filter(Boolean).pop() ?? "export: it could not be read"}. Nothing was sent.`); return false; }
   const product = EXPORT_PRODUCT[report.vendor] ?? report.vendor, connector = EXPORT_CONNECTOR[report.vendor] ?? report.vendor;
   if (!report.days) { say(`  ${product} export · ${report.conversations} conversations, none with a clock to place: nothing to send.`); return true; }
-  say(`  ${product} export · ${report.conversations} conversations · ${report.days} days · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}`);
+  const cuts = Array.isArray(report.cut) ? report.cut : [];
+  say(`  ${product} export${cuts.length > 0 ? ", cut off" : ""} · ${report.conversations} conversations · ${report.days} days · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}`);
+  // A DOWNLOAD CUT OFF (2026-10-31): what the archive held whole before the cut is read, and the person is told it is not the whole export.
+  for (const cut of cuts) say(`  The archive was cut off after ${cut.last} (part ${cut.parts}); ${report.conversations} conversations read. Nothing past the cut is read: this is not the whole export. Download it again for the rest; a line already received is kept once.`);
   say("  WorkTrust reconstructs the hours from the export's own clocks when they arrive: shown with their origin, never verified hours. Never a title or a message.");
   // LEFT OUT AND COUNTED (0.10.18): a conversation whose kept fields outgrew the reader's budget is passed over, never the export.
   if (report.oversized > 0) say(`  ${report.oversized} conversation${report.oversized === 1 ? "" : "s"} too large to read ${report.oversized === 1 ? "is" : "are"} left out; the rest is read.`);
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return false; }
-  if (!has("history") && !(await ask("Send it as history (reconstructed hours per day; never text)?", false))) { say(`  Not sent. Send it later with: npx worktrust history --export ${path}`); return false; }
+  if (!has("history") && !(await ask(cuts.length > 0 ? "Send what was read before the cut as history (reconstructed hours per day; never text)?" : "Send it as history (reconstructed hours per day; never text)?", false))) { say(`  Not sent. Send it later with: npx worktrust history --export ${path}`); return false; }
   const sent = await run(paths["log-session.mjs"], ["--history", "--export", path], key.token, true, env);
   say(sent.code === 0 ? `  ✓ Sent as history. It shows in WorkTrust as ${product}, reconstructed, never as verified hours; a line already received is kept once.` : `  Not all of it arrived. Run npx worktrust history --export ${path} again: a line already received is kept once.`);
   if (sent.code !== 0) return false;
@@ -1274,6 +1294,7 @@ async function status() {
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
   if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
   say(sessionHookHere() ? "  Session hook: installed" : "  Session hook: not installed");
+  say(`  AI work lines: ${doorLine()}`);
   // A TRANSCRIPT THE HOOK COULD NOT READ (0.10.32): the count of its last run that had any, never which file; WorkTrust has the count too.
   { let unread = null; try { unread = JSON.parse(readFileSync(join(HOME_DIR, "sessions.json"), "utf8")).__unreadable ?? null; } catch { /* no state yet */ }
     if (Number(unread?.count) > 0) say(`  Transcripts: ${unread.count} could not be read on ${String(unread.at).slice(0, 10)}; their days are not measured until they can be (WorkTrust was told the count, nothing else)`); }
@@ -1362,6 +1383,107 @@ async function gitCommits() {
   process.exitCode = await gitMain(sub, { say, ask, send, consent: await consent(), salt: archiveSalt(), dryRun: has("dry-run") });
 }
 
+/**
+ * HOURS ONLY, OR ALSO WORK LINES (owner, 2026-10-31, after an engineer: "every session loads ~600 tokens from the WorkTrust
+ * MCP"). The passport's hours come from the session hook, which reads the AI apps' own transcripts and needs no door; the
+ * door adds only the AI's own `log_work` lines, and loads its instruction (and, in clients that load every tool, its tool
+ * definitions) into every session. So the person chooses, here, and the choice is kept in ~/.worktrust/door.json (600):
+ * `mcp off` takes the door out of every app and `update` leaves it out; `mcp on` puts it back. The hook runs in both, and
+ * names the mode to WorkTrust beside the CLI version (a closed word in its user-agent), so a pause in work lines reads as
+ * the person's choice. Turning the door on sends nothing from the off period: work lines are live only, and earlier work
+ * goes only through `history`, on the person's yes.
+ */
+const DOOR_FILE = join(HOME_DIR, "door.json");
+const DOOR_MODES = ["hours_only", "work_lines"];
+const DOOR_SWITCH = "npx worktrust mcp on / mcp off";
+function doorState() { try { const state = JSON.parse(readPrivateFile(DOOR_FILE) ?? "null"); return DOOR_MODES.includes(state?.mode) ? state : null; } catch { return null; } }
+function saveDoorState(next) { if (has("dry-run")) return; try { ensureHome(); writePrivateFile(DOOR_FILE, `${JSON.stringify({ ...(doorState() ?? {}), ...next, ...(next.mode && next.mode !== doorState()?.mode ? { since: new Date().toISOString() } : {}) })}\n`); } catch { /* not kept: asked again next time */ } }
+const doorOff = () => doorState()?.mode === "hours_only";
+/** The mode and the moment it last changed here (whole seconds), so the last change wins against a wish from Sources. */
+const doorSaid = () => { const state = doorState(); if (!state) return null; const at = Math.floor(Date.parse(state.since ?? state.asked ?? "") / 1000); return Number.isFinite(at) && at > 0 ? `${state.mode}.${at}` : state.mode; };
+const doorModeEnv = () => (doorSaid() ? { WORKTRUST_DOOR_MODE: doorSaid() } : {});
+const doorModeAgent = () => (doorSaid() ? ` worktrust-mode/${doorSaid()}` : "");
+const doorLine = () => { const state = doorState(); return state ? `${state.mode === "hours_only" ? "off (hours only)" : "on"}${state.since ? ` since ${String(state.since).slice(0, 10)}` : ""}` : "on (not chosen yet: npx worktrust update asks once)"; };
+/** The first question: Enter, --yes and a closed terminal keep the door, as before; --hours-only and --work-lines say it in advance. */
+async function chooseDoor() {
+  if (has("hours-only")) return "hours_only";
+  if (has("work-lines")) return "work_lines";
+  say();
+  say("  How should your AI apps work with WorkTrust?");
+  say("    1  Hours only: the session hook measures your hours; nothing of WorkTrust loads into your sessions");
+  say("    2  Also let your AI log finished work: the WorkTrust door in each app, about 40 tokens per session");
+  if (has("yes") || has("dry-run") || !process.stdin.isTTY) { say(`  Kept: 2, the door, as before. Switch any time: ${DOOR_SWITCH}`); return "work_lines"; }
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await prompt.question("  Which one? [1/2, Enter = 2] ")).trim();
+  prompt.close();
+  return answer === "1" ? "hours_only" : "work_lines";
+}
+/**
+ * TWO DOORS IN ONE CLAUDE CODE (owner, 2026-10-31). Claude Code also loads the connectors of the person's claude.ai account,
+ * so a WorkTrust connector added there arrives beside the local door and its instruction loads twice. The local door is the
+ * one to keep (it carries this computer's device key); a claude.ai connector is managed only at claude.ai, so the CLI says
+ * where, once. Claude Code records the connectors it has EVER connected (`claudeAiMcpEverConnected`), not the ones on now,
+ * and asking `claude mcp list` would start every server; so this is a notice, never a removal and never a claim.
+ */
+function claudeAiDoor() { try { return (JSON.parse(readFileSync(join(homedir(), ".claude.json"), "utf8")).claudeAiMcpEverConnected ?? []).find((name) => typeof name === "string" && /^claude\.ai .*worktrust/i.test(name)) ?? null; } catch { return null; } }
+function doubleDoorNotice(always = false) {
+  const connector = claudeAiDoor();
+  if (!connector || (!always && doorState()?.noticed)) return;
+  say();
+  say(doorOff() ? `  ! Claude Code has also been connected to your claude.ai WorkTrust connector ("${connector}"): while it is on there, it still loads in your sessions.`
+    : `  ! Claude Code has also been connected to your claude.ai WorkTrust connector ("${connector}"): with the local door, WorkTrust may load twice. Keep the local one (it carries this computer's key).`);
+  say("    Remove the other at https://claude.ai/customize/connectors (the CLI cannot change your claude.ai account).");
+  if (!always) saveDoorState({ noticed: new Date().toISOString() });
+}
+/**
+ * THE OWNER'S SWITCH IN SOURCES, DONE HERE (owner, 2026-10-31). At a session's start or end the hook asks WorkTrust, with
+ * this computer's signed key, whether the owner asked for a mode (at most every ten minutes, three seconds at most, silent
+ * on any failure). A wish newer than the last choice made on this computer is done on WorkTrust's own entries in the AI
+ * apps, recorded in door.json and reported back beside the version, which settles it; a choice made here later wins.
+ * Nothing is printed: the hook's output belongs to the AI app.
+ */
+async function followDoorWish(key) {
+  const state = doorState();
+  if (!key.device || (state?.checkedAt && Date.now() - Date.parse(state.checkedAt) < 10 * 60_000)) return;
+  let wish = null;
+  try {
+    const url = new URL("/api/cli/door", key.url).href, body = "{}";
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, "user-agent": `worktrust-cli/${CLI_VERSION}`, ...proof(key.device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(3000) });
+    if (response.ok) wish = await response.json();
+  } catch { /* offline: asked again next time */ }
+  saveDoorState({ checkedAt: new Date().toISOString() });
+  if (!DOOR_MODES.includes(wish?.mode) || wish.mode === state?.mode || !(Date.parse(wish.at) > Date.parse(state?.since ?? state?.asked ?? 0))) return;
+  const paths = await scripts();
+  if (wish.mode === "work_lines") { await prepareBundledRuntime(); await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token, true); }
+  const done = await run(paths["setup-mcp.mjs"], wish.mode === "hours_only" ? ["--remove", "--write"] : ["--write", "--bridge", STABLE], key.token, true);
+  if (done.code !== 0) return;
+  saveDoorState({ mode: wish.mode, asked: state?.asked ?? new Date().toISOString() });
+  await accepted(key.url, key.token, key.device, doorModeAgent());
+}
+async function doorCommand(sub) {
+  say();
+  if (sub !== "off" && sub !== "on") { say(`  AI work lines on this computer: ${doorLine()}`); say("  Your hours are measured by the session hook either way."); say(`  ${DOOR_SWITCH}`); doubleDoorNotice(true); return; }
+  const key = await freshKey();
+  if (!key) fail("this computer has no WorkTrust key file yet. Run npx worktrust connect.");
+  const paths = await scripts();
+  if (sub === "off") {
+    if ((await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token)).code !== 0) fail("taking the door out failed; the output above says where. Nothing was recorded.");
+    saveDoorState({ mode: "hours_only", asked: doorState()?.asked ?? new Date().toISOString() });
+    say("  ✓ Hours only: the WorkTrust door is out of every AI app here, and update leaves it out.");
+    say("    The session hook keeps measuring your hours. npx worktrust mcp on brings the door back.");
+  } else {
+    await prepareBundledRuntime(); ensureHome(); saveStableEntry();
+    await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token, true);
+    if ((await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where. Nothing was recorded.");
+    saveDoorState({ mode: "work_lines", asked: doorState()?.asked ?? new Date().toISOString() });
+    say("  ✓ The WorkTrust door is back: your AI can log finished work from now on. Nothing from the time it was off is sent.");
+  }
+  const reported = await accepted(key.url, key.token, key.device, doorModeAgent());
+  say(reported === true ? "  ✓ WorkTrust was told the mode (shown under Sources, Devices)." : "  ! Kept here; WorkTrust is told on the next connection.");
+  doubleDoorNotice();
+  say("  Quit your AI apps completely and open them again.");
+}
+
 function help() {
   say("WorkTrust: couple this computer to your record. Metadata only.");
   say();
@@ -1397,6 +1519,10 @@ function help() {
   say("                         days this computer's own sessions lack, reconstructed, never verified hours (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
+  say("  worktrust mcp off      hours only: the WorkTrust door out of every AI app here, nothing of it in your sessions;");
+  say("                         the session hook keeps measuring your hours, and update leaves the door out");
+  say("  worktrust mcp on       the door back in, so your AI can log finished work (about 40 tokens per session)");
+  say("  worktrust mcp          which of the two this computer is in");
   say("  worktrust protect-key  after update: move credential protection into the OS vault (asks first)");
   say("  worktrust orchestration report --file recording.jsonl   inspect local agent metadata; sends nothing");
   say("  worktrust mod          the WorkTrust mod for Claude Code: what it counts, and whether it is on");
@@ -1425,7 +1551,9 @@ if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or lat
 const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
 const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod", "protect-key", "git"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
-if (agentShell && PERSON_ONLY.has(command)) {
+// `mcp off` and `mcp on` change what this computer's AI apps load: the person's. Bare `mcp` stays the bridge the apps start.
+const doorSwitch = command === "mcp" && ["off", "on"].includes(args[args.indexOf("mcp") + 1]);
+if (agentShell && (PERSON_ONLY.has(command) || doorSwitch)) {
   say();
   say(`  worktrust${command === "default" ? "" : ` ${command}`} is run by the person, in their own terminal, never by an AI agent for them (this shell is an agent's: ${agentShell}).`);
   say("  Nothing was read, sent or changed. See AGENTS.md in the package: https://www.npmjs.com/package/worktrust");
@@ -1461,6 +1589,7 @@ if (!["version", "help", "preserve"].includes(command)) {
 }
 if (command === "version") say(CLI_VERSION);
 else if (command === "default") { if (keyStore.load()) await again(); else await connect(); }
+else if (command === "mcp" && (doorSwitch || args[args.indexOf("mcp") + 1] === "status" || (process.stdin.isTTY && process.stdout.isTTY))) await doorCommand(args[args.indexOf("mcp") + 1]);
 else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();

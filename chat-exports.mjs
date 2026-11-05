@@ -49,7 +49,7 @@ const expand = (path) => String(path).replace(/^~(?=\/|$)/, homedir());
 // held whole (readExport) stops at 512 MB of kept fields. A zip64 archive (one over 4 GB) is refused by name: unpack it
 // and give conversations.json itself. No limit override.
 export const EXPORT_LIMITS = Object.freeze({ fileBytes: 64 * 1024 ** 3, directoryBytes: 8 * 1024 ** 2, depth: 64, conversations: 2_000_000,
-  conversationBytes: 8 * 1024 ** 2, conversationTextBytes: 64 * 1024 ** 2, keptBytes: 512 * 1024 ** 2, keyBytes: 256, parts: 64, manifestBytes: 1024 ** 2 });
+  conversationBytes: 8 * 1024 ** 2, conversationTextBytes: 64 * 1024 ** 2, keptBytes: 512 * 1024 ** 2, keyBytes: 256, parts: 64, manifestBytes: 1024 ** 2, zipEntries: 1_000_000 });
 const PROGRESS_BYTES = 64 * 1024 ** 2, CHUNK_BYTES = 1024 ** 2;
 const limit = (condition, label) => { if (!condition) throw Error(`export limit exceeded: ${label}`); };
 const damaged = (condition) => { if (!condition) throw Error("a damaged zip archive"); };
@@ -96,11 +96,12 @@ async function* inflated(chunks, uncompressed) {
 }
 
 /**
- * A ZIP, READ FOR ITS CONVERSATIONS ENTRIES. No dependency: the end-of-central-directory record is found from the back, the
- * central directory walked for the names `accept` takes, and only those entries' bytes read (stored or deflated, as a
- * stream; anything else, and a zip64 archive, is refused by name), in part order. Nothing else in the archive is touched.
- * Two entries of one name are ambiguous and refused. The descriptor stays open until `close`, so the bytes read are the
- * bytes the directory described.
+ * A ZIP, READ FOR ITS CONVERSATIONS ENTRIES. No dependency: the end-of-central-directory record is found from the back (and,
+ * for an archive past 4 GB, the zip64 record its locator names), the central directory walked for the names `accept` takes,
+ * and only those entries' bytes read (stored or deflated, as a stream; anything else is refused by name), in part order.
+ * Nothing else in the archive is touched. Two entries of one name, or a numbered part missing from the run, are refused. The
+ * descriptor stays open until `close`, so the bytes read are the bytes the directory described. An archive with no end
+ * record that begins with an entry is a download CUT OFF (2026-10-31): its local headers are walked instead (`walkLocal`).
  */
 function zipEntries(path, accept) {
   const { size, readAt, chunksOf, close } = openExport(path, EXPORT_LIMITS.fileBytes);
@@ -109,46 +110,145 @@ function zipEntries(path, accept) {
     const tail = readAt(size - tailLength, tailLength);
     let eocd = -1;
     for (let at = tail.length - 22; at >= 0; at -= 1) if (tail.readUInt32LE(at) === 0x06054b50 && at + 22 + tail.readUInt16LE(at + 20) === tail.length) { eocd = at; break; }
-    if (eocd < 0) throw Error(`not a zip archive: ${path}`);
-    const entries = tail.readUInt16LE(eocd + 10), directorySize = tail.readUInt32LE(eocd + 12), directoryAt = tail.readUInt32LE(eocd + 16);
-    if (entries === 0xffff || directorySize === 0xffffffff || directoryAt === 0xffffffff) throw Error(`a zip64 archive is not read: ${path} (unpack it and give its ${FILE})`);
-    if (tail.readUInt16LE(eocd + 4) !== 0 || tail.readUInt16LE(eocd + 6) !== 0) throw Error("unsupported zip: multiple disks");
-    damaged(tail.readUInt16LE(eocd + 8) === entries);
+    if (eocd < 0) {
+      if (size < 30 || readAt(0, 4).readUInt32LE(0) !== LOCAL) throw Error(`not a zip archive: ${path}`);
+      const { selected, cut } = walkLocal(path, size, readAt, accept);
+      return { parts: entryParts(path, selected, size, readAt, chunksOf, true), close, cut };
+    }
+    const endAt = size - tailLength + eocd;
+    let entries = tail.readUInt16LE(eocd + 10), directorySize = tail.readUInt32LE(eocd + 12), directoryAt = tail.readUInt32LE(eocd + 16), directoryEnd = endAt;
+    if (entries === 0xffff || directorySize === U32 || directoryAt === U32) {
+      // ZIP64 (an archive past 4 GB or 65,535 entries): the locator lies just before the end record and names the zip64 end record, which holds the true counts.
+      damaged(endAt >= 20);
+      const locator = readAt(endAt - 20, 20);
+      damaged(locator.readUInt32LE(0) === 0x07064b50);
+      if (locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) throw Error("unsupported zip: multiple disks");
+      const recordAt = big(locator, 8), record = readAt(recordAt, 56, endAt - 20);
+      damaged(record.readUInt32LE(0) === 0x06064b50 && recordAt + 12 + big(record, 4) === endAt - 20);
+      if (record.readUInt32LE(16) !== 0 || record.readUInt32LE(20) !== 0) throw Error("unsupported zip: multiple disks");
+      entries = big(record, 32); damaged(big(record, 24) === entries);
+      directorySize = big(record, 40); directoryAt = big(record, 48); directoryEnd = recordAt;
+    } else {
+      if (tail.readUInt16LE(eocd + 4) !== 0 || tail.readUInt16LE(eocd + 6) !== 0) throw Error("unsupported zip: multiple disks");
+      damaged(tail.readUInt16LE(eocd + 8) === entries);
+    }
     limit(directorySize <= EXPORT_LIMITS.directoryBytes, "zip directory bytes");
-    damaged(directoryAt + directorySize === size - tailLength + eocd);
+    damaged(directoryAt + directorySize === directoryEnd);
     const directory = readAt(directoryAt, directorySize);
     let at = 0;
     const selected = new Map();
     for (let index = 0; index < entries; index += 1) {
       damaged(at + 46 <= directory.length && directory.readUInt32LE(at) === 0x02014b50);
-      const method = directory.readUInt16LE(at + 10), compressed = directory.readUInt32LE(at + 20), uncompressed = directory.readUInt32LE(at + 24);
-      const nameLength = directory.readUInt16LE(at + 28), extraLength = directory.readUInt16LE(at + 30), commentLength = directory.readUInt16LE(at + 32), localAt = directory.readUInt32LE(at + 42);
+      const method = directory.readUInt16LE(at + 10);
+      let compressed = directory.readUInt32LE(at + 20), uncompressed = directory.readUInt32LE(at + 24), localAt = directory.readUInt32LE(at + 42);
+      const nameLength = directory.readUInt16LE(at + 28), extraLength = directory.readUInt16LE(at + 30), commentLength = directory.readUInt16LE(at + 32);
       const flags = directory.readUInt16LE(at + 8), disk = directory.readUInt16LE(at + 34);
       damaged(at + 46 + nameLength + extraLength + commentLength <= directory.length);
-      const name = directory.toString("utf8", at + 46, at + 46 + nameLength);
+      const name = directory.toString("utf8", at + 46, at + 46 + nameLength), extra = directory.subarray(at + 46 + nameLength, at + 46 + nameLength + extraLength);
       at += 46 + nameLength + extraLength + commentLength;
       if (!accept(basename(name)) || name.endsWith("/")) continue;
-      if (compressed === 0xffffffff || uncompressed === 0xffffffff || localAt === 0xffffffff) throw Error(`a zip64 entry is not read: ${path} (unpack it and give its ${FILE})`);
+      if (compressed === U32 || uncompressed === U32 || localAt === U32) [uncompressed, compressed, localAt] = zip64Extra(extra, [uncompressed, compressed, localAt]);
       if ((flags & (1 | 64)) !== 0 || disk !== 0) throw Error("unsupported zip: encrypted or multi-disk entry");
       damaged(!selected.has(basename(name)));
       selected.set(basename(name), { name, method, flags, compressed, uncompressed, localAt });
     }
     damaged(at === directory.length);
-    limit(selected.size <= EXPORT_LIMITS.parts, "conversations parts");
-    const parts = [...selected.keys()].sort(byPart).map((key) => {
-      const { name, method, flags, compressed, uncompressed, localAt } = selected.get(key);
-      const local = readAt(localAt, 30, directoryAt);
-      damaged(local.readUInt32LE(0) === 0x04034b50 && local.readUInt16LE(8) === method && local.readUInt16LE(6) === flags);
-      const nameLength = local.readUInt16LE(26), dataAt = localAt + 30 + nameLength + local.readUInt16LE(28);
-      damaged(readAt(localAt + 30, nameLength, directoryAt).toString("utf8") === name);
-      if (!(flags & 8)) damaged(local.readUInt32LE(18) === compressed && local.readUInt32LE(22) === uncompressed);
-      damaged(dataAt + compressed <= directoryAt);
-      if (method === 0) damaged(compressed === uncompressed);
-      else if (method !== 8) throw Error(`${basename(name)} in ${path} is compressed in a way this reader does not open (method ${method})`);
-      return { path, bytes: uncompressed, chunks: () => (method === 0 ? chunksOf(dataAt, compressed, directoryAt) : inflated(chunksOf(dataAt, compressed, directoryAt), uncompressed)) };
-    });
-    return { parts, close };
+    return { parts: entryParts(path, selected, directoryAt, readAt, chunksOf, false), close, cut: null };
   } catch (error) { close(); throw error; }
+}
+const LOCAL = 0x04034b50, U32 = 0xffffffff;
+/** An eight-byte length or offset, held to what a number can say exactly. */
+const big = (buffer, at) => { const value = buffer.readBigUInt64LE(at); damaged(value <= BigInt(Number.MAX_SAFE_INTEGER)); return Number(value); };
+/** The zip64 extended-information field (id 0x0001): an eight-byte value for each of `words` that reads 0xffffffff, in the spec's order; the others as they are. */
+function zip64Extra(extra, words) {
+  for (let at = 0; at + 4 <= extra.length; at += 4 + extra.readUInt16LE(at + 2)) {
+    const end = at + 4 + extra.readUInt16LE(at + 2);
+    damaged(end <= extra.length);
+    if (extra.readUInt16LE(at) !== 1) continue;
+    let next = at + 4;
+    return words.map((word) => { if (word !== U32) return word; damaged(next + 8 <= end); const value = big(extra, next); next += 8; return value; });
+  }
+  return damaged(false);
+}
+/** The selected entries as parts in part order, each held to its local header (method, flags, name and lengths) and its bytes before `end`. */
+function entryParts(path, selected, end, readAt, chunksOf, walked) {
+  limit(selected.size <= EXPORT_LIMITS.parts, "conversations parts");
+  contiguous([...selected.keys()], path);
+  return [...selected.keys()].sort(byPart).map((key) => {
+    const { name, method, flags, compressed, uncompressed, localAt } = selected.get(key);
+    const local = readAt(localAt, 30, end);
+    damaged(local.readUInt32LE(0) === LOCAL && local.readUInt16LE(8) === method && local.readUInt16LE(6) === flags);
+    const nameLength = local.readUInt16LE(26), extraLength = local.readUInt16LE(28), dataAt = localAt + 30 + nameLength + extraLength;
+    damaged(readAt(localAt + 30, nameLength, end).toString("utf8") === name);
+    if (!walked && !(flags & 8)) {
+      let sizes = [local.readUInt32LE(22), local.readUInt32LE(18)];
+      if (sizes.includes(U32)) sizes = zip64Extra(readAt(localAt + 30 + nameLength, extraLength, end), [U32, U32]);
+      damaged(sizes[1] === compressed && sizes[0] === uncompressed);
+    }
+    damaged(dataAt + compressed <= end);
+    if (method === 0) damaged(compressed === uncompressed);
+    else if (method !== 8) throw Error(`${basename(name)} in ${path} is compressed in a way this reader does not open (method ${method})`);
+    return { path, bytes: uncompressed, chunks: () => (method === 0 ? chunksOf(dataAt, compressed, end) : inflated(chunksOf(dataAt, compressed, end), uncompressed)) };
+  });
+}
+/**
+ * A ZIP CUT OFF (2026-10-31: the owner's 4 GB ChatGPT export, downloaded, stopped inside an attachment; it has no central
+ * directory and no end record). Its LOCAL headers are walked from the front, each passed by the lengths it carries, its data
+ * never read: only an entry `accept` takes is kept, and only one whose header carries its real lengths (an entry that defers
+ * them to a data descriptor cannot be passed without inflating it, so the walk stops there and says so). The walk ends at the
+ * first entry the file does not hold whole, or at the directory if the cut came later. A cut inside a conversations entry
+ * refuses the export by that entry's name; otherwise what was read is handed over WITH the cut (`cut`), never as the whole.
+ */
+function walkLocal(path, size, readAt, accept) {
+  const selected = new Map();
+  let at = 0, walked = 0, where = null;
+  for (;;) {
+    if (at === size) { where = "at the end of an entry"; break; }
+    if (at + 30 > size) { where = "inside an entry's header"; break; }
+    const local = readAt(at, 30), signature = local.readUInt32LE(0);
+    if (signature === 0x02014b50 || signature === 0x06064b50) { where = "inside its directory"; break; }
+    damaged(signature === LOCAL);
+    limit((walked += 1) <= EXPORT_LIMITS.zipEntries, "zip entries");
+    const flags = local.readUInt16LE(6), method = local.readUInt16LE(8), nameLength = local.readUInt16LE(26), extraLength = local.readUInt16LE(28);
+    if (at + 30 + nameLength + extraLength > size) { where = "inside an entry's header"; break; }
+    const name = readAt(at + 30, nameLength).toString("utf8"), extra = readAt(at + 30 + nameLength, extraLength);
+    let compressed = local.readUInt32LE(18), uncompressed = local.readUInt32LE(22);
+    const wide = compressed === U32 || uncompressed === U32;
+    if (wide) [uncompressed, compressed] = zip64Extra(extra, [U32, U32]);
+    const wanted = accept(basename(name)) && !name.endsWith("/"), dataAt = at + 30 + nameLength + extraLength;
+    if ((flags & 8) && compressed === 0 && uncompressed === 0) {
+      if (wanted) throw Error(`${basename(name)} in ${path} carries no length in its header and the archive has no directory: it cannot be read without one`);
+      where = "at an entry whose header carries no length"; break;
+    }
+    if (dataAt + compressed > size) {
+      if (wanted) throw Error(`${path} is cut off inside ${basename(name)} (the file ends at byte ${size}; the entry needs ${dataAt + compressed}): download the export again`);
+      where = "inside an entry that is not a conversations part"; break;
+    }
+    if (wanted) {
+      if ((flags & (1 | 64)) !== 0) throw Error("unsupported zip: encrypted or multi-disk entry");
+      damaged(!selected.has(basename(name)));
+      selected.set(basename(name), { name, method, flags, compressed, uncompressed, localAt: at });
+    }
+    at = dataAt + compressed;
+    if (flags & 8) { // the data descriptor after the data: an optional signature, the crc and two lengths (eight bytes each in zip64)
+      const length = (at + 4 <= size && readAt(at, 4).readUInt32LE(0) === 0x08074b50 ? 4 : 0) + 4 + (wide ? 16 : 8);
+      if (at + length > size) { where = "at the end of an entry"; break; }
+      at += length;
+    }
+  }
+  if (selected.size === 0) throw Error(`${path} is cut off (no directory at its end) and holds no whole conversations part before the cut: download the export again`);
+  const names = [...selected.keys()].sort(byPart);
+  return { selected, cut: { size, at, where, entries: walked, parts: names.length, first: names[0], last: names.at(-1) } };
+}
+/** Numbered parts run without a gap: a part missing from the middle of the run is a partial export, never read as the whole. */
+function contiguous(names, where, fromZero = false) {
+  const numbers = names.map(partOf).filter((n) => n >= 0).sort((a, b) => a - b), missing = [];
+  if (fromZero) for (let n = 0; n < (numbers[0] ?? 0) && missing.length < 8; n += 1) missing.push(`conversations-${String(n).padStart(3, "0")}`);
+  for (let i = 1; i < numbers.length; i += 1) {
+    damaged(numbers[i] !== numbers[i - 1]);
+    for (let n = numbers[i - 1] + 1; n < numbers[i] && missing.length < 8; n += 1) missing.push(`conversations-${String(n).padStart(3, "0")}`);
+  }
+  if (missing.length > 0) throw Error(`${where} is missing conversations part${missing.length === 1 ? "" : "s"} ${missing.join(", ")}: a partial export is never read as the whole`);
 }
 
 /**
@@ -166,9 +266,9 @@ const refuseOther = (path) => { const other = OTHER_PART.exec(basename(path)); i
 /** One conversations zip: its conversations entries, or a refusal that names the zip. */
 function zipParts(path, given) {
   refuseOther(path);
-  const { parts, close } = zipEntries(path, (name) => CONVERSATIONS_ENTRY.test(name));
+  const { parts, close, cut } = zipEntries(path, (name) => CONVERSATIONS_ENTRY.test(name));
   if (parts.length === 0) { close(); throw Error(`no ${FILE} in ${given}`); }
-  return { parts, close };
+  return { parts, close, cuts: cut ? [cut] : [] };
 }
 /** A folder's conversations zips (conversations-000.zip, -001.zip …), in part order; nothing else of the folder is read. */
 const folderParts = (dir) => { let names = []; try { names = readdirSync(dir); } catch { return []; } return names.filter((name) => CONVERSATIONS_PART.test(name)).sort(byPart).map((name) => join(dir, name)); };
@@ -200,8 +300,28 @@ function zipsParts(zips, given) {
     for (const zip of zips) opened.push(zipParts(zip, given));
     const parts = opened.flatMap((one) => one.parts);
     limit(parts.length <= EXPORT_LIMITS.parts && parts.reduce((sum, part) => sum + part.bytes, 0) <= EXPORT_LIMITS.fileBytes, "conversations parts");
-    return { parts, close: () => { for (const one of opened) one.close(); } };
+    return { parts, close: () => { for (const one of opened) one.close(); }, cuts: opened.flatMap((one) => one.cuts) };
   } catch (error) { for (const one of opened) one.close(); throw error; }
+}
+/**
+ * CHATGPT'S OWN SPLIT, UNPACKED (2026-10-31): conversations-000.json … -050.json loose in a folder. The folder, or any one of
+ * its parts given, is ONE export: every sibling part, in part order, the digest of their bytes in that order (as the same
+ * parts inside a zip). The run starts at 000 and has no gap, or the export is refused by the missing part's name; a folder
+ * holding loose parts AND conversations zips is ambiguous and refused. Nothing else of the folder is opened.
+ */
+const LOOSE_PART = /^conversations[-_](\d{1,6})\.json$/i;
+const looseOf = (dir) => { let names = []; try { names = readdirSync(dir); } catch { return []; } return names.filter((name) => LOOSE_PART.test(name)).sort(byPart); };
+function looseParts(dir, given) {
+  if (folderParts(dir).length > 0) throw Error(`${given} holds both loose conversations parts and conversations zips: give the one or the other`);
+  const names = looseOf(dir);
+  limit(names.length <= EXPORT_LIMITS.parts, "conversations parts");
+  contiguous(names, dir, true);
+  const opened = [];
+  try {
+    for (const name of names) { const path = join(dir, name); opened.push({ path, file: openExport(path, EXPORT_LIMITS.fileBytes) }); }
+    limit(opened.reduce((sum, one) => sum + one.file.size, 0) <= EXPORT_LIMITS.fileBytes, "conversations parts");
+    return { parts: opened.map(({ path, file }) => ({ path, bytes: file.size, chunks: () => file.chunksOf(0, file.size, file.size) })), close: () => { for (const one of opened) one.file.close(); }, cuts: [] };
+  } catch (error) { for (const one of opened) one.file.close(); throw error; }
 }
 
 /** Every conversations part, wherever the given path keeps them (a folder, the file itself, a zip, a part, or the manifest), each a source of chunks. */
@@ -210,6 +330,7 @@ function exportParts(given) {
   let stat; try { stat = statSync(path); } catch { throw Error(`export not found: ${given}`); }
   if (stat.isDirectory()) {
     if (existsSync(join(path, FILE))) path = join(path, FILE);
+    else if (looseOf(path).length > 0) return looseParts(path, given);
     else {
       const zips = folderParts(path);
       if (zips.length === 0) throw Error(`no ${FILE} in ${given}`);
@@ -217,6 +338,7 @@ function exportParts(given) {
     }
   }
   if (/\.zip$/i.test(path)) return zipParts(path, given);
+  if (LOOSE_PART.test(basename(path)) && stat.isFile()) return looseParts(dirname(path), given); // one loose part given: the export is it and its siblings
   const file = openExport(path, EXPORT_LIMITS.fileBytes);
   let manifest;
   try {
@@ -234,9 +356,103 @@ const NONSCALAR = Object.freeze({});
 /** An element whose kept fields outgrew their budget: handed over as this, counted, never built. */
 const OVERSIZED = Symbol("oversized");
 const S = "scalar", T = "text"; // a scalar kept as it is; a text kept as a string for the counter, as its byte length for the hook
+const P = "presence"; // a string that is never kept: only that it was there (`true`); any other value as a scalar would be
+/** The leaf a plan gives a string: the plan itself, or the `leaf` of a plan that also keeps an object's keys (a list of strings and objects). A function maps the string as it ends, and only what it returns is kept. */
+const leafOf = (plan) => (plan !== null && typeof plan === "object" ? plan.leaf ?? null : plan);
 const NODE = { keys: { parent: S, message: { keys: { author: { keys: { role: S } }, create_time: S, content: { keys: { parts: { items: T } } }, metadata: { keys: { model_slug: S, is_visually_hidden_from_conversation: S } } } } } };
 const CONVERSATION = { keys: { title: S, name: S, conversation_id: S, id: S, uuid: S, create_time: S, created_at: S, current_node: S, mapping: { any: NODE },
   chat_messages: { items: { keys: { sender: S, created_at: S, text: T, content: { items: { keys: { type: S, text: T } } } } } } } };
+/**
+ * AN EXPORT'S METADATA, COUNTS ONLY (owner, 2026-10-31). Asked for (`metadata: true`, the hook's way: never with the text),
+ * the walk keeps a few more fields of a ChatGPT message, each MAPPED as it is read to a word of a closed list or to nothing, so
+ * the export's own string (a favicon URL, a file's name or type, a quoted reply, a task's title, a GPT's id) is never kept:
+ * the person's attachments by category; the answer's searches, source references, reasoning and tool icons (only the fixed
+ * names globe, code, thoughts, run-command and api_tool, and an app's icon path, which says an app was used, never which);
+ * a deep-research task, a quote reply and voice by their presence. The field names are the ones the owner's own export
+ * carries (2026-10-31, read by key name only). conversation_asset_file_names.json, ads.json and chat.html are never opened.
+ */
+const ICONS = Object.freeze({ globe: "web_search", code: "code", thoughts: "reasoning", "run-command": "run_command", api_tool: "connected_app" });
+const iconOf = (name) => (Object.hasOwn(ICONS, name) ? ICONS[name] : /^\/(?:[\w-]{1,64}\/){1,8}[\w.-]{1,128}$/.test(name) ? "connected_app" : null); // a URL, a path with "//" or anything else: nothing
+const SOURCE_REFERENCES = new Set(["grouped_webpages", "grouped_webpages_model_predicted_fallback", "webpage", "webpage_extended", "sources_footnote"]);
+const FILE_TYPES = [["pdf", /^application\/pdf$/], ["image", /^image\//], ["audio", /^audio\//], ["video", /^video\//], ["spreadsheet", /^text\/(?:csv|tab-separated-values)$|spreadsheet|excel|\.sheet$|numbers$/], ["presentation", /presentation|powerpoint|keynote/],
+  ["document", /msword|wordprocessing|opendocument\.text|rtf|epub|pages$/], ["archive", /zip|tar|gzip|7z|rar|compressed/], ["data", /json|xml|yaml|toml|x-ndjson|sqlite/], ["code", /javascript|typescript|jsx|tsx|python|x-sh|x-sql|x-c|java|ruby|php|golang|x-go|rust|swift|kotlin|css|x-shellscript/], ["text", /^text\//]];
+const fileOf = (mime) => FILE_TYPES.find(([, test]) => test.test(String(mime).toLowerCase().slice(0, 128)))?.[0] ?? "other";
+const META_NODE = { keys: { parent: S, message: { keys: { author: { keys: { role: S } }, create_time: S,
+  content: { keys: { content_type: (type) => (type === "thoughts" || type === "reasoning_recap" ? "reasoning" : null), parts: { items: { keys: { content_type: (type) => (/^(?:audio_transcription|audio_asset_pointer|real_time_user_audio_video_asset_pointer)$/.test(type) ? "voice" : null) }, leaf: T } } } },
+  metadata: { keys: { model_slug: S, is_visually_hidden_from_conversation: S, attachments: { items: { keys: { mime_type: fileOf, mimeType: fileOf, is_big_paste: S } } }, search_result_groups: { items: P }, content_references: { items: { keys: { type: (type) => SOURCE_REFERENCES.has(type) || null } } },
+    tool_icons: { items: iconOf }, async_task_title: P, is_async_task_result_message: S, targeted_reply_label: P, targeted_reply_source_message_id: P, bidi_voice_mode_message: S } } } } } };
+const META_CONVERSATION = { keys: { ...CONVERSATION.keys, mapping: { any: META_NODE }, conversation_template_id: (id) => (/^g-p-/.test(id) ? "project" : /^g-/.test(id) ? "gpt" : null) } };
+/** The closed list (owner, 2026-10-31): what a conversation-day's counts may name, and nothing else. `files` and `depth` count by category. */
+export const EXPORT_METADATA = Object.freeze(["files", "web_search", "sources_cited", "reasoning", "model_switch", "code", "run_command", "connected_app", "custom_gpt_or_project", "deep_research_agent", "voice", "quote_reply", "depth"]);
+/**
+ * A MODEL'S FAMILY (owner, 2026-11-03): a switch counts between families, never ChatGPT's own routing inside one. The closed table names
+ * the slugs that carry no family in their shape; every other slug is normalised by one documented rule, never guessed: lower case;
+ * `gpt-N` or `gpt-No` (omni) is the generation, whatever follows (a point version such as -2 or .6, thinking, auto, instant, mini,
+ * a codename); `oN` is that o-series generation; anything else drops its routing suffixes (thinking, auto, instant, mini, t-mini,
+ * high, medium, low, pro, mobile, a bare number) and is its own family. A slug that names no model (auto, empty) has none.
+ */
+const FAMILY_TABLE = Object.freeze({ "text-davinci-002-render": "gpt-3.5", "text-davinci-002-render-sha": "gpt-3.5", "text-davinci-002-render-sha-mobile": "gpt-3.5", "text-davinci-002-render-paid": "gpt-3.5", auto: null });
+export function modelFamily(slug) {
+  const name = String(slug ?? "").trim().toLowerCase().slice(0, 64);
+  if (name === "") return null;
+  if (Object.hasOwn(FAMILY_TABLE, name)) return FAMILY_TABLE[name];
+  const gpt = /^gpt-(\d+)(o)?(?=$|[.-])/.exec(name);
+  if (gpt) return `gpt-${gpt[1]}${gpt[2] ?? ""}`;
+  const o = /^o(\d+)(?=$|-)/.exec(name);
+  if (o) return `o${o[1]}`;
+  let family = name, before;
+  do { before = family; family = family.replace(/-(?:thinking|auto|instant|t-mini|mini|high|medium|low|pro|mobile|\d+)$/, ""); } while (family !== before);
+  return family || null;
+}
+const DEPTH = (bytes) => (bytes < 200 ? "short" : bytes < 1000 ? "medium" : "long"); // PROPOSED bounds (bytes of the person's text as the export writes it), uncalibrated
+const list = (value) => (Array.isArray(value) ? value : []);
+/**
+ * One ChatGPT conversation's counts per UTC day, on its kept branch: an EXCHANGE is a person's turn and the answers to it, and
+ * each kind is counted once per exchange (a search run twice for one question is one); files, a model switch between answers,
+ * the person's prompts by depth and a day inside a custom GPT or a project are counted as they are. Integers, never a string.
+ */
+function chatgptMetadata(kept) {
+  const days = {}, template = kept.conversation_template_id === "gpt" || kept.conversation_template_id === "project";
+  let seen = new Set(), model = null;
+  const day = (m) => { const seconds = Number(m?.create_time ?? kept.create_time); return Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1000).toISOString().slice(0, 10) : null; };
+  const add = (counts, key, sub = null) => { if (sub) { counts[key] ??= {}; counts[key][sub] = (counts[key][sub] ?? 0) + 1; } else counts[key] = (counts[key] ?? 0) + 1; };
+  const once = (counts, key) => { if (!seen.has(key)) { seen.add(key); add(counts, key); } };
+  for (const node of chatgptBranch(kept)) {
+    const m = node?.message, role = m?.author?.role, meta = m?.metadata && typeof m.metadata === "object" ? m.metadata : {}, at = day(m);
+    if ((role !== "user" && role !== "assistant") || meta.is_visually_hidden_from_conversation || at === null) continue;
+    const counts = (days[at] ??= {});
+    if (template) counts.custom_gpt_or_project = 1;
+    const parts = list(m.content?.parts);
+    if (role === "user") {
+      seen = new Set();
+      for (const file of list(meta.attachments)) if (file && typeof file === "object" && file !== NONSCALAR && file.is_big_paste !== true) add(counts, "files", file.mime_type ?? file.mimeType ?? "other");
+      if (meta.bidi_voice_mode_message === true || parts.some((part) => part?.content_type === "voice")) once(counts, "voice");
+      if (meta.targeted_reply_label === true || meta.targeted_reply_source_message_id === true) once(counts, "quote_reply");
+      const bytes = parts.reduce((sum, part) => sum + (typeof part === "number" ? part : 0), 0);
+      if (bytes > 0) add(counts, "depth", DEPTH(bytes));
+      continue;
+    }
+    const family = typeof meta.model_slug === "string" ? modelFamily(meta.model_slug) : null; // a switch between families, never routing inside one
+    if (family !== null) { if (model !== null && family !== model) add(counts, "model_switch"); model = family; }
+    const icons = new Set(list(meta.tool_icons).filter((icon) => typeof icon === "string"));
+    if (list(meta.search_result_groups).length > 0 || icons.has("web_search")) once(counts, "web_search");
+    if (list(meta.content_references).some((reference) => reference?.type === true)) once(counts, "sources_cited");
+    if (m.content?.content_type === "reasoning" || icons.has("reasoning")) once(counts, "reasoning");
+    for (const kind of ["code", "run_command", "connected_app"]) if (icons.has(kind)) once(counts, kind);
+    if (meta.async_task_title === true || meta.is_async_task_result_message === true) once(counts, "deep_research_agent");
+    if (meta.bidi_voice_mode_message === true) once(counts, "voice");
+  }
+  for (const [at, counts] of Object.entries(days)) if (Object.keys(counts).length === 0) delete days[at];
+  return days;
+}
+/** Counts added into totals, category by category. */
+function addCounts(totals, counts) {
+  for (const [key, value] of Object.entries(counts)) {
+    if (typeof value === "number") totals[key] = (totals[key] ?? 0) + value;
+    else { totals[key] ??= {}; for (const [sub, n] of Object.entries(value)) totals[key][sub] = (totals[key][sub] ?? 0) + n; }
+  }
+  return totals;
+}
 const malformed = () => { throw Object.assign(Error("malformed"), { malformed: true }); };
 const NUMBER = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 const VALUE = 0, KEY = 1, COLON = 2, AFTER = 3, STRING = 4, TOKEN = 5, DONE = 6;
@@ -272,7 +488,7 @@ function walker(plan, { text, budget, onElement }) {
     vPlan = kind === "[" ? top().plan?.items ?? null : null; state = kind === "{" ? KEY : VALUE;
   };
   const close = (kind) => { const frame = stack.pop(); if (frame.kind !== kind) malformed(); if (frame.root) state = DONE; else store(frame.out ?? NONSCALAR, 0); };
-  const beginString = (key) => { state = STRING; sKey = key; sKeep = key ? top().out !== null : vPlan === S || (vPlan === T && text); sRaw = sKeep ? [] : null; sLen = 0; sEsc = 0; sEscaped = false; };
+  const beginString = (key) => { const leaf = key ? null : leafOf(vPlan); state = STRING; sKey = key; sKeep = key ? top().out !== null : leaf === S || (leaf === T && text) || typeof leaf === "function"; sRaw = sKeep ? [] : null; sLen = 0; sEsc = 0; sEscaped = false; };
   /** Kept bytes of the string in flight: a key past its bound stops being one; a value past the budget takes the element with it. */
   const take = (chunk, from, to) => {
     sLen += to - from;
@@ -290,8 +506,11 @@ function walker(plan, { text, budget, onElement }) {
       else if (frame.plan?.keys && key !== null && Object.hasOwn(frame.plan.keys, key)) { frame.key = key; vPlan = frame.plan.keys[key]; }
       else { frame.key = null; vPlan = null; }
       state = COLON;
-    } else if (sKeep) store(decode(), 0);
-    else store(vPlan === T ? sLen : NONSCALAR, 8); // a text the hook never reads: its byte length says whether there was one
+    } else {
+      const leaf = leafOf(vPlan);
+      if (sKeep) store(typeof leaf === "function" ? leaf(decode()) : decode(), 0); // a mapped string: only the mapper's answer is kept
+      else store(leaf === T ? sLen : leaf === P ? true : NONSCALAR, 8); // a text the hook never reads: its byte length says whether there was one
+    }
   };
   const finishToken = () => {
     let value;
@@ -396,15 +615,20 @@ const transcriptLine = ({ type, timestamp, model, text }) => ({ type, timestamp,
  * one without an id, marked); `report` receives the path and vendor before the first conversation, the digest, the counts
  * and the number of parts when the stream ends. Counts only on stderr.
  */
-async function* exportRecords(given, { expect = null, excluded = () => false, skipped = null, text = false, report = null } = {}) {
-  const { parts, close } = exportParts(given);
+async function* exportRecords(given, { expect = null, excluded = () => false, skipped = null, text = false, report = null, metadata = false } = {}) {
+  if (metadata && text) throw Error("an export's metadata is counted without the text, never with it");
+  const totals = {};
+  const { parts, close, cuts = [] } = exportParts(given);
   const path = parts[0].path, digest = createHash("sha256");
-  let vendor = null, count = 0, oversized = 0, bytes = 0, next = PROGRESS_BYTES, offset = 0;
-  if (report) { report.path = path; report.vendor = expect; report.digest = null; report.conversations = 0; report.oversized = 0; report.parts = parts.length; }
+  let vendor = null, count = 0, oversized = 0, empty = 0, bytes = 0, next = PROGRESS_BYTES, offset = 0;
+  if (report) { report.path = path; report.vendor = expect; report.digest = null; report.conversations = 0; report.oversized = 0; report.empty = 0; report.parts = parts.length; report.cut = cuts.length > 0 ? cuts : null; }
   const one = (kept, index) => {
     limit(count < EXPORT_LIMITS.conversations, "conversation count");
     count += 1;
     if (kept === OVERSIZED) { oversized += 1; return { vendor, oversized: true, lines: [] }; }
+    // AN EMPTY ELEMENT (2026-10-31: one `{}` in the owner's conversations-043.json refused the whole export): none of the fields read, so
+    // it is counted and left out and decides no vendor; an export of nothing else is refused below as no export at all.
+    if (kept && typeof kept === "object" && kept.constructor === Object && kept !== NONSCALAR && Object.keys(kept).length === 0) { empty += 1; return { vendor, empty: true, lines: [] }; }
     const shape = kept && typeof kept === "object" && kept !== NONSCALAR ? (kept.mapping instanceof Map || kept.mapping === NONSCALAR ? "chatgpt" : Array.isArray(kept.chat_messages) ? "claude-web" : "unknown") : "unknown";
     if (vendor === null) vendor = shape;
     if (shape === "unknown" || shape !== vendor) throw Error(`${path} is neither a ChatGPT nor a Claude export (or mixes the two)`);
@@ -412,12 +636,14 @@ async function* exportRecords(given, { expect = null, excluded = () => false, sk
     if (report) report.vendor = vendor;
     const title = String((vendor === "chatgpt" ? kept.title : kept.name) ?? "");
     if (excluded(title)) { skipped?.push(title.slice(0, 40)); return { vendor, excluded: true, lines: [] }; }
-    return { vendor, id: String((vendor === "chatgpt" ? kept.conversation_id ?? kept.id : kept.uuid) ?? `#${index}`), lines: vendor === "chatgpt" ? chatgptLines(kept, text) : claudeLines(kept, text) };
+    const record = { vendor, id: String((vendor === "chatgpt" ? kept.conversation_id ?? kept.id : kept.uuid) ?? `#${index}`), lines: vendor === "chatgpt" ? chatgptLines(kept, text) : claudeLines(kept, text) };
+    if (metadata) { record.metadata = vendor === "chatgpt" ? chatgptMetadata(kept) : null; for (const counts of Object.values(record.metadata ?? {})) addCounts(totals, counts); } // a Claude export carries no such fields: null, never zeros
+    return record;
   };
   try {
     for (const part of parts) {
       let queue = [], seen = 0;
-      const walk = walker(CONVERSATION, { text, budget: text ? EXPORT_LIMITS.conversationTextBytes : EXPORT_LIMITS.conversationBytes, onElement: (kept, index) => queue.push([kept, offset + index]) });
+      const walk = walker(metadata ? META_CONVERSATION : CONVERSATION, { text, budget: text ? EXPORT_LIMITS.conversationTextBytes : EXPORT_LIMITS.conversationBytes, onElement: (kept, index) => queue.push([kept, offset + index]) });
       const drain = function* () { const due = queue; queue = []; for (const [kept, index] of due) { seen = index + 1 - offset; yield one(kept, index); } };
       try {
         for await (const chunk of part.chunks()) {
@@ -435,19 +661,20 @@ async function* exportRecords(given, { expect = null, excluded = () => false, sk
       offset += seen;
     }
   } finally { close(); }
-  if (report) { report.vendor = vendor ?? expect; report.digest = digest.digest("hex"); report.conversations = count; report.oversized = oversized; }
+  if (vendor === null && empty > 0) throw Error(`${path} is neither a ChatGPT nor a Claude export (or mixes the two)`);
+  if (report) { report.vendor = vendor ?? expect; report.digest = digest.digest("hex"); report.conversations = count; report.oversized = oversized; report.empty = empty; if (metadata) report.metadata = vendor === "chatgpt" ? totals : null; }
 }
 
 /** One export, read whole but compact: its vendor by shape, one record per conversation (its kept lines; none for an excluded or oversized one), and the digest of its bytes (what `sent` is remembered by). */
-export async function readExport(given, expect = null, { excluded = () => false, skipped = null, text = false } = {}) {
+export async function readExport(given, expect = null, { excluded = () => false, skipped = null, text = false, metadata = false } = {}) {
   const report = {}, conversations = [];
   let kept = 0;
-  for await (const record of exportRecords(given, { expect, excluded, skipped, text, report })) {
-    kept += 64 + (record.id?.length ?? 0) + record.lines.reduce((sum, line) => sum + 64 + (line.model?.length ?? 0) + (line.text?.length ?? 0), 0);
+  for await (const record of exportRecords(given, { expect, excluded, skipped, text, report, metadata })) {
+    kept += 64 + (record.id?.length ?? 0) + Object.keys(record.metadata ?? {}).length * 256 + record.lines.reduce((sum, line) => sum + 64 + (line.model?.length ?? 0) + (line.text?.length ?? 0), 0);
     limit(kept <= EXPORT_LIMITS.keptBytes, "kept bytes");
     conversations.push(record);
   }
-  return { vendor: report.vendor, conversations, digest: report.digest, path: report.path, parts: report.parts, oversized: report.oversized };
+  return { vendor: report.vendor, conversations, digest: report.digest, path: report.path, parts: report.parts, oversized: report.oversized, empty: report.empty, cut: report.cut, ...(metadata ? { metadata: report.metadata } : {}) };
 }
 
 /**
@@ -457,11 +684,11 @@ export async function readExport(given, expect = null, { excluded = () => false,
  * call. `text` hands the counter the messages' text (read here, for its rubric); the hook leaves it out and gets clocks,
  * roles and a model name. `given` is a path, or an export `readExport` already returned; `report` is filled as above.
  */
-export async function* exportSessions(given, { expect = null, excluded = () => false, skipped = null, text = false, report = null } = {}) {
-  const records = typeof given === "string" ? exportRecords(given, { expect, excluded, skipped, text, report }) : given.conversations;
-  for await (const { vendor, id, lines } of records) {
+export async function* exportSessions(given, { expect = null, excluded = () => false, skipped = null, text = false, report = null, metadata = false } = {}) {
+  const records = typeof given === "string" ? exportRecords(given, { expect, excluded, skipped, text, report, metadata }) : given.conversations;
+  for await (const { vendor, id, lines, metadata: counts = null } of records) {
     if (lines.length === 0) continue; // excluded, left out as too large, or without a message
-    yield { key: `${vendor === "chatgpt" ? "chatgpt" : "claude.ai"}:${id}`, projectDir: vendor === "chatgpt" ? "chatgpt" : "claude-ai", basename: vendor === "chatgpt" ? "chatgpt" : "claude.ai", vendor, id, lines: lines.map(transcriptLine) };
+    yield { key: `${vendor === "chatgpt" ? "chatgpt" : "claude.ai"}:${id}`, projectDir: vendor === "chatgpt" ? "chatgpt" : "claude-ai", basename: vendor === "chatgpt" ? "chatgpt" : "claude.ai", vendor, id, lines: lines.map(transcriptLine), ...(metadata ? { metadata: counts } : {}) };
   }
 }
 
@@ -491,7 +718,7 @@ export async function findExports(dir = join(homedir(), "Downloads")) {
   for (const name of names.sort()) {
     const path = join(root, name);
     let stat; try { stat = statSync(path); } catch { continue; }
-    const candidate = stat.isDirectory() ? existsSync(join(path, FILE)) || folderParts(path).length > 0 : (/\.zip$/i.test(name) && !OTHER_PART.test(name)) || name === FILE;
+    const candidate = stat.isDirectory() ? existsSync(join(path, FILE)) || folderParts(path).length > 0 || looseOf(path).length > 0 : (/\.zip$/i.test(name) && !OTHER_PART.test(name)) || name === FILE;
     if (!candidate) continue;
     try {
       const { vendor, conversations, digest } = await readExport(path);

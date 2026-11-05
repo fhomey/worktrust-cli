@@ -802,7 +802,7 @@ function callOutcomesOf(messages) {
 /** A digest of this hook and the readers beside it, as installed: the door records it beside each line as a signal of which code ran, never as proof. */
 const selfDigest = (() => { try { const here = dirname(fileURLToPath(import.meta.url)); const hash = createHash("sha256"); for (const name of ["log-session.mjs", ...READER_FILES].sort()) { try { hash.update(`${name}\0`).update(readFileSync(join(here, name))).update("\0"); } catch { hash.update(`${name}\0missing\0`); } } return hash.digest("hex"); } catch { return null; } })();
 const CLI_VERSION_SENT = /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}$/.test(process.env.WORKTRUST_CLI_VERSION ?? "") ? process.env.WORKTRUST_CLI_VERSION : null; // `worktrust.mjs` hands its own version to the hook it starts
-
+const DOOR_MODE_SENT = CLI_VERSION_SENT && /^(hours_only|work_lines)(\.[0-9]{9,11})?$/.test(process.env.WORKTRUST_DOOR_MODE ?? "") ? process.env.WORKTRUST_DOOR_MODE : null; // 0.10.37: `mcp off|on`, a closed word and its moment beside the version
 /**
  * THE TOKENS, AND THE CACHE HALVES APART (roadmap 16). Claude Code's usage block carries input_tokens, output_tokens,
  * cache_creation_input_tokens and cache_read_input_tokens. `tokensIn` stays what it was — new input plus what was written
@@ -919,13 +919,11 @@ function payloadFor(stretch) {
  * adding a twin. Returns how many entries were accepted, so a caller can advance a watermark over
  * exactly what landed. `announce` because one caller is a person watching a terminal and the other
  * is a hook holding a session's exit open.
- */
-/**
+ *
  * THE BATCHES: at most two hundred lines each. `byDay` (an export, 2026-10-10) never splits a UTC day across two batches unless
  * one day alone exceeds the cap: the door's receipt counts per day what it replaced and how many AI-app lines lie there, and a
  * day in two batches would be counted twice.
- */
-/**
+ *
  * A batch stays under the door's ceilings for one history call (2026-10-23, docs/INTAKE-HARDENING.md): 2 MB a call and 1.5 MB of
  * timelines a call, each with room for the envelope. A timeline (0.10.20) is up to 200 KB a line, so a batch is cut by bytes
  * and by timeline bytes as well as by count. Until 0.10.28 the cut was 3.5 MB, under the door's 4.5 MB outer bound only.
@@ -957,11 +955,11 @@ function batchesOf(group, byDay, limit = BATCH_LIMIT) {
 }
 /** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
 const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0, staged: 0, kept: 0, restored: 0, untimed: 0 }; // 0.10.27: staged, the batches WorkTrust keeps on its server, and kept, their lines // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
-const noteReceipt = (answer) => {
+const noteReceipt = (answer, run = null) => {
   try {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
     const receipt = JSON.parse(json?.result?.content?.[0]?.text ?? "{}");
-    for (const key of Object.keys(RECEIPTS)) RECEIPTS[key] += Number(receipt[key]) || 0;
+    for (const key of Object.keys(RECEIPTS)) RECEIPTS[key] += Number(receipt[key]) || 0; if (receipt.staged === true) RUNS.heard(run, receipt);
     // THE QUEUE (0.10.32): the receipt of the batch that completes a run says where the run waits; the last one seen is kept.
     const queued = receipt.queued;
     if (queued && Number.isInteger(queued.position) && queued.position >= 1 && Number.isFinite(Number(queued.eta_minutes)) && Number(queued.eta_minutes) >= 0) QUEUED.at = { position: queued.position, eta_minutes: Math.max(1, Math.ceil(Number(queued.eta_minutes))) };
@@ -969,6 +967,7 @@ const noteReceipt = (answer) => {
 };
 /** Where the last completed run waits in WorkTrust's queue (0.10.32): null when no receipt said so (an older server, or not complete yet). */
 const QUEUED = { at: null };
+const RUNS = (await import("./history-outbox.mjs").then((m) => m.runLedger?.(), () => null)) ?? { heard() {}, held() {}, refused() {}, state: () => null }; // A RUN IS DONE WHEN WORKTRUST HOLDS ALL OF IT (2026-10-31): each run's declared batches against the receipts; a copy without the outbox (preserve) sends no run
 /** Only explicit durable receipts authorize a checkpoint. HTTP 200 alone says nothing. */
 function confirmedReceipt(answer, expectedCount = null) {
   try {
@@ -1158,7 +1157,7 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
   const handLater = (item) => { const row = later.get(item.target.token) ?? { target: item.target, ids: [] }; row.ids.push(historyIdOf(item.target, item.body, item.source)); later.set(item.target.token, row); };
   for (const item of plan) {
     const { source, target, batch, body } = item;
-    if (stopped.has(source)) continue;
+    if (stopped.has(source)) { HISTORY_DELIVERY.waiting += batch.length; continue; } // 2026-10-31: held back behind its AI app's failed batch, waiting in the outbox, and said
     if (item.run && stoppedRuns.has(item.run.id)) { handLater(item); continue; }
     const number = (numbers.get(source) ?? 0) + 1; numbers.set(source, number);
     for (const entry of batch) retainMeasurement(entry, source);
@@ -1166,7 +1165,8 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
     let queued;
     try { queued = queuedHistory(target, body, source); }
     catch { console.error("Pending history could not be stored safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue; }
-    if (queued.status === "acknowledged" && !byDay) { accepted += batch.length; RECEIPTS.alreadyHeld += batch.length; continue; }
+    if (queued.status === "closed") { HISTORY_DELIVERY.refused += batch.length; RUNS.refused(item.run); continue; } // 2026-10-31: let go on an earlier send is refused, never "already held"
+    if (queued.status === "acknowledged" && !byDay) { accepted += batch.length; RECEIPTS.alreadyHeld += batch.length; RUNS.held(item.run); continue; }
     if (queued.status === "replaced" || queued.status === "oversize") { handLater(item); if (item.run) stoppedRuns.add(item.run.id); continue; }
     if (queued.status === "review" && !flag("retry-review")) { HISTORY_DELIVERY.review += batch.length; continue; }
     if (queued.status === "waiting") { HISTORY_DELIVERY.waiting += batch.length; continue; }
@@ -1177,19 +1177,19 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
       catch {
         const refusal = historyRefusal(text, response);
         // A run WorkTrust closed (seven days without its last batch, another computer's key) is final: kept here it would wait forever.
-        if (refusal.reason === "closed") { queued.close(); HISTORY_DELIVERY.refused += batch.length; if (refusal.said) HISTORY_DELIVERY.said = refusal.said; continue; }
+        if (refusal.reason === "closed") { queued.close(); HISTORY_DELIVERY.refused += batch.length; if (refusal.said) HISTORY_DELIVERY.said = refusal.said; RUNS.refused(item.run); continue; }
         if (refusal.reason === "oversize") { queued.oversize(); handLater(item); if (item.run) stoppedRuns.add(item.run.id); continue; }
         queued.defer(refusal.reason, refusal.seconds);
         if (refusal.reason === "review") { HISTORY_DELIVERY.review += batch.length; continue; }
         HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue;
       }
-      queued.confirm(batch.length); accepted += batch.length; noteReceipt(text);
+      queued.confirm(batch.length); accepted += batch.length; noteReceipt(text, item.run);
       if (announce) console.log(`batch ${number}: received ${batch.length}`);
     } catch { queued.defer("unconfirmed"); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); }
   }
   for (const { target, ids } of later.values()) {
     try {
-      const totals = await resumeHistory(target, { only: ids, cutter: outboxCut, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target) });
+      const totals = await resumeHistory(target, { only: ids, cutter: outboxCut, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, closed: RUNS.refused, send: sendQueued(target) });
       accepted += totals.received + totals.held; RECEIPTS.alreadyHeld += totals.held;
       HISTORY_DELIVERY.waiting += totals.waiting; HISTORY_DELIVERY.review += totals.review; HISTORY_DELIVERY.refused += totals.refused; if (totals.said) HISTORY_DELIVERY.said = totals.said;
       if (announce && totals.split) console.log(`${totals.split} batch${totals.split === 1 ? "" : "es"} too large for one call: cut smaller and sent again in pieces`);
@@ -1215,7 +1215,7 @@ async function resendPending(limit) {
   } catch (error) { if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`); }
 }
 
-/** Whether the door's import_history takes `from_archive` (0.8.0): asked with tools/list, never assumed. */
+/** Whether the door's import_history takes `from_archive` (0.8.0), asked with tools/list; a door that no longer LISTS import_history to a computer's key (2026-10-31) is one that takes it. */
 async function doorKnowsArchive(target) {
   if (!target) return false;
   try {
@@ -1224,7 +1224,7 @@ async function doorKnowsArchive(target) {
     const text = await response.text();
     const json = JSON.parse(text.trim().startsWith("{") ? text : text.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
     const tool = json?.result?.tools?.find((one) => one.name === "import_history");
-    return Boolean(tool?.inputSchema?.properties?.entries?.items?.properties?.from_archive);
+    return tool ? Boolean(tool.inputSchema?.properties?.entries?.items?.properties?.from_archive) : Array.isArray(json?.result?.tools) && json.result.tools.some((one) => one.name === "log_work");
   } catch { return false; }
 }
 
@@ -1242,7 +1242,7 @@ const proofFor = (url, body) => {
  * on this computer, and the door names a coupling's clients by the user-agent it hears (mcp_identify's
  * agents_seen). An Antigravity line names Antigravity: the product name, nothing of the work.
  */
-const clientOf = (source, always = false) => (CLI_VERSION_SENT || always || source === "antigravity" || DATABASE_CLIENTS.includes(source) || EXPORT_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)${CLI_VERSION_SENT ? ` worktrust-cli/${CLI_VERSION_SENT}` : ""}` } : {});
+const clientOf = (source, always = false) => (CLI_VERSION_SENT || always || source === "antigravity" || DATABASE_CLIENTS.includes(source) || EXPORT_CLIENTS.includes(source) ? { "user-agent": `${source ?? "claude"}/hook (worktrust-hook)${CLI_VERSION_SENT ? ` worktrust-cli/${CLI_VERSION_SENT}` : ""}${DOOR_MODE_SENT ? ` worktrust-mode/${DOOR_MODE_SENT}` : ""}` } : {});
 
 async function send(door, payload) {
   retainMeasurement(payload, entrySource.get(payload));
@@ -1421,7 +1421,10 @@ async function exportEntries() {
       }
     }
     const days = [...report.days].sort();
-    reports.push({ path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations, days: days.length, first: days[0] ?? null, last: days.at(-1) ?? null, oversized: read.oversized }); // no hours (0.10.20): WorkTrust computes them on arrival and the receipt says
+    // A DOWNLOAD CUT OFF (2026-10-31): the reader read the conversations parts the archive held whole before the cut, and says
+    // where it stopped; the person is told every time, so a partial export is never shown as the whole (counts and part names only).
+    for (const cut of read.cut ?? []) process.stderr.write(`export: the archive is cut off (${cut.where}) after ${cut.last}: ${cut.parts} conversations part${cut.parts === 1 ? "" : "s"} read whole, ${read.conversations} conversations; nothing past the cut is read, so this is not the whole export\n`);
+    reports.push({ path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations, days: days.length, first: days[0] ?? null, last: days.at(-1) ?? null, oversized: read.oversized, ...(read.empty ? { empty: read.empty } : {}), ...(read.cut ? { parts: read.parts, cut: read.cut } : {}) }); // no hours (0.10.20): WorkTrust computes them on arrival and the receipt says
   }
   const seen = new Set();
   return { entries: entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at)), reports };
@@ -1759,8 +1762,8 @@ if (flag("history")) {
   if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
   // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
   if (!fromExports && !fromFolder) await settleReadFailures(door ?? codexDoor); // 0.10.32: a transcript that could not be read is counted and told
-  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: sending.length, unreadable: READ_FAILURES.n, ...RECEIPTS, delivery: HISTORY_DELIVERY, ...(staged ? { days: { compared: COMPARED.asked ? COMPARED.days : null, changed: COMPARED.asked ? COMPARED.changed : null }, queued: QUEUED.at } : {}) })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
-  return await exitFlushed(accepted === sending.length ? 0 : 1);
+  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: sending.length, unreadable: READ_FAILURES.n, ...RECEIPTS, delivery: HISTORY_DELIVERY, ...(staged ? { days: { compared: COMPARED.asked ? COMPARED.days : null, changed: COMPARED.asked ? COMPARED.changed : null }, queued: QUEUED.at, run: RUNS.state() } : {}) })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
+  return await exitFlushed(accepted === sending.length && RUNS.state()?.whole !== false ? 0 : 1); // 2026-10-31: a run WorkTrust does not hold whole fails too
 }
 
 const input = hookInput();

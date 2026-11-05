@@ -638,9 +638,14 @@ const { exportSessions = null } = (await import("./chat-exports.mjs").catch(() =
 // 0.10.18: the export streams, one conversation in memory at a time, with its text (`text: true`: this rubric reads it here).
 async function* vendorExportSessions(paths, expect) {
   if (paths.length > 0 && !exportSessions) throw Error("chat-exports.mjs is not beside this file: a data export cannot be read");
-  for (const given of paths) for await (const session of exportSessions(given, { expect, excluded, skipped: skippedConversations, text: true })) {
-    if (expect === "chatgpt") chatgptConversations += 1; else exportConversations += 1;
-    yield session;
+  for (const given of paths) {
+    const report = {};
+    for await (const session of exportSessions(given, { expect, excluded, skipped: skippedConversations, text: true, report })) {
+      if (expect === "chatgpt") chatgptConversations += 1; else exportConversations += 1;
+      yield session;
+    }
+    // A DOWNLOAD CUT OFF (2026-10-31): the parts before the cut are counted, and the person is told it is not the whole export.
+    for (const cut of report.cut ?? []) process.stderr.write(`export: the archive is cut off (${cut.where}) after ${cut.last}: ${cut.parts} conversations part${cut.parts === 1 ? "" : "s"} read whole, ${report.conversations} conversations; nothing past the cut is read, so this is not the whole export\n`);
   }
 }
 async function* claudeExportSessions() { yield* vendorExportSessions(EXPORTS, "claude-web"); }

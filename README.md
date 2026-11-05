@@ -1,5 +1,24 @@
 # worktrust
 
+## 0.10.36: large and cut-off ChatGPT exports; hours only with `mcp off`; a re-measure reported whole or not at all
+
+`npx worktrust history --export` now reads a ChatGPT export of any size: a zip64 archive (an export over 4 GB), and a
+download that stopped part way, which is read up to the last whole `conversations-NNN.json` part and said as such ("The
+archive was cut off after conversations-NNN.json; this is not the whole export"), so you decide whether to send what was
+read before the cut. ChatGPT's loose `conversations-NNN.json` parts, a folder of them or one part beside its siblings, are
+read as one export in part order; a missing part is refused by its name. An empty element in an export is counted and
+left out instead of refusing the whole export. What is sent from an export is unchanged: hours and tokens per day, never
+text. (The reader can also count an export's file kinds, searches and model switches between model families, but nothing
+asks for them and nothing of them is sent.)
+
+`npx worktrust mcp off` keeps the hours and takes the WorkTrust door out of every AI app here; `mcp on` puts it back (see
+"Hours only, or also work lines" below). A choice made for this computer in Sources › Devices is done by the computer
+at its next session. `update` no longer takes Codex's door out on every second run at the same version.
+
+A re-measure says "Re-measured" only when WorkTrust holds every batch of the run; otherwise it says how many it holds and
+gives WorkTrust's own reason for a refused batch, and the session hook exits with an error. What is measured is
+unchanged, so the measure rules stay 3 and no re-measure is offered.
+
 ## 0.10.35: Gemini CLI read; every earlier line can name its AI app
 
 Gemini CLI's sessions are read in place, as Copilot's are: the files Gemini CLI records itself under
@@ -287,8 +306,22 @@ npx worktrust@latest history --from-folder <dir>   your own copy of an AI app's 
 npx worktrust codex         let Codex wake the session hook (asks first)
 npx worktrust antigravity   let Antigravity wake the session hook (asks first)
 npx worktrust@latest status        what is coupled here
+npx worktrust mcp off       hours only: the WorkTrust door out of every AI app here, so nothing of WorkTrust loads into
+                            your sessions; the session hook keeps measuring your hours, and update leaves the door out
+npx worktrust mcp on        the door back in: your AI may also log finished work (about 40 tokens per session); nothing
+                            from the time it was off is sent
+npx worktrust mcp           which of the two this computer is in (and whether a claude.ai WorkTrust connector also loads)
 npx worktrust@latest disconnect    take it out again (shows the plan, asks first)
 ```
+
+**Hours only, or also work lines.** Your passport's hours come from the session hook, which reads your AI apps' own
+session files; it needs no WorkTrust door in the apps. The door adds one thing: your AI's own `log_work` line at the end
+of a piece of work, and for that its short instruction (and, in apps that load every tool up front, its tool
+definitions) is loaded into every session. `connect` asks which you want (Enter keeps the door, as before); an update
+asks once on a computer coupled before. The choice lives in `~/.worktrust/door.json` (0600). The hook tells WorkTrust
+the mode beside the CLI version, one word, so Sources › Devices can show "work lines off" instead of an unexplained gap.
+If Claude Code has also been connected to a WorkTrust connector of your claude.ai account, the CLI says so once: keep
+the local door (it carries this computer's key) and remove the other at claude.ai/customize/connectors.
 
 ## Keep your history
 

@@ -260,7 +260,9 @@ for (const client of CLIENTS) {
   }
   const text = existsSync(client.file) ? readFileSync(client.file, "utf8") : "";
   // With the bridge, coupled means the bridge is in AND no entry with a key in it is left beside it.
-  const already = client.shape === "yaml" && !REMOVE ? (BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE)) && (!client.plugin || goosePluginStands()) : text.includes(URL_)) && yamlConfig(client, text, false) === text : REMOVE ? text.includes(URL_) || /worktrust(?:-launch)?\.(?:mjs|py)/.test(text) : BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE).slice(1, -1)) && !text.includes(URL_) : text.includes(URL_);
+  // A TOML'S SERVER TABLES ONLY (2026-10-31): Codex's `notify` names the same launcher, and read as "already there" it left Codex doorless.
+  const doorText = client.shape === "toml" ? (text.match(/\n?\[mcp_servers\.[^\n]*\][\s\S]*?(?=\n\[|$)/g) ?? []).join("\n") : text;
+  const already = client.shape === "yaml" && !REMOVE ? (BRIDGE !== undefined ? text.includes(JSON.stringify(BRIDGE)) && (!client.plugin || goosePluginStands()) : text.includes(URL_)) && yamlConfig(client, text, false) === text : REMOVE ? doorText.includes(URL_) || /worktrust(?:-launch)?\.(?:mjs|py)/.test(doorText) : BRIDGE !== undefined ? doorText.includes(JSON.stringify(BRIDGE).slice(1, -1)) && !doorText.includes(URL_) : doorText.includes(URL_);
   // THE WAY OUT, ON THE MACHINE. Uncoupling in the app ends the TOKEN; the config that names the
   // door stays behind on every client here, so the next person to read this file believes the
   // machine is coupled. `--remove` takes the entry out; the account side is a separate act and

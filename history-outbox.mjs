@@ -39,7 +39,9 @@ export function queuedHistory(target,body,source) {
  const request=join(root,id+'.request.json'),ack=join(root,id+'.ack.json'),state=join(root,id+'.state.json');
  const acknowledged=read(ack);
  // REPLACED (0.10.29): a batch cut into smaller ones is acknowledged by its pieces; the caller follows them.
- if(acknowledged?.id===id)return {id,status:Array.isArray(acknowledged.replacedBy)?'replaced':'acknowledged',replacedBy:Array.isArray(acknowledged.replacedBy)?acknowledged.replacedBy.filter(child=>/^[a-f0-9]{64}$/.test(child)):[],lines:Number.isInteger(acknowledged.lines)?acknowledged.lines:null,confirm(){},close(){},defer(){},oversize(){},replace(){return [];}};
+ // CLOSED (2026-10-31): a batch WorkTrust refused for good is let go here, never "acknowledged": WorkTrust holds nothing of it,
+ // so a send that finds it says it was refused, never "already held" (CLI 0.10.35 counted it held and reported a run whole).
+ if(acknowledged?.id===id)return {id,status:Array.isArray(acknowledged.replacedBy)?'replaced':acknowledged.closedAt?'closed':'acknowledged',replacedBy:Array.isArray(acknowledged.replacedBy)?acknowledged.replacedBy.filter(child=>/^[a-f0-9]{64}$/.test(child)):[],lines:Number.isInteger(acknowledged.lines)?acknowledged.lines:null,confirm(){},close(){},defer(){},oversize(){},replace(){return [];}};
  const current=read(state);
  reservation(root,()=>{
  if(!existsSync(request)) {
@@ -73,9 +75,10 @@ export function historyRefusal(text,response) {
  // A staged run WorkTrust closed or refused (0.10.27: another computer's key, seven days without its last batch) is final.
  const closed=rpc?.id===1 && String(rpc?.error?.message??'').startsWith('history run refused:');
  // A 413 (0.10.29) is the batch, not the queue: it is cut smaller, never sent again as it was, and nothing else waits for it.
- // THE SERVER'S OWN SENTENCE (0.10.35): a re-measure refused for older measure rules says why and the one command that helps;
- // the CLI prints it instead of guessing (one line, control characters taken out, at most 400 characters).
- const said=closed&&rpc?.error?.data?.reason==='measure_rules'?String(rpc.error.message).replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').slice(0,400):null;
+ // THE SERVER'S OWN SENTENCE (0.10.35; every final refusal since 2026-10-31): why WorkTrust refused the batch, printed instead of
+ // a guess (0.10.35 said "it missed a batch for seven days" of a batch refused for its lines). One line, control characters
+ // taken out, at most 400 characters.
+ const said=closed?String(rpc.error.message).replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').slice(0,400):null;
  return {reason:review?'review':closed?'closed':response.status===413?'oversize':response.status===429?'capacity':'unconfirmed',seconds:Number.isFinite(raw)&&raw>0?Math.min(MAX_RETRY_SECONDS,raw):0,...(said?{said}:{})};
 }
 
@@ -90,7 +93,7 @@ export function historyRefusal(text,response) {
  * (`refused`: WorkTrust keeps the earlier lines counting, and `npx worktrust@latest history` measures again). A single line too
  * large for a call is let go the same way. `only` limits a pass to those batches (and their pieces): the send that just queued them.
  */
-export async function resumeHistory(target, {send, confirmed, note, retryReview=false, dry=false, limit=Infinity, cutter=null, only=null}) {
+export async function resumeHistory(target, {send, confirmed, note, closed=null, retryReview=false, dry=false, limit=Infinity, cutter=null, only=null}) {
  const root=join(homedir(),'.worktrust','history-outbox'),scope=scopeOf(target);
  const totals={received:0,review:0,waiting:0,batches:0,refused:0,held:0,split:0};let paused=null,sent=0;
  if(!existsSync(root))return totals;
@@ -113,7 +116,8 @@ export async function resumeHistory(target, {send, confirmed, note, retryReview=
  const marked=(id)=>read(join(root,id+'.state.json'))?.status==='oversize';
  const whole=(batches)=>batches.length>0&&batches.length===batches[0].run.count&&batches.every((item,index)=>item.run.index===index&&item.run.count===batches[0].run.count);
  const queue=only?[...only]:[...ids],seen=new Set();
- const letGo=(batches)=>{for(const batch of batches){queuedHistory(target,batch.body,batch.source).close('oversize');items.set(batch.id,null);seen.add(batch.id);totals.refused+=batch.entries.length;}return null;};
+ // `closed` (2026-10-31): told which run lost a batch for good, so the send never reports that run whole.
+ const letGo=(batches)=>{for(const batch of batches){queuedHistory(target,batch.body,batch.source).close('oversize');items.set(batch.id,null);seen.add(batch.id);totals.refused+=batch.entries.length;closed?.(batch.run,batch.entries.length);}return null;};
  // Cut smaller: answers the pieces' ids, or null when the batch (or its run) can never fit and was let go.
  const resplit=(item,queued,tighter)=>{
   if(item.run){
@@ -134,7 +138,7 @@ export async function resumeHistory(target, {send, confirmed, note, retryReview=
   if(ack?.id===id){if(Array.isArray(ack.replacedBy))queue.unshift(...ack.replacedBy.filter(child=>/^[a-f0-9]{64}$/.test(child)));else if(only&&Number.isInteger(ack.lines))totals.held+=ack.lines;continue;}
   const item=load(id);if(!item)continue;
   const queued=queuedHistory(target,item.body,item.source);totals.batches++;
-  if(queued.status==='acknowledged')continue;
+  if(queued.status==='acknowledged'||queued.status==='closed')continue;
   if(queued.status==='replaced'){queue.unshift(...queued.replacedBy);continue;}
   // `limit` (0.10.27): the hook sends a few a run by itself; the rest wait, untouched, for the next run.
   if(sent>=limit){totals.waiting+=item.entries.length;continue;}
@@ -154,15 +158,37 @@ export async function resumeHistory(target, {send, confirmed, note, retryReview=
    try{if(!response.ok)throw Error();confirmed(text,item.entries.length);}
    catch{
     const refusal=historyRefusal(text,response);
-    if(refusal.reason==='closed'){queued.close();totals.refused+=item.entries.length;if(refusal.said)totals.said=refusal.said;continue;}
+    if(refusal.reason==='closed'){queued.close();totals.refused+=item.entries.length;if(refusal.said)totals.said=refusal.said;closed?.(item.run,item.entries.length);continue;}
     // Too large (0.10.29): marked and taken again at once, by the cut, never resent as it was. Without a cutter it waits.
     if(refusal.reason==='oversize'){queued.oversize();if(cutter){seen.delete(id);queue.unshift(id);}else totals.waiting+=item.entries.length;continue;}
     if(refusal.reason!=='review')paused={reason:refusal.reason,seconds:refusal.seconds>0?refusal.seconds:5};queued.defer(refusal.reason,paused?.seconds??refusal.seconds);totals[refusal.reason==='review'?'review':'waiting']+=item.entries.length;continue;
    }
-   queued.confirm(item.entries.length);totals.received+=item.entries.length;note(text);
+   queued.confirm(item.entries.length);totals.received+=item.entries.length;note(text,item.run);
   }catch{paused={reason:'unconfirmed',seconds:5};queued.defer(paused.reason,paused.seconds);totals.waiting+=item.entries.length;}
  }
  return totals;
+}
+/**
+ * A RUN IS DONE WHEN WORKTRUST HOLDS ALL OF IT (2026-10-31). On 2026-10-30 a re-measure of four batches lost one to a final
+ * refusal and the command said "✓ Re-measured. WorkTrust holds all 3 batches": the receipts it had were read as the run. Per run
+ * a send touches: its declared count, the batches WorkTrust confirmed (a receipt now, or an acknowledgement an earlier send kept
+ * here), the most the door said had arrived, whether a receipt said the run is complete, and the batches refused for good.
+ * `state()` is what the command reads: whole only when every run is; null when the send touched none.
+ */
+export function runLedger() {
+ const runs=new Map();
+ const of=(run)=>{if(!run||typeof run.id!=='string'||!Number.isInteger(run.count)||!Number.isInteger(run.index))return null;const known=runs.get(run.id)??{count:run.count,confirmed:new Set(),arrived:0,complete:false,refused:new Set()};runs.set(run.id,known);return known;};
+ const kept=(run)=>Math.min(run.count,Math.max(run.arrived,run.confirmed.size));
+ return {
+  heard(run,receipt){const known=of(run);if(!known)return;known.confirmed.add(run.index);if(Number.isInteger(receipt?.arrived))known.arrived=Math.max(known.arrived,receipt.arrived);if(receipt?.complete===true||(Number.isInteger(receipt?.of)&&receipt.arrived===receipt.of))known.complete=true;},
+  held(run){of(run)?.confirmed.add(run.index);},
+  refused(run){of(run)?.refused.add(run.index);},
+  state(){
+   const all=[...runs.values()];if(!all.length)return null;
+   return {batches:all.reduce((n,run)=>n+run.count,0),arrived:all.reduce((n,run)=>n+kept(run),0),refused:all.reduce((n,run)=>n+run.refused.size,0),
+    whole:all.every(run=>run.refused.size===0&&(run.complete||kept(run)===run.count))};
+  },
+ };
 }
 /** A queued batch's id, as queuedHistory names it, so a send can hand its own batches to resumeHistory (`only`). */
 export const historyIdOf=(target,body,source)=>digest(scopeOf(target)+'\0'+source+'\0'+body);

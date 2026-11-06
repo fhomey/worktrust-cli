@@ -58,7 +58,7 @@
  *
  * No dependencies: Node 18 or later.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
@@ -76,7 +76,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.36";
+const CLI_VERSION = "0.10.37";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -108,7 +108,7 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "commit-rules.mjs", "git-commits.mjs"];
+const SCRIPTS = ["credential-store.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -121,6 +121,8 @@ class CliFailure extends Error {}
 const fail = (line) => { process.stderr.write(`worktrust: ${line}\n`); throw new CliFailure(); };
 const NODE_FLAGS = process.versions.node === "26.5.0" ? ["--no-concurrent-sparkplug"] : [];
 const OS = { darwin: "macos", win32: "windows", linux: "linux" }[platform()] ?? "other";
+/** The shells AI agents run commands in (AGENTS.md): a person-only command stops there (main). */
+const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
 const OS_NAME = { macos: "macOS", windows: "Windows", linux: "Linux", other: "this system" }[OS];
 
 /**
@@ -164,15 +166,42 @@ function historyQueueScope(token) {
   catch { return ""; }
 }
 
-/** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. */
-function run(path, scriptArgs, token, collect = false, extraEnv = {}) {
+/** Run a script; its output is shown, or collected for the plan. The key travels in the environment only. `watch` (2026-11-05):
+ * `line` hears each line of the collected stdout as it comes (a line it answers true for is its own, a progress event, and is
+ * not kept); a Ctrl+C or SIGTERM is passed to the script, which stops safely (the script runs in a process group of its own, so
+ * a terminal's Ctrl+C reaches it once, through here), and the answer says `stopped`; a second one calls `now` at once. */
+function run(path, scriptArgs, token, collect = false, extraEnv = {}, watch = null) {
   return new Promise((resolve) => {
-    const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, basename(path), scriptArgs)], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_NODE_ARGS: JSON.stringify(NODE_ARGS), WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_MEASURE_RULES: String(MEASURE_RULES), WORKTRUST_HISTORY_SCOPE: historyQueueScope(token), ...extraEnv } });
-    let out = "";
-    child.stdout?.on("data", (chunk) => { out += chunk; });
-    child.stderr?.on("data", (chunk) => { out += chunk; });
-    child.on("exit", (code) => resolve({ code: code ?? 1, out }));
+    const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, basename(path), scriptArgs)], { stdio: collect ? ["ignore", "pipe", "pipe"] : "inherit", detached: Boolean(watch) && OS !== "windows", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_NODE_ARGS: JSON.stringify(NODE_ARGS), WORKTRUST_CLI_VERSION: CLI_VERSION, WORKTRUST_MEASURE_RULES: String(MEASURE_RULES), WORKTRUST_HISTORY_SCOPE: historyQueueScope(token), ...extraEnv } });
+    let out = "", pending = "", stops = 0, said = ""; // watched, stderr is kept apart and put first: the last line stays the script's own answer on stdout
+    const heard = (text) => { if (!watch.line(text)) out += `${text}\n`; };
+    const stop = (signal) => { stops += 1; try { child.kill(signal); } catch { /* already gone */ } if (stops > 1) watch.now?.(); };
+    if (watch) { process.on("SIGINT", stop); process.on("SIGTERM", stop); }
+    child.stdout?.on("data", (chunk) => {
+      if (!watch) { out += chunk; return; }
+      pending += chunk; const rows = pending.split("\n"); pending = rows.pop(); for (const row of rows) heard(row);
+    });
+    child.stderr?.on("data", (chunk) => { if (watch) said += chunk; else out += chunk; });
+    // Watched, the answer waits for the streams to close, so the last event is heard before the command speaks.
+    child.on(watch ? "close" : "exit", (code) => { if (watch) { process.off("SIGINT", stop); process.off("SIGTERM", stop); if (pending) heard(pending); pending = ""; } resolve({ code: code ?? 1, out: said + out, stopped: stops > 0 }); });
   });
+}
+/**
+ * THE LONG STEPS, AS THEY GO (owner, incident 2026-11-05: an export of 5,003 conversations read and sent for minutes with nothing
+ * on the screen). The hook, asked by WORKTRUST_HISTORY_PROGRESS, prints each step's counts as an event (the read of an export's
+ * parts or of the sessions here, each batch); history-progress.mjs draws them (one line rewritten in place on a terminal, plain
+ * lines when piped) and closes with the totals. Counts only: never a title, a text or a file's name. AND A SAFE STOP: Ctrl+C
+ * (or SIGTERM) asks the hook to stop after abandoning the call in flight; the line is restored, where it stopped is said with how
+ * to go on, and the command exits 130. A second Ctrl+C exits at once. An older module without the display runs as before.
+ */
+async function sendShown(paths, scriptArgs, token, extraEnv, words = {}) {
+  let shown = null;
+  try { shown = (await import(pathToFileURL(paths["history-progress.mjs"]).href)).historyProgress?.({ stream: process.stdout }) ?? null; } catch { shown = null; }
+  const leave = () => { shown?.stop(words); process.stdout.write("", () => process.exit(130)); };
+  const sent = await run(paths["log-session.mjs"], scriptArgs, token, true, { ...extraEnv, ...(shown ? { WORKTRUST_HISTORY_PROGRESS: "1" } : {}) }, { line: (line) => shown?.line(line) ?? false, now: leave });
+  if (sent.stopped) { leave(); return new Promise(() => {}); } // the command ends here, 130
+  shown?.end();
+  return sent;
 }
 
 /** `yes` is the answer Enter gives, and the one `--yes` gives: a question whose default is No stays No under --yes. */
@@ -567,6 +596,7 @@ async function bridge() {
     try { key = await freshKey(); }
     catch { key = null; if (message.id !== undefined) answer(message.id, "WorkTrust credential storage is unavailable. Unlock your OS vault and retry; no request was sent."); continue; }
     if (!key) { if (message.id !== undefined) answer(message.id, "WorkTrust is not connected on this computer: run `npx worktrust connect`."); continue; }
+    if (measurePaused()) { if (message.id !== undefined) answer(message.id, "WorkTrust is paused on this computer by its owner (Sources): nothing is sent until it is turned on again."); continue; }
     try {
       const response = await fetch(key.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${key.token}`, "user-agent": agent, ...(session ? { "mcp-session-id": session } : {}), ...proof(key.device, key.url, line) }, body: line });
       session = response.headers.get("mcp-session-id") ?? session;
@@ -596,6 +626,9 @@ async function hook() {
   const key = await freshKey();
   if (!key) return;
   await followDoorWish(key);
+  // CLI ACTIVE OFF (owner, 2026-11-05): the owner paused this computer in Sources. Nothing is measured and nothing is sent until
+  // it is turned on again; nothing is deleted here or there, and the hook still asks for the wish so turning on is heard.
+  if (measurePaused()) return;
   const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "log-session.mjs", args.filter((arg) => arg !== "hook"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_MCP_URL: key.url, WORKTRUST_MCP_TOKEN: key.token, WORKTRUST_CLI_VERSION: CLI_VERSION, ...doorModeEnv(), WORKTRUST_MEASURE_RULES: String(MEASURE_RULES), WORKTRUST_HISTORY_SCOPE: historyQueueScope(key.token), ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) } }); // 0.10.20: the hook names the version that started it, beside each line
   process.exitCode = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code) => resolve(code ?? 1)); });
 }
@@ -683,8 +716,10 @@ async function update() {
   say(`  ✓ ${STABLE} is now ${CLI_VERSION}`);
   // Out first, then in: an app that held a key of its own (a hand-made entry) moves onto the bridge. An app not agreed to is not touched.
   const skipArgs = skip.length > 0 ? ["--skip", skip.join(",")] : [];
+  // WHAT WAS THERE, KEPT IN MEMORY (security review L3): an add that does not finish puts every door it took out back.
+  const before = (await run(paths["setup-mcp.mjs"], ["--snapshot"], key.token, true)).out.trim().split("\n").pop() ?? "";
   await run(paths["setup-mcp.mjs"], ["--remove", "--write", ...skipArgs], key.token, true); // hours only: nothing is skipped (no app was offered), so every door comes out
-  if (!doorIsOff && (await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE, ...skipArgs], key.token)).code !== 0) fail("coupling the AI apps failed; the output above says where.");
+  if (!doorIsOff && (await run(paths["setup-mcp.mjs"], ["--write", "--bridge", STABLE, ...skipArgs], key.token)).code !== 0) { putBack(paths, key.token, before); fail("coupling the AI apps failed; the doors taken out were put back as they were. The output above says where."); }
   const hookArgs = ["--install", "--via", STABLE];
   if (hookOn && (await run(paths["log-session.mjs"], hookArgs, key.token, false)).code !== 0) fail("installing the session hook failed; the output above says where.");
   for (const name of [...apps.filter((app) => !skip.includes(app)).map((app) => `door:${app}`), ...(hookOn ? ["session-hook"] : [])]) agreed.agree(name, "typed");
@@ -698,6 +733,13 @@ async function update() {
   doubleDoorNotice();
   say();
   say("  Done. Quit your AI apps completely and open them again to use the updated CLI.");
+}
+
+/** `setup-mcp --restore` with the snapshot on stdin: never on a command line, never in a file. */
+function putBack(paths, token, snapshot) {
+  if (!snapshot.startsWith("{")) return;
+  const done = spawnSync(moduleExecutable(HERE), [...moduleArgs(HERE, basename(paths["setup-mcp.mjs"]), ["--restore"])], { input: snapshot, encoding: "utf8", env: { ...process.env, WORKTRUST_MCP_URL: MCP, WORKTRUST_MCP_TOKEN: token, WORKTRUST_NODE: NODE, WORKTRUST_NODE_ARGS: JSON.stringify(NODE_ARGS) }, timeout: 120_000 });
+  process.stdout.write(done.stdout ?? "");
 }
 
 async function connect() {
@@ -796,7 +838,7 @@ async function connect() {
  */
 async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false, agreedInAdvance = false) {
   const env = { WORKTRUST_MCP_URL: url, ...(devicePem ? { WORKTRUST_DEVICE_KEY: devicePem } : {}) };
-  const counted = await run(paths["log-session.mjs"], ["--history", "--dry-run", "--summary"], token, true, env);
+  const counted = await sendShown(paths, ["--history", "--dry-run", "--summary"], token, env);
   let found = null;
   try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: nothing to offer */ }
   say();
@@ -815,7 +857,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
   if (!has("history") && !agreedInAdvance && !(rebuild ? await ask("Send them (re-measured; this computer's earlier lines for these days are replaced, a day is counted once)?", false) : await ask("Send these as history (hours and tokens per day; never text)?", false))) { historyDone(false); say("  Not sent. Send them later with: npx worktrust"); return; }
   // Marked unfinished before the first batch leaves (0.10.9): a send stopped halfway (Ctrl+C, a closed lid) is finished by the next run.
   historyDone(false);
-  const sent = await run(paths["log-session.mjs"], ["--history", ...(rebuild ? ["--rebuild"] : []), ...(rebuild && has("force-days") ? ["--force-days"] : []), ...(has("retry-review") ? ["--retry-review"] : [])], token, true, env);
+  const sent = await sendShown(paths, ["--history", ...(rebuild ? ["--rebuild"] : []), ...(rebuild && has("force-days") ? ["--force-days"] : []), ...(has("retry-review") ? ["--retry-review"] : [])], token, env);
   historyDone(sent.code === 0);
   // WHAT ACTUALLY HAPPENED, FROM THE DOOR'S RECEIPTS (owner, 2026-10-10): a re-measure in which nothing changed must not say
   // "replaced". The hook sums the receipts of every batch and prints one line; without it (an older hook) the sentence stays neutral.
@@ -839,6 +881,7 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
   if (Number(did?.delivery?.review) > 0) say(`  ${did.delivery.review} lines are waiting for review. Earlier measurements remain unchanged. Reconnecting or repeating the import does not approve them.`);
   // KEPT ON THE SERVER (0.10.27; owner, 2026-10-21): what did not arrive stays here and goes again by itself; nothing to resume by hand.
   if (Number(did?.delivery?.waiting) > 0) say("  Some batches did not reach WorkTrust yet. They stay on this computer and are sent again by themselves the next time npx worktrust or your AI app's hook runs.");
+  { const answered = doorAnswer(sent.out); if (answered) say(answered); } // 0.10.37: and why, in WorkTrust's words
   // A REFUSAL IN WORKTRUST'S OWN WORDS (0.10.35 for older measure rules; every final refusal since 2026-10-31): the hook passes
   // the door's sentence on, cleaned. Without one (a batch let go on an earlier send, or one too large for any call) the count
   // alone, never a guessed reason: 0.10.35 said "it missed a batch for seven days" of a batch refused for its lines.
@@ -858,6 +901,8 @@ async function offerHistory(paths, token, devicePem, url = MCP, rebuild = false,
   }
   else if (rebuild && !notWhole && !Number(did?.delivery?.review) && !Number(did?.delivery?.waiting)) say(sent.code === 0 ? `  ✓ Re-measured. ${outcome}` : "  Not all of it arrived. Run npx worktrust again: it finishes what did not arrive, a day already rebuilt is counted once.");
   else if (!rebuild) say(sent.code === 0 ? "  ✓ Sent as history. Activity is recorded with its origin; independent verification and passport publication are separate. A day WorkTrust already holds is kept once." : "  Not all of it arrived. Run npx worktrust history again: a line already received is kept once.");
+  // 0.10.37 (owner 2026-11-05): an export send's seconds are RECONSTRUCTED, never measured; the door says which (reconstructedSeconds).
+  if (did && Number(did.reconstructedSeconds) > 0) say(`  Reconstructed by WorkTrust from the export: ${(Number(did.reconstructedSeconds) / 3600).toFixed(1)} h for what this send stored (beside your measured hours, never in them).`);
   if (did && Number(did.measuredSeconds) > 0) say(`  Measured by WorkTrust: ${(Number(did.measuredSeconds) / 3600).toFixed(1)} h for what this send stored${n(did.corrected) > 0 ? ` (${n(did.corrected)} lines corrected: a figure sent beside the timeline differed)` : ""}.`);
 }
 
@@ -975,12 +1020,12 @@ async function history() {
 async function offerArchive(paths, key) {
   const at = process.argv.indexOf("--from-archive"), named = process.argv[at + 1], dir = named && !named.startsWith("--") ? [named] : [];
   const env = { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) };
-  const plan = await run(paths["log-session.mjs"], ["--history", "--from-archive", ...dir, "--dry-run"], key.token, true, env);
+  const plan = await sendShown(paths, ["--history", "--from-archive", ...dir, "--dry-run"], key.token, env);
   say();
   for (const line of plan.out.trim().split("\n").filter((text) => !text.startsWith(" ") && !text.startsWith("{") && !text.startsWith("}") && text.trim())) say(`  ${line}`);
   if (plan.code !== 0 || /Nothing to send/.test(plan.out) || has("dry-run")) return;
   if (!(await ask("Send them as history, marked as from your archive?", false))) { say("  Not sent."); return; }
-  const sent = await run(paths["log-session.mjs"], ["--history", "--from-archive", ...dir], key.token, true, env);
+  const sent = await sendShown(paths, ["--history", "--from-archive", ...dir], key.token, env);
   say(sent.code === 0 ? "  ✓ Sent as history from your archive. It shows in WorkTrust as earlier work, marked as such, never as verified hours." : `  Not sent: ${sent.out.trim().split("\n").pop()}`);
 }
 
@@ -997,7 +1042,7 @@ const EXPORT_PRODUCT = { chatgpt: "ChatGPT", "claude-web": "Claude on the web" }
 const EXPORT_CONNECTOR = { chatgpt: "ChatGPT", "claude-web": "Claude" };
 async function offerExport(paths, key, path) {
   const env = { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) };
-  const counted = await run(paths["log-session.mjs"], ["--history", "--export", path, "--dry-run", "--summary"], key.token, true, env);
+  const counted = await sendShown(paths, ["--history", "--export", path, "--dry-run", "--summary"], key.token, env);
   let found = null;
   try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: the export could not be read */ }
   const report = found?.exports?.[0];
@@ -1006,7 +1051,10 @@ async function offerExport(paths, key, path) {
   const product = EXPORT_PRODUCT[report.vendor] ?? report.vendor, connector = EXPORT_CONNECTOR[report.vendor] ?? report.vendor;
   if (!report.days) { say(`  ${product} export · ${report.conversations} conversations, none with a clock to place: nothing to send.`); return true; }
   const cuts = Array.isArray(report.cut) ? report.cut : [];
-  say(`  ${product} export${cuts.length > 0 ? ", cut off" : ""} · ${report.conversations} conversations · ${report.days} days · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}`);
+  // THE READ IN ONE LINE (2026-11-05): conversations, days, months, and what the send will be: the parts read, batches and lines.
+  const plural = (n, one, many) => `${Number(n).toLocaleString("en-US")} ${n === 1 ? one : many}`;
+  const batches = Number.isInteger(found?.batches?.count) ? found.batches.count : null, lines = Array.isArray(found?.batches?.each) ? found.batches.each.reduce((n, one) => n + (Number(one?.lines) || 0), 0) : null;
+  say(`  ${product} export${cuts.length > 0 ? ", cut off" : ""} · ${Number(report.conversations).toLocaleString("en-US")} conversations · ${Number(report.days).toLocaleString("en-US")} days · ${String(report.first).slice(0, 7)} … ${String(report.last).slice(0, 7)}${Number.isInteger(report.parts) ? ` · ${plural(report.parts, "part", "parts")}` : ""}${batches !== null ? ` · ${plural(batches, "batch", "batches")}` : ""}${lines !== null ? ` · ${plural(lines, "line", "lines")}` : ""}`);
   // A DOWNLOAD CUT OFF (2026-10-31): what the archive held whole before the cut is read, and the person is told it is not the whole export.
   for (const cut of cuts) say(`  The archive was cut off after ${cut.last} (part ${cut.parts}); ${report.conversations} conversations read. Nothing past the cut is read: this is not the whole export. Download it again for the rest; a line already received is kept once.`);
   say("  WorkTrust reconstructs the hours from the export's own clocks when they arrive: shown with their origin, never verified hours. Never a title or a message.");
@@ -1014,9 +1062,9 @@ async function offerExport(paths, key, path) {
   if (report.oversized > 0) say(`  ${report.oversized} conversation${report.oversized === 1 ? "" : "s"} too large to read ${report.oversized === 1 ? "is" : "are"} left out; the rest is read.`);
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return false; }
   if (!has("history") && !(await ask(cuts.length > 0 ? "Send what was read before the cut as history (reconstructed hours per day; never text)?" : "Send it as history (reconstructed hours per day; never text)?", false))) { say(`  Not sent. Send it later with: npx worktrust history --export ${path}`); return false; }
-  const sent = await run(paths["log-session.mjs"], ["--history", "--export", path], key.token, true, env);
+  const sent = await sendShown(paths, ["--history", "--export", path], key.token, env);
   say(sent.code === 0 ? `  ✓ Sent as history. It shows in WorkTrust as ${product}, reconstructed, never as verified hours; a line already received is kept once.` : `  Not all of it arrived. Run npx worktrust history --export ${path} again: a line already received is kept once.`);
-  if (sent.code !== 0) return false;
+  if (sent.code !== 0) { const answered = doorAnswer(sent.out); if (answered) say(answered); return false; }
   // THE EXPORT REPLACES (owner, 2026-10-10): the door withdrew the product's earlier connector lines on the export's days by itself and
   // says so; the lines an AI app reported under no product on those days may describe the same conversations, and go only on a yes.
   const counts = lastCounts(sent.out);
@@ -1029,12 +1077,24 @@ async function offerExport(paths, key, path) {
     const n = counts.unknownOnDays;
     say(`  ${n} earlier line${n === 1 ? "" : "s"} your ${connector} connector reported for these days under no product may describe the same conversations. Your own computers' lines are never touched.`);
     if (has("withdraw-unknown") || (await ask(`Also withdraw ${n} earlier line${n === 1 ? "" : "s"} your ${connector} connector reported for these days?`, false))) {
-      const again = await run(paths["log-session.mjs"], ["--history", "--export", path, "--withdraw-unknown"], key.token, true, env);
+      const again = await sendShown(paths, ["--history", "--export", path, "--withdraw-unknown"], key.token, env);
       const done = lastCounts(again.out);
       say(again.code === 0 ? `  ✓ Withdrawn and kept: ${done.unknownWithdrawn} earlier line${done.unknownWithdrawn === 1 ? "" : "s"}, each with a correction row; never deleted.` : `  Not withdrawn: ${again.out.trim().split("\n").pop()}`);
     } else say(`  Kept. Later: npx worktrust history --export ${path} --withdraw-unknown`);
   }
   return true;
+}
+/**
+ * WHY A BATCH DID NOT ARRIVE, IN WORKTRUST'S OWN WORDS (0.10.37, incident 2026-11-05: 0.10.36 said only "Not all of it arrived",
+ * and the reason, "could not import (57014)", took a database to find). The hook's last line carries the door's sentence for a
+ * batch that waits (`delivery.reason`); said as one line, control characters taken out, at most 400 characters. Null without one.
+ */
+function doorAnswer(out) {
+  try {
+    const line = out.trim().split("\n").reverse().find((text) => /^\{"(history|export)_sent"/.test(text));
+    const said = JSON.parse(line ?? "null")?.delivery?.reason;
+    return typeof said === "string" && said.trim() ? `  WorkTrust answered: ${said.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim().slice(0, 400)}` : null;
+  } catch { return null; }
 }
 /** The hook's last line of counts after an export send (superseded, unknownOnDays, unknownWithdrawn); zeros when there is none. */
 function lastCounts(out) {
@@ -1068,7 +1128,7 @@ async function offerDownloads(paths, key) {
  */
 async function offerFolder(paths, key, dir) {
   const env = { WORKTRUST_MCP_URL: key.url, ...(key.device ? { WORKTRUST_DEVICE_KEY: key.device } : {}) };
-  const counted = await run(paths["log-session.mjs"], ["--history", "--from-folder", dir, "--dry-run", "--summary"], key.token, true, env);
+  const counted = await sendShown(paths, ["--history", "--from-folder", dir, "--dry-run", "--summary"], key.token, env);
   let found = null;
   try { found = JSON.parse(counted.out.trim().split("\n").pop()); } catch { /* no line: the folder could not be read */ }
   const report = found?.folder;
@@ -1079,8 +1139,9 @@ async function offerFolder(paths, key, dir) {
   say("  Hours reconstructed from the copy's own clocks: shown with their origin, never verified hours. Never text.");
   if (has("dry-run")) { say("  Dry run: nothing was sent."); return; }
   if (!has("history") && !(await ask("Send it as history (reconstructed hours per day; never text)?", false))) { say(`  Not sent. Send it later with: npx worktrust history --from-folder ${dir}`); return; }
-  const sent = await run(paths["log-session.mjs"], ["--history", "--from-folder", dir], key.token, true, env);
+  const sent = await sendShown(paths, ["--history", "--from-folder", dir], key.token, env);
   say(sent.code === 0 ? "  ✓ Sent as history. It shows in WorkTrust as reconstructed, from a copied session folder, never as verified hours; a line already received is kept once." : `  Not all of it arrived. Run npx worktrust history --from-folder ${dir} again: a line already received is kept once.`);
+  if (sent.code !== 0) { const answered = doorAnswer(sent.out); if (answered) say(answered); }
 }
 
 /**
@@ -1295,6 +1356,11 @@ async function status() {
   if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
   say(sessionHookHere() ? "  Session hook: installed" : "  Session hook: not installed");
   say(`  AI work lines: ${doorLine()}`);
+  if (measurePaused()) say(`  Measuring: paused by you in Sources since ${String(measureState()?.since ?? "").slice(0, 10)}; nothing is measured or sent until you turn it on there`);
+  // THE LAST UPDATE ON TURN-ON (0.10.37): what happened, in words; the details are in ~/.worktrust/update.log, on this computer only.
+  { const state = updateState(); if (state) { const code = (await selfUpdateModule()).updateResult(state);
+    const words = { installed: `updated itself to ${state.version}`, current: `already on ${state.version} or newer`, python: "installed with Python: update it with the package manager you installed WorkTrust with", unsupported: "this installation cannot update itself: run npx worktrust@latest update", unverified: `${state.version} could not be verified, so nothing was installed`, failed: `the update to ${state.version} did not finish; the CLI stays as it was` };
+    say(`  Update when turned on: ${words[code] ?? `to ${state.version}, under way`}${["unverified", "failed"].includes(code) ? " (~/.worktrust/update.log)" : ""}`); } }
   // A TRANSCRIPT THE HOOK COULD NOT READ (0.10.32): the count of its last run that had any, never which file; WorkTrust has the count too.
   { let unread = null; try { unread = JSON.parse(readFileSync(join(HOME_DIR, "sessions.json"), "utf8")).__unreadable ?? null; } catch { /* no state yet */ }
     if (Number(unread?.count) > 0) say(`  Transcripts: ${unread.count} could not be read on ${String(unread.at).slice(0, 10)}; their days are not measured until they can be (WorkTrust was told the count, nothing else)`); }
@@ -1345,7 +1411,8 @@ async function preserve() {
   const script = join(HERE, "preserve.mjs");
   if (!existsSync(script)) fail("preserve runs from the package: npx worktrust@latest preserve");
   const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "preserve.mjs", args.filter((arg) => arg !== "preserve"))], { stdio: "inherit", env: { ...process.env, WORKTRUST_COLLECTOR: `worktrust-cli/${CLI_VERSION}` } });
-  process.exitCode = await new Promise((resolve) => child.on("exit", (code) => resolve(code ?? 1)));
+  const pass = (signal) => { try { child.kill(signal); } catch { /* already gone */ } }; process.on("SIGINT", pass); process.on("SIGTERM", pass); // preserve.mjs stops safely, 130
+  process.exitCode = await new Promise((resolve) => child.on("exit", (code, signal) => resolve(code ?? (signal ? 130 : 1))));
 }
 
 /**
@@ -1402,7 +1469,7 @@ const doorOff = () => doorState()?.mode === "hours_only";
 /** The mode and the moment it last changed here (whole seconds), so the last change wins against a wish from Sources. */
 const doorSaid = () => { const state = doorState(); if (!state) return null; const at = Math.floor(Date.parse(state.since ?? state.asked ?? "") / 1000); return Number.isFinite(at) && at > 0 ? `${state.mode}.${at}` : state.mode; };
 const doorModeEnv = () => (doorSaid() ? { WORKTRUST_DOOR_MODE: doorSaid() } : {});
-const doorModeAgent = () => (doorSaid() ? ` worktrust-mode/${doorSaid()}` : "");
+const doorModeAgent = () => `${doorSaid() ? ` worktrust-mode/${doorSaid()}` : ""}${measureSaid() ? ` worktrust-measure/${measureSaid()}` : ""}${updateSaid() ? ` worktrust-update/${updateSaid()}` : ""}`;
 const doorLine = () => { const state = doorState(); return state ? `${state.mode === "hours_only" ? "off (hours only)" : "on"}${state.since ? ` since ${String(state.since).slice(0, 10)}` : ""}` : "on (not chosen yet: npx worktrust update asks once)"; };
 /** The first question: Enter, --yes and a closed terminal keep the door, as before; --hours-only and --work-lines say it in advance. */
 async function chooseDoor() {
@@ -1445,13 +1512,15 @@ function doubleDoorNotice(always = false) {
 async function followDoorWish(key) {
   const state = doorState();
   if (!key.device || (state?.checkedAt && Date.now() - Date.parse(state.checkedAt) < 10 * 60_000)) return;
-  let wish = null;
+  let wish = null, doorClock = NaN;
   try {
     const url = new URL("/api/cli/door", key.url).href, body = "{}";
     const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, "user-agent": `worktrust-cli/${CLI_VERSION}`, ...proof(key.device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(3000) });
-    if (response.ok) wish = await response.json();
+    if (response.ok) { wish = await response.json(); doorClock = Date.parse(response.headers.get("date") ?? ""); }
   } catch { /* offline: asked again next time */ }
   saveDoorState({ checkedAt: new Date().toISOString() });
+  await followMeasureWish(key, wish);
+  await followUpdateWish(key, wish, doorClock);
   if (!DOOR_MODES.includes(wish?.mode) || wish.mode === state?.mode || !(Date.parse(wish.at) > Date.parse(state?.since ?? state?.asked ?? 0))) return;
   const paths = await scripts();
   if (wish.mode === "work_lines") { await prepareBundledRuntime(); await run(paths["setup-mcp.mjs"], ["--remove", "--write"], key.token, true); }
@@ -1459,6 +1528,72 @@ async function followDoorWish(key) {
   if (done.code !== 0) return;
   saveDoorState({ mode: wish.mode, asked: state?.asked ?? new Date().toISOString() });
   await accepted(key.url, key.token, key.device, doorModeAgent());
+}
+/**
+ * CLI ACTIVE, PER COMPUTER (owner, 2026-11-05; 0.10.37). The owner may pause this computer's CLI from Sources: the same answer
+ * from api/cli/door carries `measure` (active | paused) and its moment. A wish newer than the last change here is kept in
+ * ~/.worktrust/measure.json (0600); while paused the hook measures nothing and sends nothing and the bridge forwards nothing.
+ * The state is reported back beside the version as worktrust-measure/<state>.<epoch> (retried until WorkTrust accepted it),
+ * which settles the wish; until then Sources says "asked", never "off". Nothing is deleted. A CLI before 0.10.37 never reads
+ * the wish and keeps measuring. Turning on installs a newer CLI only through the one-shot instruction below (followUpdateWish).
+ */
+const MEASURE_FILE = join(HOME_DIR, "measure.json");
+const MEASURES = ["active", "paused"];
+function measureState() { try { const state = JSON.parse(readPrivateFile(MEASURE_FILE) ?? "null"); return MEASURES.includes(state?.state) ? state : null; } catch { return null; } }
+function saveMeasureState(next) { if (has("dry-run")) return; try { ensureHome(); writePrivateFile(MEASURE_FILE, `${JSON.stringify({ ...(measureState() ?? {}), ...next })}\n`); } catch { /* not kept: asked again next time */ } }
+const measurePaused = () => measureState()?.state === "paused";
+const measureSaid = () => { const state = measureState(); if (!state) return null; const at = Math.floor(Date.parse(state.since ?? "") / 1000); return Number.isFinite(at) && at > 0 ? `${state.state}.${at}` : state.state; };
+async function followMeasureWish(key, wish) {
+  const here = measureState();
+  if (MEASURES.includes(wish?.measure) && wish.measure !== (here?.state ?? "active") && Date.parse(wish.measureAt) > Date.parse(here?.since ?? 0)) saveMeasureState({ state: wish.measure, since: new Date().toISOString(), reported: null });
+  const now = measureState();
+  if (now && now.reported !== now.since && (await accepted(key.url, key.token, key.device, doorModeAgent())) === true) saveMeasureState({ reported: now.since });
+}
+/**
+ * TURNED ON, IT UPDATES ITSELF (owner, 2026-11-05; 0.10.37; SECURITY.md "Updating itself when you turn it on"). When the owner
+ * turns CLI active back on in Sources for this computer after it had paused, the door's answer carries ONE instruction:
+ * `update: { version, at }`, `at` being that resume (its id). Taken once per id, never while paused, never from a version
+ * string alone: it is kept in ~/.worktrust/update.json (0600) and handed to `self-update`, detached, so the hook returns at
+ * once. Everything else (the method, a newer version, npm's registry signature and provenance bound to WorkTrust's publish
+ * workflow, WorkTrust's own release signature) is decided there (self-update.mjs). The outcome goes back as
+ * worktrust-update/<code>.<id> beside the version, a code and never content, which settles the instruction in WorkTrust.
+ */
+const UPDATE_FILE = join(HOME_DIR, "update.json");
+function updateState() { try { const state = JSON.parse(readPrivateFile(UPDATE_FILE) ?? "null"); return Number.isSafeInteger(state?.id) ? state : null; } catch { return null; } }
+function saveUpdateState(next) { if (has("dry-run")) return; try { ensureHome(); writePrivateFile(UPDATE_FILE, `${JSON.stringify({ ...(updateState() ?? {}), ...next })}\n`); } catch { /* not kept: no attempt is started */ } }
+let updateModule = null;
+const selfUpdateModule = async () => (updateModule ??= await import("./self-update.mjs"));
+/** The outcome not yet accepted by WorkTrust, as `<code>.<id>`; null while nothing is to be said. */
+const updateSaid = () => { const state = updateState(); const code = state && updateModule?.updateResult(state); return code && state.reported !== state.id ? `${code}.${state.id}` : null; };
+/** How this CLI was installed, for the one decision: the launcher-verified npm copy, a Python installation, or neither. */
+function installMethod() {
+  if (moduleExecutable(HERE) !== process.execPath || process.env.WORKTRUST_BUNDLED_PYTHON || process.env.WORKTRUST_BUNDLED_RUNTIME_DIR) return "python";
+  return globalThis[Symbol.for("worktrust.verifiedReleaseRoot")] === HERE && existsSync(join(HERE, "package.json")) && existsSync(join(HERE, "package-release.json")) ? "npm" : "unknown";
+}
+async function followUpdateWish(key, wish, doorClock = NaN, agentEnv = AGENT_ENV) {
+  const { updateOffer, updateResult } = await selfUpdateModule();
+  const offer = updateOffer(wish?.update), here = updateState();
+  // A HOSTILE OR BROKEN ANSWER (security review L3): an id past the door's own clock (its Date header) would outrank every
+  // later turn-on; it is refused. One attempt that did not install backs off a day; one under way is left to finish.
+  const clock = Number.isFinite(doorClock) ? doorClock : Date.now();
+  const outcome = here ? updateResult(here) : null;
+  const waiting = here && (outcome === null || (outcome !== "installed" && Date.now() - Date.parse(here.at ?? "") < 24 * 3600_000));
+  if (offer && offer.id * 1000 <= clock + 5 * 60_000 && !measurePaused() && !(here && here.id >= offer.id) && !waiting) {
+    saveUpdateState({ id: offer.id, version: offer.version, state: "pending", at: new Date().toISOString(), reported: null });
+    if (updateState()?.id === offer.id) {
+      // Detached, without an agent's markers (this is the owner's act from Sources, not an agent's command), output to nobody.
+      const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !agentEnv.includes(name)));
+      try { spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", ["self-update"])], { detached: true, stdio: "ignore", env, cwd: HOME_DIR, windowsHide: true }).unref(); } catch { /* reported as failed once stale */ }
+    }
+  }
+  const said = updateSaid();
+  if (said && (await accepted(key.url, key.token, key.device, doorModeAgent())) === true) saveUpdateState({ reported: Number(said.split(".")[1]) });
+}
+/** `worktrust self-update`: started by the hook, acts only on an instruction it recorded (update.json, pending). */
+async function selfUpdate(agentEnv) {
+  const { runSelfUpdate } = await selfUpdateModule();
+  const { verifyPackage, installSignedPackage } = await import("./package-integrity.mjs");
+  await runSelfUpdate({ home: HOME_DIR, method: installMethod(), current: CLI_VERSION, readState: updateState, saveState: saveUpdateState, verifyPackage, installSignedPackage, nodeArgs: NODE_FLAGS, agentEnv, env: process.env });
 }
 async function doorCommand(sub) {
   say();
@@ -1548,8 +1683,8 @@ function help() {
 async function main() {
 if (!moduleArgs || !moduleExecutable || !createCredentialStore) fail("Use the complete WorkTrust package from npm/PyPI or the signed preservation kit; individual scripts cannot run.");
 if (Number(process.versions.node.split(".")[0]) < 18) fail("needs Node 18 or later (fetch is built in from 18).");
-const AGENT_ENV = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SANDBOX", "CODEX_CI", "GEMINI_CLI", "CURSOR_AGENT", "OPENCODE", "CLINE_ACTIVE", "AIDER_CHAT", "ANTIGRAVITY_AGENT", "WINDSURF_AGENT"];
-const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod", "protect-key", "git"]);
+// `self-update` is never an agent's either: the hook starts it without the markers, on the owner's turn-on in Sources.
+const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconnect", "preserve", "codex", "antigravity", "sources", "web", "import", "orchestration", "mod", "protect-key", "git", "self-update"]);
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
 // `mcp off` and `mcp on` change what this computer's AI apps load: the person's. Bare `mcp` stays the bridge the apps start.
 const doorSwitch = command === "mcp" && ["off", "on"].includes(args[args.indexOf("mcp") + 1]);
@@ -1560,9 +1695,9 @@ if (agentShell && (PERSON_ONLY.has(command) || doorSwitch)) {
   return (process.exitCode = 3);
 }
 
-/** Interactive version notice only. Registry metadata is not a trusted signed release catalogue.
- * Hooks, bridge and offline preserve never check. Installation remains with the person's package manager
- * until the signed release updater has a provisioned trust root and has passed the distribution gates.
+/** Interactive version notice only. Registry metadata is not a trusted signed release catalogue, and a notice never
+ * installs. Hooks, bridge and offline preserve never check. Installation remains with the person's package manager, with
+ * one exception the notice never drives: the owner's turn-on in Sources (followUpdateWish, self-update.mjs, SECURITY.md).
  */
 const RELAY_COMMANDS = new Set(["default", "connect", "update", "history", "status", "disconnect", "codex", "antigravity"]);
 const semverNewer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
@@ -1594,6 +1729,7 @@ else if (command === "mcp") await bridge();
 else if (command === "hook") await hook();
 else if (command === "connect") await connect();
 else if (command === "update") await update();
+else if (command === "self-update") await selfUpdate(AGENT_ENV);
 else if (command === "protect-key") await protectKey();
 else if (command === "history") await history();
 // NOT FROM THE TERMINAL (owner, 2026-10-04): an ACCOUNT is connected under Sources in the app, where the

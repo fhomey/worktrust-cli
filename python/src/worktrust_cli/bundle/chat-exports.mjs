@@ -620,7 +620,7 @@ async function* exportRecords(given, { expect = null, excluded = () => false, sk
   const totals = {};
   const { parts, close, cuts = [] } = exportParts(given);
   const path = parts[0].path, digest = createHash("sha256");
-  let vendor = null, count = 0, oversized = 0, empty = 0, bytes = 0, next = PROGRESS_BYTES, offset = 0;
+  let vendor = null, count = 0, oversized = 0, empty = 0, bytes = 0, next = PROGRESS_BYTES, offset = 0, tick = 0, at = 0; const size = parts.reduce((n, one) => n + (Number(one.bytes) || 0), 0);
   if (report) { report.path = path; report.vendor = expect; report.digest = null; report.conversations = 0; report.oversized = 0; report.empty = 0; report.parts = parts.length; report.cut = cuts.length > 0 ? cuts : null; }
   const one = (kept, index) => {
     limit(count < EXPORT_LIMITS.conversations, "conversation count");
@@ -642,14 +642,14 @@ async function* exportRecords(given, { expect = null, excluded = () => false, sk
   };
   try {
     for (const part of parts) {
-      let queue = [], seen = 0;
+      let queue = [], seen = 0; at += 1;
       const walk = walker(metadata ? META_CONVERSATION : CONVERSATION, { text, budget: text ? EXPORT_LIMITS.conversationTextBytes : EXPORT_LIMITS.conversationBytes, onElement: (kept, index) => queue.push([kept, offset + index]) });
       const drain = function* () { const due = queue; queue = []; for (const [kept, index] of due) { seen = index + 1 - offset; yield one(kept, index); } };
       try {
         for await (const chunk of part.chunks()) {
           digest.update(chunk); bytes += chunk.length; walk.push(chunk);
           if (bytes >= next) { process.stderr.write(`export: ${Math.round(bytes / 1024 ** 2)} MB read, ${count} conversations\n`); next += PROGRESS_BYTES; }
-          yield* drain();
+          yield* drain(); if (report?.onProgress && !(Date.now() < tick)) { tick = Date.now() + 250; report.onProgress({ part: at, parts: parts.length, bytes, size, conversations: count }); } // the read as it goes (2026-11-05), counts only
         }
         walk.end();
         yield* drain();
@@ -662,7 +662,7 @@ async function* exportRecords(given, { expect = null, excluded = () => false, sk
     }
   } finally { close(); }
   if (vendor === null && empty > 0) throw Error(`${path} is neither a ChatGPT nor a Claude export (or mixes the two)`);
-  if (report) { report.vendor = vendor ?? expect; report.digest = digest.digest("hex"); report.conversations = count; report.oversized = oversized; report.empty = empty; if (metadata) report.metadata = vendor === "chatgpt" ? totals : null; }
+  report?.onProgress?.({ part: at, parts: parts.length, bytes, size, conversations: count }); if (report) { report.vendor = vendor ?? expect; report.digest = digest.digest("hex"); report.conversations = count; report.oversized = oversized; report.empty = empty; if (metadata) report.metadata = vendor === "chatgpt" ? totals : null; }
 }
 
 /** One export, read whole but compact: its vendor by shape, one record per conversation (its kept lines; none for an excluded or oversized one), and the digest of its bytes (what `sent` is remembered by). */

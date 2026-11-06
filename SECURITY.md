@@ -12,7 +12,8 @@ private transcripts or account data in a public issue.
   The complete official release is required. Individual script download fallbacks are removed;
   interactive commands may check for a newer release.
 - Submissions go to the configured WorkTrust MCP endpoint. Interactive commands can also contact
-  the npm registry for a version notice. Release notices never execute a different version. The npm package bundles its runtime
+  the npm registry for a version notice. Release notices never execute a different version; the one exception is the verified update when
+  you turn the CLI back on in Sources (below). The npm package bundles its runtime
   modules, but package-manager installation and explicit upgrades still use the network. `preserve` itself is local.
   A custom `--origin`, URL or registry override changes whom you trust.
 - The key it receives is a WorkTrust coupling for this computer: it can submit work metadata to your
@@ -131,6 +132,67 @@ relying on those properties. A manifest flag or matching version string alone is
 artifact was built from reviewed source. `npm audit signatures` can inspect an installed dependency
 tree; verification coverage and failures must be reported for that actual installation.
 
+
+## Updating itself when you turn it on (0.10.37)
+
+This is the one place the CLI installs and runs a newer version without you typing a command. It exists because you
+asked for it in the app: when you switch **CLI active** back on for a computer in WorkTrust › Sources, that computer
+brings itself to the newest published CLI. A registry version string alone never starts it (the interactive notice
+above still only tells you), and `npx worktrust update` is unchanged.
+
+- **When.** WorkTrust asks for it only after your own act: turning CLI active on, under your signed-in session (with
+  your second factor when your account has one), for a computer whose CLI had confirmed it was paused. WorkTrust then
+  records one instruction for that computer; a pause clears it, a computer that never paused gets none. The hook reads it
+  with the computer's own signed key (`api/cli/door`) as `update: { version, at }`; `at`, the moment you turned it on,
+  is its id. The CLI takes an id once (`~/.worktrust/update.json`, 0600), never while paused, never one dated more than
+  five minutes past the door's own clock (its `Date` header), and, after an attempt that did not install, none for 24
+  hours. The "only after your turn-on" rule is WorkTrust's server's: the computer cannot see your act, so it does not
+  rely on it (next point).
+- **Which version, decided on the computer.** It installs only a version that is newer than itself (`current`
+  otherwise: no downgrade) AND that npm's own registry record lists as `dist-tags.latest` and does not deprecate,
+  whatever version the door names. A version the console classes critical is deprecated on npm as well
+  (tools/worktrust-release/README.md), so a computer refuses it even if a server named it.
+- **npm 11.12.0 or later.** `npm audit signatures --include-attestations` first appears there. The CLI uses the npm beside
+  the running Node (its own installation), else the first one on PATH, asks `npm --version` first, and with an older
+  npm, or none, reports `unsupported` before anything is fetched: update npm, or run the command.
+- **What runs, implicitly.** Detached from the hook (which returns at once and prints nothing), under a lock:
+  1. `npm --version` and `npm view worktrust@<version> --json --registry=https://registry.npmjs.org/` (the policy above);
+  2. `npm install --ignore-scripts --registry=https://registry.npmjs.org/ worktrust@<version>` into a new staging folder
+     under `~/.worktrust/update-stage` (no lifecycle script of the package runs);
+  3. `npm audit signatures --json --include-attestations` in that folder;
+  4. after all checks below hold: the package is copied into `~/.worktrust/verified/<identity>` (as every update does)
+     and that new launcher, which verifies itself before importing anything, runs `update --yes`. That command may renew
+     this computer's key (the weekly signed renewal), takes WorkTrust's door out of and back into each app you agreed to
+     (Claude Code through `claude mcp remove` and `claude mcp add`; the other apps' config files rewritten; if the add
+     does not finish, the files it took out are written back as they were and Claude Code's entry is put back), refreshes
+     the session hook and the Codex and Antigravity wake lines you agreed to, reports its version to WorkTrust, and, when
+     the measure rules changed, counts this computer's sessions for the re-measure offer and sends none of them (the
+     offer's default is No). Nothing new is coupled and no history is sent.
+  The staging folder is removed afterwards (a folder that cannot be removed is logged, never a failure). Agent-shell
+  markers are left out of these processes' environment because the act is yours from Sources; `self-update` typed in
+  an agent's shell is refused like every person-only command.
+- **The trust root, none of it WorkTrust's server.** (a) npm's registry signature for that exact version and integrity,
+  and (b) the npm provenance attestation: both VERIFIED BY NPM (registry keys; Sigstore's root, certificate chain and
+  transparency log) and relayed to the CLI by `npm audit signatures`; the CLI then binds what npm verified: the
+  certificate must name `https://github.com/fhomey/worktrust-cli/.github/workflows/publish.yml@refs/tags/v<version>`, its
+  Fulcio extension 1.3.6.1.4.1.57264.1.8 must hold GitHub Actions' OIDC issuer exactly, its DSSE signature must verify
+  under that certificate, its subject must be this tarball's sha512, and its workflow, repository and tag must match.
+  (c) WorkTrust's own release signature (`package-release.json`) under the key pinned in the CLI already installed is
+  the binding root: it does not depend on npm's word or on WorkTrust's server. The registry is forced to
+  registry.npmjs.org for every npm call, so a configured mirror cannot supply its own keys or record. A compromised
+  WorkTrust server can still send an instruction at a moment of its choosing; what a computer then installs is only the
+  release npm currently lists as latest and does not deprecate, newer than its own, with that provenance and that
+  release signature.
+- **What falls back to the command.** A Python installation (pip, pipx, uv, uvx) does not update itself (`python`), and
+  neither does a computer without npm 11.12 or later, or a CLI not started from its verified npm copy (`unsupported`).
+  Sources then says what to do, with the command. A computer on 0.10.36 or older has no updater: update it once by hand.
+- **When something fails.** Nothing new runs and the running CLI stays as it was. The next door call reports a code
+  beside the version, `worktrust-update/<installed|current|python|unsupported|unverified|failed>.<id>`, never content;
+  the reason stays in `~/.worktrust/update.log` on this computer (versions, codes, a short npm message; no key). An
+  outcome is written only for the instruction that started it. An attempt that has not finished in half an hour is
+  reported `failed`, once. `worktrust status` names the outcome.
+- **What it does not establish.** As above: signatures and provenance tie the bytes to the reviewed publish workflow;
+  they do not prove truthful activity, and a process running as you can still change files after a check.
 
 ## The WorkTrust mod for Claude Code (0.10.15, opt-in)
 

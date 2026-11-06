@@ -7,6 +7,7 @@
  * Only block style is handled; a section written inline (`key: { … }`) makes placeUnder return false, and the caller
  * leaves the file alone. No dependency: it ships beside setup-mcp.mjs.
  */
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 const indentOf = (line) => line.length - line.trimStart().length;
 const meaningful = (line) => line.trim() !== "" && !line.trimStart().startsWith("#");
 /** `key:` at `indent` between start and stop: its line and the end of its block, or the inline value it carries. */
@@ -85,3 +86,27 @@ export const isWorkTrustDoor = (url) => {
     return parsed.protocol === "https:" && (parsed.hostname === "worktrust.io" || parsed.hostname.endsWith(".worktrust.io")) || (own !== null && parsed.host === own) || ((parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") && LOCAL_DOOR_PORTS.has(parsed.port));
   } catch { return false; }
 };
+
+/**
+ * PUT BACK WHAT A FAILED RUN TOOK OUT (security review L3, 2026-11-05). `doorSnapshot`: every config FILE setup-mcp may write
+ * (its bytes, or null when absent) and Claude Code's own user-scope entry, read only. `putDoorsBack(text, name, claude)`:
+ * writes those files back as they were and, with `claude` (a runner of Claude Code's own command), puts its entry back
+ * through `claude mcp add-json`. Claude Code's file is never rewritten (Claude Code writes it all the time); Goose's plugin
+ * folder and OpenClaw (its own command) are not kept. The snapshot travels in memory and on stdin, never in a file.
+ */
+export function doorSnapshot(files, claudeFile, name) {
+  const regular = (file) => { try { return statSync(file).isFile(); } catch { return false; } };
+  let claude = null;
+  try { claude = JSON.parse(readFileSync(claudeFile, "utf8")).mcpServers?.[name] ?? null; } catch { /* no Claude Code here */ }
+  return { files: Object.fromEntries([...new Set(files)].filter((file) => regular(file) || !existsSync(file)).map((file) => [file, regular(file) ? readFileSync(file).toString("base64") : null])), claude };
+}
+export function putDoorsBack(text, name, claude) {
+  let snapshot = null, back = 0;
+  try { snapshot = JSON.parse(text); } catch { snapshot = null; }
+  for (const [file, data] of Object.entries(snapshot?.files ?? {})) {
+    try { if (data === null) { if (existsSync(file)) rmSync(file); } else writeFileSync(file, Buffer.from(String(data), "base64")); back += 1; }
+    catch { console.log(`  ! ${file} could not be put back as it was`); }
+  }
+  if (snapshot?.claude && claude) { claude(["mcp", "remove", "-s", "user", name]); console.log(claude(["mcp", "add-json", "-s", "user", name, JSON.stringify(snapshot.claude)]) ? "  ↺ Claude Code: its WorkTrust entry put back" : "  ! Claude Code: its WorkTrust entry could not be put back"); }
+  console.log(`  ↺ ${back} config file(s) put back as they were before this run`);
+}

@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.10.36",
+  "version": "0.10.37",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -39,7 +39,9 @@
     "history-outbox.mjs",
     "credential-store.mjs",
     "credential-vault.mjs",
-    "credential-vault-scripts.mjs"
+    "credential-vault-scripts.mjs",
+    "self-update.mjs",
+    "history-progress.mjs"
   ],
   "engines": {
     "node": ">=18"

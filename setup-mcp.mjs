@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { spawnSync } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
-import { isWorkTrustDoor, placeUnder, takeOut } from "./config-edits.mjs";
+import { doorSnapshot, isWorkTrustDoor, placeUnder, putDoorsBack, takeOut } from "./config-edits.mjs";
 
 const args = process.argv.slice(2);
 const value = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -214,9 +214,9 @@ const CLIENTS = [
   { key: "claude", label: "Claude Code", present: () => existsSync(join(home, ".claude.json")), file: join(home, ".claude.json"), shape: "claude" },
 ];
 
+if (args.includes("--snapshot") || args.includes("--restore")) { if (args.includes("--snapshot")) console.log(JSON.stringify(doorSnapshot([...CLIENTS.filter((client) => !["claude", "openclaw"].includes(client.shape) && client.present()).map((client) => client.file), OPENCODE_PLUGIN], join(home, ".claude.json"), NAME))); else putDoorsBack(readFileSync(0, "utf8"), NAME, claudeOnPath() ? (verb) => runCommand("claude", verb).status === 0 : null); process.exit(0); } // a failed run's doors put back (security review L3; config-edits.mjs)
 console.log(`WorkTrust MCP ${REMOVE ? "removal" : "setup"} · door ${new URL(URL_).host} · token ${masked} · ${WRITE ? "WRITING" : "dry run — add --write to write"}`);
-let touched = 0;
-let standing = 0;
+let touched = 0, standing = 0;
 for (const client of CLIENTS) {
   if (!client.present()) { console.log(`  – ${client.label}: not on this machine`); continue; }
   if (SKIP.has(client.label)) { console.log(`  · ${client.label}: left as it is (not agreed yet)`); continue; }

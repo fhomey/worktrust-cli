@@ -954,7 +954,7 @@ function batchesOf(group, byDay, limit = BATCH_LIMIT) {
   return out;
 }
 /** THE RECEIPTS' COUNTS (2026-10-10): what an export send replaced, how many AI-app lines lie on its days, how many were withdrawn; summed over the batches, read for the counts alone. */
-const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0, staged: 0, kept: 0, restored: 0, untimed: 0 }; // 0.10.27: staged, the batches WorkTrust keeps on its server, and kept, their lines // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
+const RECEIPTS = { new: 0, alreadyHeld: 0, filled: 0, replaced: 0, superseded: 0, recut: 0, unknownOnDays: 0, unknownWithdrawn: 0, corrected: 0, measuredSeconds: 0, reconstructedSeconds: 0, staged: 0, kept: 0, restored: 0, untimed: 0 }; // 0.10.27: staged, the batches WorkTrust keeps on its server, and kept, their lines // 0.10.20: measuredSeconds is WorkTrust's own figure for what the batch stored, the one the terminal shows // 0.10.17: recut, the one-envelope export lines its runs replaced // 2026-10-10: and what a re-measure did (new, held, filled, replaced), so the command can say it
 const noteReceipt = (answer, run = null) => {
   try {
     const json = JSON.parse(answer.trim().startsWith("{") ? answer : answer.split("\n").find((row) => row.startsWith("data:"))?.slice(5) ?? "null");
@@ -1142,8 +1142,9 @@ const outboxCut = {
 };
 async function sendHistory(door, entries, announce = false, rebuild = false, named = false, { byDay = false, withdrawUnknown = false } = {}) {
   let accepted = 0;
-  const { queuedHistory, historyRefusal, historyIdOf, resumeHistory } = await import("./history-outbox.mjs");
+  const { queuedHistory, historyIdOf, resumeHistory, deliverHistory } = await import("./history-outbox.mjs");
   const plan = historyPlan(door, entries, rebuild, { byDay, withdrawUnknown });
+  const shown = announce ? historyProgressOut : null, STOP = announce && PROGRESS.stopSignals ? (STOPPING ??= PROGRESS.stopSignals()) : null; shown?.({ phase: "plan", batches: plan.length, lines: plan.reduce((n, item) => n + item.batch.length, 0) }); // THE SEND, AS IT GOES (2026-11-05)
   // Persist the approved plan before sending, so later batches survive removed source files too.
   try { for (const item of plan) queuedHistory(item.target, item.body, item.source); }
   catch { console.error("History queue is full, busy or unavailable. Resume the saved batches before retrying this import; nothing was marked complete."); HISTORY_DELIVERY.waiting += entries.length; return 0; }
@@ -1157,7 +1158,7 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
   const handLater = (item) => { const row = later.get(item.target.token) ?? { target: item.target, ids: [] }; row.ids.push(historyIdOf(item.target, item.body, item.source)); later.set(item.target.token, row); };
   for (const item of plan) {
     const { source, target, batch, body } = item;
-    if (stopped.has(source)) { HISTORY_DELIVERY.waiting += batch.length; continue; } // 2026-10-31: held back behind its AI app's failed batch, waiting in the outbox, and said
+    if (stopped.has(source) || STOP?.asked) { HISTORY_DELIVERY.waiting += batch.length; continue; } // 2026-10-31: held back behind its AI app's failed batch, waiting in the outbox, and said
     if (item.run && stoppedRuns.has(item.run.id)) { handLater(item); continue; }
     const number = (numbers.get(source) ?? 0) + 1; numbers.set(source, number);
     for (const entry of batch) retainMeasurement(entry, source);
@@ -1166,32 +1167,30 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
     try { queued = queuedHistory(target, body, source); }
     catch { console.error("Pending history could not be stored safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue; }
     if (queued.status === "closed") { HISTORY_DELIVERY.refused += batch.length; RUNS.refused(item.run); continue; } // 2026-10-31: let go on an earlier send is refused, never "already held"
-    if (queued.status === "acknowledged" && !byDay) { accepted += batch.length; RECEIPTS.alreadyHeld += batch.length; RUNS.held(item.run); continue; }
+    if (queued.status === "acknowledged" && !byDay) { accepted += batch.length; RECEIPTS.alreadyHeld += batch.length; RUNS.held(item.run); shown?.({ phase: "batch", lines: batch.length, landed: true }); continue; }
     if (queued.status === "replaced" || queued.status === "oversize") { handLater(item); if (item.run) stoppedRuns.add(item.run.id); continue; }
     if (queued.status === "review" && !flag("retry-review")) { HISTORY_DELIVERY.review += batch.length; continue; }
     if (queued.status === "waiting") { HISTORY_DELIVERY.waiting += batch.length; continue; }
     try {
-      const response = await fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild || named), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(65_000) });
-      const text = await response.text();
-      try { if (!response.ok) throw Error(); confirmedReceipt(text, batch.length); }
-      catch {
-        const refusal = historyRefusal(text, response);
+      const delivered = await deliverHistory(() => fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, rebuild || named), ...proofFor(target.url, body) }, body, redirect: "error", signal: callSignal(65_000) }), (text) => confirmedReceipt(text, batch.length), { patient: announce, lines: batch.length, progress: shown, halt: () => STOP?.asked, sleep: pause });
+      const { text, refusal } = delivered; // A BATCH LANDED IN PART GOES AGAIN AT ONCE (2026-11-05): the person's send (`announce`) resends it while each resend lands more and waits out a minute's budget; a hook's send answers as before
+      if (!delivered.ok) { if (refusal.reason !== "oversize") shown?.({ phase: "batch", lines: batch.length, landed: false }); if (STOP?.asked) { HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue; } // stopped: it stays pending, never deferred
         // A run WorkTrust closed (seven days without its last batch, another computer's key) is final: kept here it would wait forever.
         if (refusal.reason === "closed") { queued.close(); HISTORY_DELIVERY.refused += batch.length; if (refusal.said) HISTORY_DELIVERY.said = refusal.said; RUNS.refused(item.run); continue; }
         if (refusal.reason === "oversize") { queued.oversize(); handLater(item); if (item.run) stoppedRuns.add(item.run.id); continue; }
-        queued.defer(refusal.reason, refusal.seconds);
+        queued.defer(refusal.reason, refusal.seconds); if (refusal.said) HISTORY_DELIVERY.reason = refusal.said; // why it waits, in WorkTrust's words (0.10.37, incident 2026-11-05)
         if (refusal.reason === "review") { HISTORY_DELIVERY.review += batch.length; continue; }
         HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); continue;
       }
-      queued.confirm(batch.length); accepted += batch.length; noteReceipt(text, item.run);
+      queued.confirm(batch.length); accepted += batch.length; noteReceipt(text, item.run); shown?.({ phase: "batch", lines: batch.length, landed: true });
       if (announce) console.log(`batch ${number}: received ${batch.length}`);
-    } catch { queued.defer("unconfirmed"); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); }
+    } catch { queued.defer("unconfirmed"); HISTORY_DELIVERY.waiting += batch.length; stopped.add(source); shown?.({ phase: "batch", lines: batch.length, landed: false }); }
   }
-  for (const { target, ids } of later.values()) {
+  for (const { target, ids } of later.values()) { // `pause`: a minute's wait that a stop cuts short (below)
     try {
-      const totals = await resumeHistory(target, { only: ids, cutter: outboxCut, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, closed: RUNS.refused, send: sendQueued(target) });
+      const totals = await resumeHistory(target, { only: ids, cutter: outboxCut, retryReview: flag("retry-review"), confirmed: confirmedReceipt, note: noteReceipt, closed: RUNS.refused, send: sendQueued(target), patient: announce, progress: shown, halt: () => STOP?.asked, sleep: pause });
       accepted += totals.received + totals.held; RECEIPTS.alreadyHeld += totals.held;
-      HISTORY_DELIVERY.waiting += totals.waiting; HISTORY_DELIVERY.review += totals.review; HISTORY_DELIVERY.refused += totals.refused; if (totals.said) HISTORY_DELIVERY.said = totals.said;
+      HISTORY_DELIVERY.waiting += totals.waiting; HISTORY_DELIVERY.review += totals.review; HISTORY_DELIVERY.refused += totals.refused; if (totals.said) HISTORY_DELIVERY.said = totals.said; if (totals.reason) HISTORY_DELIVERY.reason = totals.reason;
       if (announce && totals.split) console.log(`${totals.split} batch${totals.split === 1 ? "" : "es"} too large for one call: cut smaller and sent again in pieces`);
       if (announce && totals.refused) console.log(`${totals.refused} line${totals.refused === 1 ? "" : "s"} could not be sent in a call WorkTrust takes; the earlier lines keep counting. Run npx worktrust@latest history again to measure them anew.`);
     } catch { console.error("Pending history could not be read safely. Nothing was marked complete; keep the local WorkTrust folder for recovery."); }
@@ -1199,8 +1198,9 @@ async function sendHistory(door, entries, announce = false, rebuild = false, nam
   return accepted;
 }
 
+const PROGRESS = await import("./history-progress.mjs").then((m) => ({ sink: m.progressSink(), stopSignals: m.stopSignals }), () => ({ sink: null, stopSignals: null })); let STOPPING = null; const historyProgressOut = PROGRESS.sink?.event ?? null, pause = (ms) => new Promise((done) => { const at = setTimeout(done, ms); STOPPING?.signal.addEventListener("abort", () => { clearTimeout(at); done(); }, { once: true }); }), callSignal = (ms) => (STOPPING && AbortSignal.any ? AbortSignal.any([AbortSignal.timeout(ms), STOPPING.signal]) : AbortSignal.timeout(ms)), readTick = (index, total) => { if (historyProgressOut && (!(Date.now() < readTick.at) || index + 1 === total)) { readTick.at = Date.now() + 250; historyProgressOut({ phase: "read", unit: "sessions", part: index + 1, parts: total }); } }; // THE LONG STEPS, AS THEY GO, AND A SAFE STOP (2026-11-05): history-progress.mjs; `pause` is a minute's wait a stop cuts short
 /** The outbox's batches for one coupling, sent as `--resume` and the hook send them: signed, named, bounded in time. */
-const sendQueued = (target, ms = 65_000) => (body, source) => fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, true), ...proofFor(target.url, body) }, body, redirect: "error", signal: AbortSignal.timeout(ms) });
+const sendQueued = (target, ms = 65_000) => (body, source) => fetch(target.url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${target.token}`, ...clientOf(source, true), ...proofFor(target.url, body) }, body, redirect: "error", signal: callSignal(ms) });
 /**
  * PENDING HISTORY GOES BY ITSELF (0.10.27; owner, 2026-10-21). A batch the server did not receive (no network, a closed lid,
  * the upload limit) stays in ~/.worktrust/history-outbox and is sent again by the next hook run, a few at a time, without a
@@ -1310,7 +1310,7 @@ async function sendProcessDays() {
  */
 function historyEntries(floor = null, all = false) {
   const entries = [], processGroups = new Map();
-  for (const { file } of allTranscripts()) {
+  const transcripts = [...allTranscripts()]; for (const [index, { file }] of transcripts.entries()) { readTick(index, transcripts.length);
     const lines = parsedLines(file);
     if (!lines) continue;
     let cwd = null, steered = null;
@@ -1390,7 +1390,7 @@ async function exportEntries() {
   if (!exportSessions || !exportRunRef) throw Error("chat-exports.mjs is not beside this file, or is older than this hook: a data export cannot be read");
   const entries = [], reports = [];
   for (const given of EXPORT_PATHS) {
-    const read = {}, report = { days: new Set() }; // 0.10.18: the reader streams the export and fills `read` as it goes (path and vendor first; digest, count and the conversations left out as too large at the end)
+    const read = { onProgress: (counts) => historyProgressOut?.({ phase: "read", unit: "parts", ...counts }) }, report = { days: new Set() }; // 0.10.18: the reader streams the export and fills `read` as it goes (path and vendor first; digest, count and the conversations left out as too large at the end)
     for await (const { id, lines } of exportSessions(given, { excluded, report: read })) {
       const messages = [];
       for (const line of lines) { const at = line.timestamp ? Date.parse(line.timestamp) : NaN; if (Number.isFinite(at)) messages.push(messageOf(line, at)); }
@@ -1424,7 +1424,7 @@ async function exportEntries() {
     // A DOWNLOAD CUT OFF (2026-10-31): the reader read the conversations parts the archive held whole before the cut, and says
     // where it stopped; the person is told every time, so a partial export is never shown as the whole (counts and part names only).
     for (const cut of read.cut ?? []) process.stderr.write(`export: the archive is cut off (${cut.where}) after ${cut.last}: ${cut.parts} conversations part${cut.parts === 1 ? "" : "s"} read whole, ${read.conversations} conversations; nothing past the cut is read, so this is not the whole export\n`);
-    reports.push({ path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations, days: days.length, first: days[0] ?? null, last: days.at(-1) ?? null, oversized: read.oversized, ...(read.empty ? { empty: read.empty } : {}), ...(read.cut ? { parts: read.parts, cut: read.cut } : {}) }); // no hours (0.10.20): WorkTrust computes them on arrival and the receipt says
+    reports.push({ path: read.path, vendor: read.vendor, digest: read.digest, conversations: read.conversations, days: days.length, first: days[0] ?? null, last: days.at(-1) ?? null, oversized: read.oversized, ...(read.empty ? { empty: read.empty } : {}), ...(Number.isInteger(read.parts) ? { parts: read.parts } : {}), ...(read.cut ? { cut: read.cut } : {}) }); // no hours (0.10.20): WorkTrust computes them on arrival and the receipt says
   }
   const seen = new Set();
   return { entries: entries.filter((entry) => !seen.has(entry.stretch_ref) && seen.add(entry.stretch_ref)).sort((a, b) => a.at.localeCompare(b.at)), reports };
@@ -1459,7 +1459,7 @@ function folderEntries(given) {
   if (files.length === 0) throw Error(`no session files under ${given} (Claude Code transcripts, Codex rollouts or Antigravity transcripts, as .jsonl)`);
   const present = new Set(historyEntries(null, true).map((entry) => entry.stretch_ref)), seen = new Set();
   const entries = [], report = { stretches: 0, skipped: 0, days: new Set() };
-  for (const file of files) {
+  for (const [index, file] of files.entries()) { readTick(index, files.length);
     const client = CODEX_ROLLOUT.test(file) ? "codex" : ANTIGRAVITY_TRANSCRIPT.test(file) ? "antigravity" : "claude";
     const lines = parsedLines(file);
     if (!lines) continue;
@@ -1659,7 +1659,7 @@ if (flag("evidence-summary")) {
   process.stdout.write(`${JSON.stringify(summary)}\n`);
   return await exitFlushed(0);
 }
-if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); return await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
+if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); PROGRESS.sink?.end(); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); return await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 // THE EXPORTS IN A FOLDER (0.10.10, for the bare `npx worktrust`): which lie there, by vendor and digest, and which this computer
 // already sent or was asked about; reads, prints one JSON line, sends nothing. `--export-offered <digest>` records a No.
 if (flag("find-exports")) { const named = value("find-exports"), state = readExportsState(); const found = (findExports ? await findExports(named && !named.startsWith("--") ? named : undefined) : []).map((one) => ({ ...one, sent: state[one.digest]?.sent === true, offered: Boolean(state[one.digest]) })); process.stdout.write(`${JSON.stringify(found)}\n`); return await exitFlushed(0); }
@@ -1677,7 +1677,7 @@ if (flag("history") && flag("resume")) {
   const totals = { received: 0, review: 0, waiting: 0, batches: 0, refused: 0, split: 0 };
   try {
     for (const target of [door, ...(codexDoor && codexDoor.token !== door?.token ? [codexDoor] : [])].filter(Boolean)) {
-      const result = await resumeHistory(target, { dry: DRY, retryReview: flag("retry-review"), cutter: outboxCut, confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target) });
+      const result = await resumeHistory(target, { dry: DRY, retryReview: flag("retry-review"), cutter: outboxCut, confirmed: confirmedReceipt, note: noteReceipt, send: sendQueued(target), patient: true }); // the person's own resume resends a batch landed in part (2026-11-05)
       for (const key of Object.keys(totals)) totals[key] += result[key];
     }
     console.log(JSON.stringify({ resumed: totals.received, ...totals, ...RECEIPTS }));
@@ -1710,7 +1710,7 @@ if (flag("history") && flag("from-archive")) {
   say(`${all.length} stretches in the archive · ${signedCount} signed by this computer's key (signature checked) · ${all.length - signedCount} unsigned or signed by another key (reconstructed) · ${entries.length} of them no longer in any AI app here`);
   if (DRY || entries.length === 0) { if (entries[0]) say(`\nthe oldest of them, in full:\n${JSON.stringify(entries[0], null, 1)}`); say(entries.length === 0 ? "Nothing to send." : "\ndry run — nothing sent."); return await exitFlushed(0); }
   if (!(await doorKnowsArchive(door))) { say("WorkTrust does not accept history from an archive yet (the door does not know the mark). Nothing was sent."); return await exitFlushed(1); }
-  return await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : 1);
+  return await exitFlushed((await sendHistory(door, entries, true)) === entries.length ? 0 : STOPPING?.asked ? 130 : 1);
 }
 
 if (flag("history")) {
@@ -1762,8 +1762,8 @@ if (flag("history")) {
   if (fromExports && accepted === entries.length) for (const report of fromExports.reports) rememberExport(report.digest, { vendor: report.vendor, sent: true, at: new Date().toISOString(), conversations: report.conversations });
   // ONE LINE FOR THE COMMAND TO ASK WITH (2026-10-10): what the door replaced, how many AI-app lines lie on the export's days, how many it withdrew.
   if (!fromExports && !fromFolder) await settleReadFailures(door ?? codexDoor); // 0.10.32: a transcript that could not be read is counted and told
-  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS })); else console.log(JSON.stringify({ history_sent: accepted, of: sending.length, unreadable: READ_FAILURES.n, ...RECEIPTS, delivery: HISTORY_DELIVERY, ...(staged ? { days: { compared: COMPARED.asked ? COMPARED.days : null, changed: COMPARED.asked ? COMPARED.changed : null }, queued: QUEUED.at, run: RUNS.state() } : {}) })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
-  return await exitFlushed(accepted === sending.length && RUNS.state()?.whole !== false ? 0 : 1); // 2026-10-31: a run WorkTrust does not hold whole fails too
+  if (fromExports) console.log(JSON.stringify({ export_sent: accepted, of: entries.length, ...RECEIPTS, delivery: HISTORY_DELIVERY })); else console.log(JSON.stringify({ history_sent: accepted, of: sending.length, unreadable: READ_FAILURES.n, ...RECEIPTS, delivery: HISTORY_DELIVERY, ...(staged ? { days: { compared: COMPARED.asked ? COMPARED.days : null, changed: COMPARED.asked ? COMPARED.changed : null }, queued: QUEUED.at, run: RUNS.state() } : {}) })); // the same line for a history send: what the door did with it, and WorkTrust's measuredSeconds for what it stored
+  return await exitFlushed(STOPPING?.asked ? 130 : accepted === sending.length && RUNS.state()?.whole !== false ? 0 : 1); // 2026-10-31: a run WorkTrust does not hold whole fails too
 }
 
 const input = hookInput();

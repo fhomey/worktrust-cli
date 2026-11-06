@@ -117,7 +117,13 @@ node tools/worktrust-release/launcher.mjs BOOTSTRAP.json preserve
 
 Normal interactive checks are bounded to once per day with a 1.5-second catalogue deadline.
 Automatic standalone installation starts disabled. Hooks/MCP and preserve never start
-updates; preserve has no version check. Update commands are person-only, retaining the
+updates from a version check; preserve has no version check. The one exception (0.10.37, `update-policy.mjs`
+`resumePolicy`): a hook given the owner's turn-on instruction from Sources may update the verified npm copy, newer
+only, after npm's registry signature, the publish workflow's provenance and the release signature verify
+(tools/worktrust-cli/SECURITY.md, "Updating itself when you turn it on").
+The computer installs only what npm's own record lists as `latest` and does not deprecate. **A version the console
+classes critical must therefore also be deprecated on npm** (`npm deprecate worktrust@<version> "<reason>"`, by the
+owner): the console's class alone stops only WorkTrust's server from naming it. Update commands are person-only, retaining the
 CLI's agent-shell boundary. npm/npx and Python installations stay with their package
 managers; `update-policy.mjs` provides native commands, never an implicit Python-to-npm relay.
 

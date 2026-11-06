@@ -77,9 +77,39 @@ export function historyRefusal(text,response) {
  // A 413 (0.10.29) is the batch, not the queue: it is cut smaller, never sent again as it was, and nothing else waits for it.
  // THE SERVER'S OWN SENTENCE (0.10.35; every final refusal since 2026-10-31): why WorkTrust refused the batch, printed instead of
  // a guess (0.10.35 said "it missed a batch for seven days" of a batch refused for its lines). One line, control characters
- // taken out, at most 400 characters.
- const said=closed?String(rpc.error.message).replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').slice(0,400):null;
- return {reason:review?'review':closed?'closed':response.status===413?'oversize':response.status===429?'capacity':'unconfirmed',seconds:Number.isFinite(raw)&&raw>0?Math.min(MAX_RETRY_SECONDS,raw):0,...(said?{said}:{})};
+ // taken out, at most 400 characters. AND OF A BATCH THAT WAITS (0.10.37, incident 2026-11-05): an 'unconfirmed' reply that
+ // carries WorkTrust's own error ("could not import (57014)") hands its sentence on too, so a person reads why, not a bare
+ // "Not all of it arrived" that needed a database to explain. A review is said by the caller in its own words.
+ const message=rpc?.id===1&&typeof rpc?.error?.message==='string'&&rpc.error.message.trim()?rpc.error.message:null;
+ const said=message&&!review?message.replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').slice(0,400):null;
+ // WHICH BUDGET AND HOW MUCH LANDED (2026-11-05): a 429's data.reason (minute_budget is waited out, day_budget stops), and the
+ // door's "ran out of time" counts, so a resend that lands more is told from one that lands nothing (deliverHistory).
+ const budget=rpc?.id===1&&typeof rpc?.error?.data?.reason==='string'&&/^[a-z_]{1,40}$/.test(rpc.error.data.reason)?rpc.error.data.reason:null,partial=said?partialOf(said):null;
+ return {reason:review?'review':closed?'closed':response.status===413?'oversize':response.status===429?'capacity':'unconfirmed',seconds:Number.isFinite(raw)&&raw>0?Math.min(MAX_RETRY_SECONDS,raw):0,...(said?{said}:{}),...(budget?{budget}:{}),...(partial?{partial}:{})};
+}
+/** import-history.ts's "the batch ran out of time: N new lines were stored in whole slices and M were not sent" as { stored, unsent }. */
+export function partialOf(said){
+ if(typeof said!=='string'||!/\bran out of time\b/i.test(said))return null;
+ const stored=/(\d{1,7})\s+new\s+lines?\s+(?:were\s+|was\s+)?stored/i.exec(said),unsent=/(\d{1,7})\s+(?:were\s+|was\s+)?not\s+sent/i.exec(said);
+ return stored?{stored:Number(stored[1]),unsent:unsent?Number(unsent[1]):null}:null;
+}
+/**
+ * A BATCH THAT LANDED IN PART GOES AGAIN AT ONCE (incident 2026-11-05: 0.10.36 paused at the door's "ran out of time" and left 26
+ * of 45 export batches waiting). A line already received is kept once, so a PATIENT send (the person's own; never a hook) resends
+ * the batch while each resend lands more (a stored count above 0; a sentence without counts earns one resend), at most ten (each
+ * lands a whole slice of 20 of at most 200), and waits out the upload budget per minute (≤ 90 s a wait, 5 a batch). Anything else
+ * is answered as before. `confirm(text)` throws unless the text is a receipt for every line; a network error is the caller's.
+ */
+export const HISTORY_RESENDS=10,BUDGET_WAIT_SECONDS=90,BUDGET_WAITS=5;
+export async function deliverHistory(send,confirm,{patient=false,lines=0,progress=null,halt=null,sleep=(ms)=>new Promise((done)=>setTimeout(done,ms))}={}){ // `halt`: a stop asked, so nothing is sent again
+ for(let resends=0,waits=0;;){
+  const response=await send(),text=await response.text();
+  try{if(!response.ok)throw Error();confirm(text);return {ok:true,response,text};}catch{/* a refusal, read below */}
+  const refusal=historyRefusal(text,response),part=refusal.partial;
+  if(patient&&!halt?.()&&refusal.reason==='unconfirmed'&&response.status===200&&refusal.said&&!(refusal.seconds>0)&&resends<HISTORY_RESENDS&&(part?part.stored>0:resends===0)){resends++;progress?.({phase:'resend',lines,...(part?{stored:part.stored,...(Number.isInteger(part.unsent)?{unsent:part.unsent}:{})}:{})});continue;}
+  if(patient&&!halt?.()&&refusal.budget==='minute_budget'&&refusal.reason==='capacity'&&refusal.seconds>0&&refusal.seconds<=BUDGET_WAIT_SECONDS&&waits<BUDGET_WAITS){waits++;progress?.({phase:'wait',seconds:refusal.seconds});await sleep(refusal.seconds*1000);continue;}
+  return {ok:false,response,text,refusal};
+ }
 }
 
 /** Explicit recovery, even after the AI client removed its source files. A changed account/key
@@ -92,8 +122,10 @@ export function historyRefusal(text,response) {
  * of its batches is still on this computer; once WorkTrust holds part of a run, the rest can never complete it, and is let go
  * (`refused`: WorkTrust keeps the earlier lines counting, and `npx worktrust@latest history` measures again). A single line too
  * large for a call is let go the same way. `only` limits a pass to those batches (and their pieces): the send that just queued them.
+ * `patient` (2026-11-05): the person's own pass resends a batch landed in part and waits out a minute's budget (deliverHistory);
+ * a hook's pass never does. `progress` hears each batch's counts, for the command's display.
  */
-export async function resumeHistory(target, {send, confirmed, note, closed=null, retryReview=false, dry=false, limit=Infinity, cutter=null, only=null}) {
+export async function resumeHistory(target, {send, confirmed, note, closed=null, retryReview=false, dry=false, limit=Infinity, cutter=null, only=null, patient=false, progress=null, halt=null, sleep=undefined}) {
  const root=join(homedir(),'.worktrust','history-outbox'),scope=scopeOf(target);
  const totals={received:0,review:0,waiting:0,batches:0,refused:0,held:0,split:0};let paused=null,sent=0;
  if(!existsSync(root))return totals;
@@ -141,7 +173,7 @@ export async function resumeHistory(target, {send, confirmed, note, closed=null,
   if(queued.status==='acknowledged'||queued.status==='closed')continue;
   if(queued.status==='replaced'){queue.unshift(...queued.replacedBy);continue;}
   // `limit` (0.10.27): the hook sends a few a run by itself; the rest wait, untouched, for the next run.
-  if(sent>=limit){totals.waiting+=item.entries.length;continue;}
+  if(sent>=limit||halt?.()){totals.waiting+=item.entries.length;continue;} // or a stop was asked (2026-11-05)
   if(queued.status==='review'&&!retryReview){totals.review+=item.entries.length;continue;}
   if(cutter){
    const tighter=queued.status==='oversize',runTooLarge=Boolean(item.run)&&runOf(item.run.id).some(batch=>!cutter.fits(batch.entries)||marked(batch.id));
@@ -154,17 +186,18 @@ export async function resumeHistory(target, {send, confirmed, note, closed=null,
   if(queued.status==='waiting'&&!paused)paused={reason:'unconfirmed',seconds:Math.max(1,Math.ceil((queued.retryAt-Date.now())/1000))};
   if(paused){if(queued.status==='review'){totals.review+=item.entries.length;continue;}queued.defer(paused.reason,paused.seconds);totals.waiting+=item.entries.length;continue;}
   try {
-   sent++;const response=await send(item.body,item.source),text=await response.text();
-   try{if(!response.ok)throw Error();confirmed(text,item.entries.length);}
-   catch{
-    const refusal=historyRefusal(text,response);
+   // 2026-11-05: through deliverHistory, so a patient pass (`--resume`, the send's own cut) resends a batch landed in part at once.
+   sent++;const delivered=await deliverHistory(()=>send(item.body,item.source),(text)=>confirmed(text,item.entries.length),{patient,lines:item.entries.length,progress,halt,sleep}),text=delivered.text;
+   if(!delivered.ok){
+    const refusal=delivered.refusal;if(refusal.reason!=='oversize')progress?.({phase:'batch',lines:item.entries.length,landed:false});
     if(refusal.reason==='closed'){queued.close();totals.refused+=item.entries.length;if(refusal.said)totals.said=refusal.said;closed?.(item.run,item.entries.length);continue;}
     // Too large (0.10.29): marked and taken again at once, by the cut, never resent as it was. Without a cutter it waits.
     if(refusal.reason==='oversize'){queued.oversize();if(cutter){seen.delete(id);queue.unshift(id);}else totals.waiting+=item.entries.length;continue;}
+    if(refusal.said)totals.reason=refusal.said; // 0.10.37: why the batch waits, in WorkTrust's words (the last one heard)
     if(refusal.reason!=='review')paused={reason:refusal.reason,seconds:refusal.seconds>0?refusal.seconds:5};queued.defer(refusal.reason,paused?.seconds??refusal.seconds);totals[refusal.reason==='review'?'review':'waiting']+=item.entries.length;continue;
    }
-   queued.confirm(item.entries.length);totals.received+=item.entries.length;note(text,item.run);
-  }catch{paused={reason:'unconfirmed',seconds:5};queued.defer(paused.reason,paused.seconds);totals.waiting+=item.entries.length;}
+   queued.confirm(item.entries.length);totals.received+=item.entries.length;note(text,item.run);progress?.({phase:'batch',lines:item.entries.length,landed:true});
+  }catch{paused={reason:'unconfirmed',seconds:5};queued.defer(paused.reason,paused.seconds);totals.waiting+=item.entries.length;progress?.({phase:'batch',lines:item.entries.length,landed:false});}
  }
  return totals;
 }

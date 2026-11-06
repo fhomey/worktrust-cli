@@ -287,8 +287,8 @@ function archive(dir) {
   IDS = computerIds();
   const existing = existsSync(join(dir, "manifest.json")) || readArchive(dir).length > 0 ? check(dir) : { lines: [], manifest: null };
   if (existing.broken) { say(`  The archive in ${dir} does not verify, so nothing was added: ${existing.broken}`); process.exit(1); }
-  const hook = spawnSync(moduleExecutable(HERE), moduleArgs(HERE, "log-session.mjs", ["--archive-lines"]), { encoding: "utf8", maxBuffer: 1 << 29, env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "", WORKTRUST_HOOK_INPUT: "" } });
-  if (hook.status !== 0) { say(`  The session hook could not read this computer's sessions: ${(hook.stderr || "").trim().split("\n").pop()}`); process.exit(1); }
+  const hook = spawnSync(moduleExecutable(HERE), moduleArgs(HERE, "log-session.mjs", ["--archive-lines"]), { encoding: "utf8", maxBuffer: 1 << 29, stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, WORKTRUST_MCP_URL: "", WORKTRUST_MCP_TOKEN: "", WORKTRUST_HOOK_INPUT: "", WORKTRUST_HISTORY_PROGRESS: "stderr" } });
+  if (hook.status !== 0) { if (hook.signal) { say("  Stopped while reading this computer's sessions: nothing was added. Run the same command again to keep them."); process.exit(130); } say("  The session hook could not read this computer's sessions; nothing was added."); process.exit(1); }
   // A WHOLE ANSWER OR NOTHING: the hook ends with its own count; one line missing or cut is a read to refuse, never part of an archive.
   const rows = hook.stdout.split("\n").filter(Boolean), end = (() => { try { return JSON.parse(rows.at(-1) ?? "").archive_end; } catch { return undefined; } })();
   if (!Number.isInteger(end) || end !== rows.length - 1) { say(`  The session hook's answer came back incomplete (${rows.length - 1} of ${end ?? "an unknown number of"} lines), so nothing was added. Run it again.`); process.exit(1); }
@@ -381,7 +381,8 @@ async function guided() {
   else if (!kept) say(write === null ? "  Not a terminal: no archive written. Add --yes to agree in advance." : "  No archive written.");
   if (existsSync(join(dir, "manifest.json"))) { say(); verifyArchive(dir); summary(dir); }
 }
-
+process.on("SIGINT", stopped); process.on("SIGTERM", stopped); function stopped() { // STOPPING SAFELY (2026-11-05): the archive is written in one synchronous pass, so a Ctrl+C is handled after it, never inside it
+  say("  Stopped. What was kept so far stays in the archive, whole; run the same command again to keep the rest."); process.exit(130); }
 if (has("summary")) summary(folderAfter("summary"));
 else if (has("verify")) verifyArchive(folderAfter("verify"));
 else if (has("archive")) archive(folderAfter("archive"));

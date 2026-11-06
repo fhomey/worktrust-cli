@@ -1,5 +1,16 @@
 # worktrust
 
+## 0.10.37: an export arrives whole; progress, Ctrl+C and the reason in WorkTrust's words; CLI active and updating itself
+
+An export send no longer stops at WorkTrust's upload budget per minute: the person's own send waits it out (at most 90
+seconds a wait) and goes on, and a batch WorkTrust stored in part is sent again at once until it holds every line; a line
+already received is kept once. Every long step shows how far it is, and Ctrl+C stops cleanly, keeping what has not arrived
+for the next run. A batch that did not arrive is said in WorkTrust's own words instead of "Not all of it arrived". The
+receipt after an export names its hours as reconstructed by WorkTrust, beside the measured ones, never as measured.
+CLI active per computer: a pause set in Sources › Devices is kept by the computer at its next session, and turning it back
+on lets the computer update itself, verified (SECURITY.md, "Updating itself when you turn it on"). A computer on 0.10.36
+or older updates once by hand: `npx worktrust@latest update`. What is measured is unchanged: the measure rules stay 3.
+
 ## 0.10.36: large and cut-off ChatGPT exports; hours only with `mcp off`; a re-measure reported whole or not at all
 
 `npx worktrust history --export` now reads a ChatGPT export of any size: a zip64 archive (an export over 4 GB), and a
@@ -359,7 +370,9 @@ agent runs it makes no difference: `preserve` writes to your own user's places (
 `~/AI-Evidence`), so every terminal and agent on this computer under your user reaches the same archive, and lines
 from different versions sit side by side, each naming the version that measured it. Another user on the same computer
 gets an archive of their own. A coupled computer's session hook runs from its own copy in `~/.worktrust` and changes
-only with `npx worktrust@latest update`; the WorkTrust app says when a newer version is out.
+with `npx worktrust@latest update`, or (from 0.10.37, installed from npm) when you turn CLI active back on for that
+computer in WorkTrust › Sources: it then updates itself, verified, the next time WorkTrust runs there (SECURITY.md,
+"Updating itself when you turn it on"). The WorkTrust app says when a newer version is out.
 
 **One command walks it all.** `npx worktrust@latest preserve` shows the report, asks `Keep these settings? [y/N]`
 (then does what `--apply` does), asks `Keep a local archive in ~/AI-Evidence? [y/N]` (then does what `--archive`

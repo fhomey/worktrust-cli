@@ -1,7 +1,7 @@
 {
-  "version": "0.10.37",
+  "version": "0.10.38",
   "files": {
-    "chat-exports.mjs": "1dc109a971f88605ee3fa3a7564bcd57bce2047b86bfcd92eb3e5acf865d8f11",
+    "chat-exports.mjs": "f026c5a063f62c22ba6f25474a9d9fdbb6074beebbfe1faff2a876c437a1a000",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
     "commit-rules.mjs": "e94cc32a5415f6d9e978145ab9505ac4ae0bac9431e6e9104b9b37155260b51f",
     "config-edits.mjs": "527a7674f9d52b284bfda3b8089eb4b930a709bf14aedbec7f6eef1e59ef52ee",
@@ -9,10 +9,11 @@
     "credential-store.mjs": "a4b3540a61f4ce19e535c7f1d260c0d817686cd066d559a76db2ab108144abba",
     "credential-vault-scripts.mjs": "7e42fe1db3885c2dec6f1de87bebfbefe2292d29179a68f3da87d19eb6c7704b",
     "credential-vault.mjs": "279baabb217e2a3f170e8d7f2b271a88484531f9031c441360ea91561a70da99",
+    "export-facts.mjs": "3bbb46c80e8678b5cea7e15dcbfc456a2b48595053241c2b3cea508092f9b917",
     "git-commits.mjs": "f9c084c54937a86df8fe30a0db2a58e04eeef0dbae69c54b8e368efc9964d6d8",
     "history-outbox.mjs": "85c70389effc5b4ec9d9b33af9192314e67f47af2752515b42a7959344ce2354",
     "history-progress.mjs": "dcc25ee94b727f2605a763349a4d8764640335d6cf0043fb6108cebeed16dcb9",
-    "log-session.mjs": "f7e8f247edcc5a3ad17c2c05b83452a938d0e9e20cde5f806a54c1fb04f28958",
+    "log-session.mjs": "f111298fb6ccb65d39bcf0aa1cb058cff1df30cbf8c749c4205ec6fc95ae1cae",
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",
     "orchestration-evidence.mjs": "d0d06cecf0eb08e5c6e653c62a4f45b1eddf2119c2acb8341056b34f488d214a",
     "orchestration-report.mjs": "d4e0a9ad8e4a01b462d22c6b1866aac291565c533ff476085d3367cb6d59bc1b",
@@ -28,6 +29,6 @@
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
     "transcript-readers.mjs": "e9f20415c2b5d62a09f35a63075002ebd1da56edb32f242d52822d58ecbd8ac3",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "c417a0cabf02318cb3200bda514a3d4ca39dc95f5528d36ff59307f2f045b839"
+    "worktrust.mjs": "c196800ab886031017862d12013e8585e42e2cb82d5c84e86cac40040a4206f8"
   }
 }

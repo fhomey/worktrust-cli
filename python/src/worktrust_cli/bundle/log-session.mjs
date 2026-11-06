@@ -1102,7 +1102,7 @@ const historyRunId = (bodies) => {
 function historyPlan(door, entries, rebuild = false, { byDay = false, withdrawUnknown = false } = {}) {
   const groups = [["claude", entries.filter((entry) => !entrySource.has(entry))], ["codex", entries.filter((entry) => entrySource.get(entry) === "codex")], ...["antigravity", ...DATABASE_CLIENTS, ...EXPORT_CLIENTS].map((client) => [client, entries.filter((entry) => entrySource.get(entry) === client)])];
   // Imported entries carry no live commit/session join.
-  const encodeBatch = (batch, run = null, days = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }), ...(run ? { run } : {}), ...(days ? { days } : {}) } } });
+  const encodeBatch = (batch, run = null, days = null) => JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "import_history", arguments: { ...(rebuild ? { rebuild: true } : {}), ...(withdrawUnknown ? { withdraw_unknown: true } : {}), entries: batch.map(({commits, ...rest}) => { void commits; return rest; }), ...(exportOf(batch) ? { export: exportOf(batch) } : {}), ...(run ? { run } : {}), ...(days ? { days } : {}) } } }); const exportOf = (batch) => { const envelopes = new Set(batch.map((entry) => entryExport.get(entry))); return envelopes.size === 1 ? [...envelopes][0] ?? null : null; }; // 0.10.38: a batch of one export carries its envelope, of two none
   const plan = groups.flatMap(([source, group]) => { const target = source === "codex" ? codexDoor ?? door : door; return group.length > 0 && target ? batchesOf(group, byDay).map((batch) => ({ source, target, batch, run: null })) : []; });
   if (rebuild && !byDay) for (const token of new Set(plan.map((item) => item.target.token))) {
     const run = plan.filter((item) => item.target.token === token), id = historyRunId(run.map((item) => encodeBatch(item.batch)));
@@ -1390,37 +1390,37 @@ async function exportEntries() {
   if (!exportSessions || !exportRunRef) throw Error("chat-exports.mjs is not beside this file, or is older than this hook: a data export cannot be read");
   const entries = [], reports = [];
   for (const given of EXPORT_PATHS) {
-    const read = { onProgress: (counts) => historyProgressOut?.({ phase: "read", unit: "parts", ...counts }) }, report = { days: new Set() }; // 0.10.18: the reader streams the export and fills `read` as it goes (path and vendor first; digest, count and the conversations left out as too large at the end)
-    for await (const { id, lines } of exportSessions(given, { excluded, report: read })) {
+    const read = { onProgress: (counts) => historyProgressOut?.({ phase: "read", unit: "parts", ...counts }) }, report = { days: new Set() }, ofExport = []; let lastMessage = null; // 0.10.38: this export's entries carry its envelope once the read ended. // 0.10.18: the reader streams the export and fills `read` as it goes (path and vendor first; digest, count and the conversations left out as too large at the end)
+    for await (const { id, lines, clock = null } of exportSessions(given, { excluded, report: read })) {
       const messages = [];
       for (const line of lines) { const at = line.timestamp ? Date.parse(line.timestamp) : NaN; if (Number.isFinite(at)) messages.push(messageOf(line, at)); }
-      messages.sort((a, b) => a.at - b.at);
+      messages.sort((a, b) => a.at - b.at); if (messages.length > 0) lastMessage = Math.max(lastMessage ?? -Infinity, messages[messages.length - 1].at);
       for (const [day, ofDay] of byDayOf(messages)) {
         if (ofDay.length === 0) continue;
         // ONE STRETCH PER RUN OF ACTIVITY (0.10.17): the day's messages cut where the hook calls a stretch finished; one run
         // is the day as before, under the name it always had; several name the one-envelope line they replace.
         const runs = runsOf(ofDay), old = exportRef(read.vendor, id, day);
         runs.forEach(({ messages: run, tail }, index) => {
-          const stretch = measure(null, run), ref = runs.length === 1 ? old : exportRunRef(read.vendor, id, day, index);
+          const stretch = measure(null, run), ref = runs.length === 1 ? old : exportRunRef(read.vendor, id, day, index), models = [...new Set(run.map((message) => message.model).filter((slug) => typeof slug === "string" && /^[a-z0-9][a-z0-9._-]{0,59}$/.test(slug)))].sort().slice(0, 20); // 0.10.38: every model slug of the run
           // The run's timeline, with the gap to the next run as a closing step (the loop's own, never a turn), so WorkTrust
           // counts it with this run as the one envelope did; the last run of the day closes where the day did.
           const timeline = stretch.timeline ? `${stretch.timeline}${tail ? `U${Math.min(999999, Math.max(0, Math.round((tail - run[run.length - 1].at) / 1000)))}` : ""}` : null;
           const entry = {
             title: EXPORT_TITLES[read.vendor], kind: "researched",
             ...(timeline ? { timeline, duration_basis: "reconstructed", turn_basis: "humanOnly" } : {}),
-            ...(stretch.model ? { model: stretch.model } : {}),
+            ...(stretch.model ? { model: stretch.model } : {}), ...(models.length > 0 ? { models } : {}), ...(Number.isInteger(clock?.inversions) ? { tree_inversions: clock.inversions } : {}), ...(Number.isInteger(clock?.idSkew) ? { id_skew: clock.idSkew } : {}), // 0.10.38: and the conversation's clock facts, never its id
             stretch_ref: ref, source_event_id: `exp_${ref}`,
             ...(runs.length > 1 ? { supersedes_ref: old } : {}),
             started_at: new Date(stretch.from).toISOString(), utc_offset: stretch.offset, at: new Date(stretch.to).toISOString(),
           };
           entrySource.set(entry, read.vendor);
           entryFile.set(entry, { file: `${read.vendor}:${id}`, from: stretch.from, folder: null });
-          entries.push(entry);
+          entries.push(entry); ofExport.push(entry);
         });
         report.days.add(day);
       }
     }
-    const days = [...report.days].sort();
+    const envelope = read.envelope ? { ...read.envelope, ...(lastMessage !== null && (read.envelope.kind === "zip" || read.envelope.kind === "zips") ? { last_message_at: new Date(lastMessage).toISOString() } : {}) } : null; if (envelope) for (const entry of ofExport) entryExport.set(entry, envelope); const days = [...report.days].sort(); // ONE ENVELOPE PER EXPORT (0.10.38): its kind, named moment, write times, shape and last message; never its name
     // A DOWNLOAD CUT OFF (2026-10-31): the reader read the conversations parts the archive held whole before the cut, and says
     // where it stopped; the person is told every time, so a partial export is never shown as the whole (counts and part names only).
     for (const cut of read.cut ?? []) process.stderr.write(`export: the archive is cut off (${cut.where}) after ${cut.last}: ${cut.parts} conversations part${cut.parts === 1 ? "" : "s"} read whole, ${read.conversations} conversations; nothing past the cut is read, so this is not the whole export\n`);
@@ -1638,7 +1638,7 @@ const door = coupling();
  */
 const codexDoor = codexCoupling();
 const doorFor = (entry) => (String(entry?.id ?? "").startsWith("codex:") ? codexDoor ?? door : door);
-const entrySource = new WeakMap(); // an entry → "codex" or "antigravity" by the client that wrote it; the sends route and name by it
+const entrySource = new WeakMap(), entryExport = new WeakMap(); // an entry → "codex" or "antigravity" by the client that wrote it; the sends route and name by it. 0.10.38: an export's entry → its envelope
 const entryFile = new WeakMap(); // a history entry → its transcript (`--summary` counts sessions), first moment and folder name (`--archive-lines`)
 // THE LOCAL ARCHIVE (`npx worktrust preserve --archive`, 2026-10-06): every measured day, live window and floors aside, as JSON lines to preserve.mjs on this computer, which keeps metadata only; nothing is sent.
 // WHAT THIS COMPUTER MEASURES (0.8.3, for `npx worktrust status`): the last thirty days of its own sessions, summed from

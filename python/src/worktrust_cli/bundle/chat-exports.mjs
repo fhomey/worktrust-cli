@@ -32,7 +32,7 @@ import { once } from "node:events";
 import { existsSync, openSync, readSync, closeSync, fstatSync, readdirSync, statSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { createInflateRaw } from "node:zlib";
+import { createInflateRaw } from "node:zlib"; const { newShape = () => null, noteShape = () => {}, mergeShapes = () => null, inversionsOf = () => null, idSkewOf = () => null, envelopeOf = () => null } = (await import("./export-facts.mjs").catch(() => null)) ?? {}; // 0.10.38: what the export says of its own clock (counts, booleans, instants); a copy without the module sends none of it, as an older CLI
 
 /** The two vendors, by the client name the door reads as their product (chatgpt → chatgpt_web, claude-web → claude_web). */
 export const EXPORT_CLIENTS = ["chatgpt", "claude-web"];
@@ -112,8 +112,8 @@ function zipEntries(path, accept) {
     for (let at = tail.length - 22; at >= 0; at -= 1) if (tail.readUInt32LE(at) === 0x06054b50 && at + 22 + tail.readUInt16LE(at + 20) === tail.length) { eocd = at; break; }
     if (eocd < 0) {
       if (size < 30 || readAt(0, 4).readUInt32LE(0) !== LOCAL) throw Error(`not a zip archive: ${path}`);
-      const { selected, cut } = walkLocal(path, size, readAt, accept);
-      return { parts: entryParts(path, selected, size, readAt, chunksOf, true), close, cut };
+      const { selected, cut, shape } = walkLocal(path, size, readAt, accept);
+      return { parts: entryParts(path, selected, size, readAt, chunksOf, true), close, cut, shape };
     }
     const endAt = size - tailLength + eocd;
     let entries = tail.readUInt16LE(eocd + 10), directorySize = tail.readUInt32LE(eocd + 12), directoryAt = tail.readUInt32LE(eocd + 16), directoryEnd = endAt;
@@ -136,7 +136,7 @@ function zipEntries(path, accept) {
     damaged(directoryAt + directorySize === directoryEnd);
     const directory = readAt(directoryAt, directorySize);
     let at = 0;
-    const selected = new Map();
+    const selected = new Map(), shape = newShape();
     for (let index = 0; index < entries; index += 1) {
       damaged(at + 46 <= directory.length && directory.readUInt32LE(at) === 0x02014b50);
       const method = directory.readUInt16LE(at + 10);
@@ -144,7 +144,7 @@ function zipEntries(path, accept) {
       const nameLength = directory.readUInt16LE(at + 28), extraLength = directory.readUInt16LE(at + 30), commentLength = directory.readUInt16LE(at + 32);
       const flags = directory.readUInt16LE(at + 8), disk = directory.readUInt16LE(at + 34);
       damaged(at + 46 + nameLength + extraLength + commentLength <= directory.length);
-      const name = directory.toString("utf8", at + 46, at + 46 + nameLength), extra = directory.subarray(at + 46 + nameLength, at + 46 + nameLength + extraLength);
+      const name = directory.toString("utf8", at + 46, at + 46 + nameLength), extra = directory.subarray(at + 46 + nameLength, at + 46 + nameLength + extraLength); noteShape(shape, name, flags, extra, directory.readUInt16LE(at + 14), directory.readUInt16LE(at + 12), accept(basename(name)) && !name.endsWith("/") ? partOf(basename(name)) : null);
       at += 46 + nameLength + extraLength + commentLength;
       if (!accept(basename(name)) || name.endsWith("/")) continue;
       if (compressed === U32 || uncompressed === U32 || localAt === U32) [uncompressed, compressed, localAt] = zip64Extra(extra, [uncompressed, compressed, localAt]);
@@ -153,7 +153,7 @@ function zipEntries(path, accept) {
       selected.set(basename(name), { name, method, flags, compressed, uncompressed, localAt });
     }
     damaged(at === directory.length);
-    return { parts: entryParts(path, selected, directoryAt, readAt, chunksOf, false), close, cut: null };
+    return { parts: entryParts(path, selected, directoryAt, readAt, chunksOf, false), close, cut: null, shape };
   } catch (error) { close(); throw error; }
 }
 const LOCAL = 0x04034b50, U32 = 0xffffffff;
@@ -200,7 +200,7 @@ function entryParts(path, selected, end, readAt, chunksOf, walked) {
  * refuses the export by that entry's name; otherwise what was read is handed over WITH the cut (`cut`), never as the whole.
  */
 function walkLocal(path, size, readAt, accept) {
-  const selected = new Map();
+  const selected = new Map(), shape = newShape();
   let at = 0, walked = 0, where = null;
   for (;;) {
     if (at === size) { where = "at the end of an entry"; break; }
@@ -215,7 +215,7 @@ function walkLocal(path, size, readAt, accept) {
     let compressed = local.readUInt32LE(18), uncompressed = local.readUInt32LE(22);
     const wide = compressed === U32 || uncompressed === U32;
     if (wide) [uncompressed, compressed] = zip64Extra(extra, [U32, U32]);
-    const wanted = accept(basename(name)) && !name.endsWith("/"), dataAt = at + 30 + nameLength + extraLength;
+    const wanted = accept(basename(name)) && !name.endsWith("/"), dataAt = at + 30 + nameLength + extraLength; noteShape(shape, name, flags, extra, local.readUInt16LE(12), local.readUInt16LE(10), wanted ? partOf(basename(name)) : null);
     if ((flags & 8) && compressed === 0 && uncompressed === 0) {
       if (wanted) throw Error(`${basename(name)} in ${path} carries no length in its header and the archive has no directory: it cannot be read without one`);
       where = "at an entry whose header carries no length"; break;
@@ -238,7 +238,7 @@ function walkLocal(path, size, readAt, accept) {
   }
   if (selected.size === 0) throw Error(`${path} is cut off (no directory at its end) and holds no whole conversations part before the cut: download the export again`);
   const names = [...selected.keys()].sort(byPart);
-  return { selected, cut: { size, at, where, entries: walked, parts: names.length, first: names[0], last: names.at(-1) } };
+  return { selected, shape, cut: { size, at, where, entries: walked, parts: names.length, first: names[0], last: names.at(-1) } };
 }
 /** Numbered parts run without a gap: a part missing from the middle of the run is a partial export, never read as the whole. */
 function contiguous(names, where, fromZero = false) {
@@ -266,9 +266,9 @@ const refuseOther = (path) => { const other = OTHER_PART.exec(basename(path)); i
 /** One conversations zip: its conversations entries, or a refusal that names the zip. */
 function zipParts(path, given) {
   refuseOther(path);
-  const { parts, close, cut } = zipEntries(path, (name) => CONVERSATIONS_ENTRY.test(name));
+  const { parts, close, cut, shape } = zipEntries(path, (name) => CONVERSATIONS_ENTRY.test(name));
   if (parts.length === 0) { close(); throw Error(`no ${FILE} in ${given}`); }
-  return { parts, close, cuts: cut ? [cut] : [] };
+  return { parts, close, cuts: cut ? [cut] : [], envelope: { kind: "zip", name: basename(path), shape } };
 }
 /** A folder's conversations zips (conversations-000.zip, -001.zip …), in part order; nothing else of the folder is read. */
 const folderParts = (dir) => { let names = []; try { names = readdirSync(dir); } catch { return []; } return names.filter((name) => CONVERSATIONS_PART.test(name)).sort(byPart).map((name) => join(dir, name)); };
@@ -300,7 +300,7 @@ function zipsParts(zips, given) {
     for (const zip of zips) opened.push(zipParts(zip, given));
     const parts = opened.flatMap((one) => one.parts);
     limit(parts.length <= EXPORT_LIMITS.parts && parts.reduce((sum, part) => sum + part.bytes, 0) <= EXPORT_LIMITS.fileBytes, "conversations parts");
-    return { parts, close: () => { for (const one of opened) one.close(); }, cuts: opened.flatMap((one) => one.cuts) };
+    return { parts, close: () => { for (const one of opened) one.close(); }, cuts: opened.flatMap((one) => one.cuts), envelope: { kind: "zips", name: null, shape: mergeShapes(opened.map((one) => one.envelope.shape)) } };
   } catch (error) { for (const one of opened) one.close(); throw error; }
 }
 /**
@@ -320,7 +320,7 @@ function looseParts(dir, given) {
   try {
     for (const name of names) { const path = join(dir, name); opened.push({ path, file: openExport(path, EXPORT_LIMITS.fileBytes) }); }
     limit(opened.reduce((sum, one) => sum + one.file.size, 0) <= EXPORT_LIMITS.fileBytes, "conversations parts");
-    return { parts: opened.map(({ path, file }) => ({ path, bytes: file.size, chunks: () => file.chunksOf(0, file.size, file.size) })), close: () => { for (const one of opened) one.file.close(); }, cuts: [] };
+    return { parts: opened.map(({ path, file }) => ({ path, bytes: file.size, chunks: () => file.chunksOf(0, file.size, file.size) })), close: () => { for (const one of opened) one.file.close(); }, cuts: [], envelope: { kind: "folder" } };
   } catch (error) { for (const one of opened) one.file.close(); throw error; }
 }
 
@@ -343,7 +343,7 @@ function exportParts(given) {
   let manifest;
   try {
     // A json holding an object, not an array of conversations, may be the vendor's manifest: read for its conversations parts alone.
-    if (basename(path) === FILE || file.size > EXPORT_LIMITS.manifestBytes || !/^\s*\{/.test(file.readAt(0, Math.min(64, file.size)).toString("utf8"))) return { parts: [{ path, bytes: file.size, chunks: () => file.chunksOf(0, file.size, file.size) }], close: file.close };
+    if (basename(path) === FILE || file.size > EXPORT_LIMITS.manifestBytes || !/^\s*\{/.test(file.readAt(0, Math.min(64, file.size)).toString("utf8"))) return { parts: [{ path, bytes: file.size, chunks: () => file.chunksOf(0, file.size, file.size) }], close: file.close, envelope: { kind: stat.isDirectory() ? "folder" : "json" } };
     try { manifest = JSON.parse(file.readAt(0, file.size).toString("utf8")); } catch { throw Error(`export unreadable: ${path}`); }
   } catch (error) { file.close(); throw error; }
   file.close();
@@ -618,7 +618,7 @@ const transcriptLine = ({ type, timestamp, model, text }) => ({ type, timestamp,
 async function* exportRecords(given, { expect = null, excluded = () => false, skipped = null, text = false, report = null, metadata = false } = {}) {
   if (metadata && text) throw Error("an export's metadata is counted without the text, never with it");
   const totals = {};
-  const { parts, close, cuts = [] } = exportParts(given);
+  const { parts, close, cuts = [], envelope = null } = exportParts(given);
   const path = parts[0].path, digest = createHash("sha256");
   let vendor = null, count = 0, oversized = 0, empty = 0, bytes = 0, next = PROGRESS_BYTES, offset = 0, tick = 0, at = 0; const size = parts.reduce((n, one) => n + (Number(one.bytes) || 0), 0);
   if (report) { report.path = path; report.vendor = expect; report.digest = null; report.conversations = 0; report.oversized = 0; report.empty = 0; report.parts = parts.length; report.cut = cuts.length > 0 ? cuts : null; }
@@ -636,7 +636,7 @@ async function* exportRecords(given, { expect = null, excluded = () => false, sk
     if (report) report.vendor = vendor;
     const title = String((vendor === "chatgpt" ? kept.title : kept.name) ?? "");
     if (excluded(title)) { skipped?.push(title.slice(0, 40)); return { vendor, excluded: true, lines: [] }; }
-    const record = { vendor, id: String((vendor === "chatgpt" ? kept.conversation_id ?? kept.id : kept.uuid) ?? `#${index}`), lines: vendor === "chatgpt" ? chatgptLines(kept, text) : claudeLines(kept, text) };
+    const record = { vendor, id: String((vendor === "chatgpt" ? kept.conversation_id ?? kept.id : kept.uuid) ?? `#${index}`), lines: vendor === "chatgpt" ? chatgptLines(kept, text) : claudeLines(kept, text) }; record.clock = { inversions: inversionsOf(record.lines), ...(vendor === "chatgpt" ? { idSkew: idSkewOf(String(kept.conversation_id ?? kept.id ?? ""), kept.create_time) } : {}) }; // 0.10.38: counts and a skew, never the id
     if (metadata) { record.metadata = vendor === "chatgpt" ? chatgptMetadata(kept) : null; for (const counts of Object.values(record.metadata ?? {})) addCounts(totals, counts); } // a Claude export carries no such fields: null, never zeros
     return record;
   };
@@ -662,7 +662,7 @@ async function* exportRecords(given, { expect = null, excluded = () => false, sk
     }
   } finally { close(); }
   if (vendor === null && empty > 0) throw Error(`${path} is neither a ChatGPT nor a Claude export (or mixes the two)`);
-  report?.onProgress?.({ part: at, parts: parts.length, bytes, size, conversations: count }); if (report) { report.vendor = vendor ?? expect; report.digest = digest.digest("hex"); report.conversations = count; report.oversized = oversized; report.empty = empty; if (metadata) report.metadata = vendor === "chatgpt" ? totals : null; }
+  report?.onProgress?.({ part: at, parts: parts.length, bytes, size, conversations: count }); if (report) { report.vendor = vendor ?? expect; report.digest = digest.digest("hex"); report.envelope = envelopeOf(envelope, vendor ?? expect); report.conversations = count; report.oversized = oversized; report.empty = empty; if (metadata) report.metadata = vendor === "chatgpt" ? totals : null; }
 }
 
 /** One export, read whole but compact: its vendor by shape, one record per conversation (its kept lines; none for an excluded or oversized one), and the digest of its bytes (what `sent` is remembered by). */
@@ -674,7 +674,7 @@ export async function readExport(given, expect = null, { excluded = () => false,
     limit(kept <= EXPORT_LIMITS.keptBytes, "kept bytes");
     conversations.push(record);
   }
-  return { vendor: report.vendor, conversations, digest: report.digest, path: report.path, parts: report.parts, oversized: report.oversized, empty: report.empty, cut: report.cut, ...(metadata ? { metadata: report.metadata } : {}) };
+  return { vendor: report.vendor, conversations, digest: report.digest, path: report.path, parts: report.parts, oversized: report.oversized, empty: report.empty, cut: report.cut, envelope: report.envelope ?? null, ...(metadata ? { metadata: report.metadata } : {}) };
 }
 
 /**
@@ -686,9 +686,9 @@ export async function readExport(given, expect = null, { excluded = () => false,
  */
 export async function* exportSessions(given, { expect = null, excluded = () => false, skipped = null, text = false, report = null, metadata = false } = {}) {
   const records = typeof given === "string" ? exportRecords(given, { expect, excluded, skipped, text, report, metadata }) : given.conversations;
-  for await (const { vendor, id, lines, metadata: counts = null } of records) {
+  for await (const { vendor, id, lines, clock = null, metadata: counts = null } of records) {
     if (lines.length === 0) continue; // excluded, left out as too large, or without a message
-    yield { key: `${vendor === "chatgpt" ? "chatgpt" : "claude.ai"}:${id}`, projectDir: vendor === "chatgpt" ? "chatgpt" : "claude-ai", basename: vendor === "chatgpt" ? "chatgpt" : "claude.ai", vendor, id, lines: lines.map(transcriptLine), ...(metadata ? { metadata: counts } : {}) };
+    yield { key: `${vendor === "chatgpt" ? "chatgpt" : "claude.ai"}:${id}`, projectDir: vendor === "chatgpt" ? "chatgpt" : "claude-ai", basename: vendor === "chatgpt" ? "chatgpt" : "claude.ai", vendor, id, lines: lines.map(transcriptLine), clock, ...(metadata ? { metadata: counts } : {}) };
   }
 }
 

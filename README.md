@@ -1,5 +1,18 @@
 # worktrust
 
+## 0.10.38: an export says what it can about its own clock
+
+`npx worktrust history --export` now sends, beside each run's timeline, the facts WorkTrust checks to tell an edited
+ChatGPT or Claude-on-the-web export from one as the vendor made it: every model slug of the run (`models`), how many kept
+steps are dated more than ten minutes before the step they follow (`tree_inversions`), and, for a ChatGPT conversation
+whose id carries a clock, how far its creation time sits from that clock (`id_skew`). Once per export batch it sends the
+export's envelope: its kind (a zip, several zips, a folder or a bare file), the moment the vendor's zip name gives, the
+first and last write time of its conversations entries, its last message, and whether its shape is the vendor's (no extra
+field but zip64's, no data descriptor, no Finder litter, parts in order). Never a conversation's id, title or text, never
+the archive's file name. A line whose clock does not hold up goes to Review with its reason named, never refused or
+deleted; a re-zipped export alone is only a label. Lines that arrived from 0.10.37 or older are not judged again. One new
+module, `export-facts.mjs`. What is measured is unchanged: the measure rules stay 3.
+
 ## 0.10.37: an export arrives whole; progress, Ctrl+C and the reason in WorkTrust's words; CLI active and updating itself
 
 An export send no longer stops at WorkTrust's upload budget per minute: the person's own send waits it out (at most 90

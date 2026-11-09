@@ -1,5 +1,14 @@
 # worktrust
 
+## 0.11.2: your phone adds a browser
+
+A browser where you use app.worktrust.io can steer this computer's agents without a walk to its keyboard: the browser
+shows a code, your phone scans it and asks Face ID, and this computer adds the browser only if you allowed it here once
+(`npx worktrust remote phones allow-endorse on`, off by default), only for a browser of your own account, and only within
+five minutes. The terminal says when a browser was added and `npx worktrust remote phones` lists which phone added it;
+each one stays revocable. The Passport's issuer key stays pinned. What is measured for the passport is unchanged:
+remote-steered sessions never count as your hours, and the measure rules stay 3.
+
 ## 0.11.1: terminal sessions, and the live preview you can touch
 
 `npx worktrust remote terminal on` lets the phone start Claude Code in a terminal session on WorkTrust's own tmux socket

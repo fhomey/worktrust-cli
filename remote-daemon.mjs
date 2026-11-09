@@ -12,7 +12,8 @@
  */
 import { basename } from "node:path";
 import * as P from "./remote-protocol.mjs";
-import { confirmedFingerprints, controllerKeys, loadChannels, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
+import { confirmedFingerprints, controllerKeys, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
+import { acceptEndorsement } from "./remote-endorse.mjs";
 import { createProject, rootLabel, worktreeMain } from "./remote-projects.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
@@ -146,6 +147,14 @@ export function createDaemonCore(o) {
       emit(null, "project.created", { ...made.project, git: made.git }, env.command_id);
       emit(null, "device.inventory", inventoryBody(false));
       o.log("project_created", { git: made.git });
+      return "taken";
+    }
+    if (env.type === "browser.endorse") {
+      // A confirmed phone adds a browser it scanned (remote-endorse.mjs): only with this computer's opt-in, for its own account.
+      const decided = acceptEndorsement({ allowed: settings.allow_endorse, phones: loadPhones(), spent: loadEndorsements().spent, sender: env.sender_device_id, payload, issuerKeys: o.issuerKeys, account: o.local.claims.sub, now: o.now() });
+      if (!decided.ok) { o.log("endorse_refused", { reason: decided.reason }); return decided.reason; }
+      saveEndorsements({ spent: decided.spent });
+      if (decided.added) { savePhones(decided.phones); o.log("browser_endorsed", { device_id: decided.added.device_id, fingerprint: decided.added.fingerprint, by: decided.added.endorsed_by.device_id }); }
       return "taken";
     }
     if (env.type === "approval.decision") return approvals.decide(payload.decision_token).ok ? "taken" : "approval_invalid";

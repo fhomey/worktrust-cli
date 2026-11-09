@@ -9,6 +9,7 @@
  *   remote pause | resume                             refuse every command for now | take them again
  *   remote disable [--forget]                         the hard off: the service removed; --forget also deletes the keys
  *   remote phones [confirm <id> | remove <id>]        phones: pending ones are confirmed here, at the keyboard
+ *   remote phones allow-endorse on|off                may a confirmed phone add a browser it scanned (default off)
  *   remote projects add <folder> | remove <id> | list the folders a phone may steer an agent in
  *   remote run                                        the daemon in the foreground (Windows runs only this way)
  *   remote pipeline review <folder> | status          read a granted folder's .worktrust/pipeline.json, show every stage
@@ -143,6 +144,15 @@ async function phones(io, rest) {
     io.say(`  ✓ Confirmed: phone · ${phone.fingerprint}`);
     return;
   }
+  if (rest[0] === "allow-endorse") {
+    // At this keyboard only (2026-11-09, remote-endorse.mjs): a phone confirmed here may then add a browser it scanned.
+    if (rest[1] !== "on" && rest[1] !== "off") io.fail("npx worktrust remote phones allow-endorse on|off");
+    if (rest[1] === "on" && !process.stdin.isTTY) io.fail("endorsements are allowed at this keyboard, in a terminal");
+    if (rest[1] === "on" && !(await askTyped("  A phone confirmed here may then add a browser it scanned as a controller of this computer. Allow it?"))) { io.say("  Not changed."); return; }
+    saveSettings({ ...loadSettings(), allow_endorse: rest[1] === "on" });
+    io.say(rest[1] === "on" ? "  ✓ Your confirmed phones may add a browser. Each one is listed here with the phone that added it." : "  ✓ No phone may add a browser. Browsers already added stay until you remove them.");
+    return;
+  }
   if (rest[0] === "remove") {
     const phone = find(rest[1]);
     if (!phone) io.fail("no phone by that fingerprint or id");
@@ -152,7 +162,10 @@ async function phones(io, rest) {
     return;
   }
   io.say(`  Confirmed phones (${list.confirmed.length}):`);
-  for (const p of list.confirmed) io.say(`    ${p.fingerprint}  ${p.device_id}  (${p.how === "qr" ? "scanned the QR" : "confirmed at the keyboard"})`);
+  const when = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+  const how = (p) => p.how === "endorsed" ? `a browser, added by phone ${p.endorsed_by?.fingerprint ?? "?"}${[...list.confirmed, ...list.removed].some((x) => x.device_id === p.endorsed_by?.device_id && !list.confirmed.includes(x)) ? " (since removed)" : ""} on ${when(p.confirmed_at)}` : p.how === "qr" ? "scanned the QR" : "confirmed at the keyboard";
+  for (const p of list.confirmed) io.say(`    ${p.fingerprint}  ${p.device_id}  (${how(p)})`);
+  io.say(`  Phones may add a browser: ${loadSettings().allow_endorse ? "yes" : "no"} (npx worktrust remote phones allow-endorse on|off)`);
   io.say(`  Pending phones (${list.pending.length}):`);
   for (const p of list.pending) io.say(`    ${p.fingerprint}  ${p.device_id}   confirm: npx worktrust remote phones confirm ${p.fingerprint}`);
   if (list.removed.length > 0) {
@@ -261,14 +274,15 @@ function status(io) {
   const settings = loadSettings(), identity = loadIdentity(), keys = identity ? loadKeys() : null, phonesList = loadPhones(), service = serviceState();
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
-    gateway: settings.gateway, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length }, projects: loadProjects().length,
+    gateway: settings.gateway, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length,
     agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false) };
   if (io.has("json")) { io.say(JSON.stringify(summary, null, 2)); return; }
   io.say(`  Remote: ${settings.enabled ? (settings.paused ? `paused (${settings.paused === "desk" ? "here" : "from a phone"})` : "on") : "off"}`);
   io.say(`  Paired: ${identity ? `${identity.device_id} · key ${summary.fingerprint}` : "no"}`);
   io.say(`  Gateway: ${settings.gateway ?? "none set"}${settings.gateway && isLoopbackGateway(settings.gateway) ? " (this computer: dev relay)" : ""}`);
   io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);
-  io.say(`  Phones: ${summary.phones.confirmed} confirmed, ${summary.phones.pending} pending · Folders granted: ${summary.projects}`);
+  io.say(`  Phones: ${summary.phones.confirmed} confirmed (${summary.phones.browsers_added} browsers added by a phone), ${summary.phones.pending} pending · Folders granted: ${summary.projects}`);
+  io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`);
   for (const a of summary.agents) io.say(`  Agent: ${a.adapter} ${a.version ?? ""} · ${a.adapter_ready ? "remote adapter ready" : "installed, no adapter yet"} · models: ${a.models}`);
 }
 
@@ -282,7 +296,7 @@ export async function remoteCommand(args, io) {
     const s = loadSettings();
     saveSettings({ ...s, enabled: false, paused: null });
     io.say(`  Off. The service is removed (${removeService()}); the daemon stops by itself within seconds.`);
-    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
+    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
     return;
   }
   if (sub === "phones") return phones(io, rest);
@@ -326,5 +340,5 @@ export async function remoteCommand(args, io) {
   if (sub === "releases") return releasesCommand(io, rest);
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
-  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

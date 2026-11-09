@@ -1834,6 +1834,257 @@ export function controlsOffered(actions                , delivery               
   };
 }
 
+// ---- packages/remote-protocol/src/crypto/keys.ts
+/**
+ * REMOTE DEVICE KEYS. Each computer and each phone install has its own pair: Ed25519 to sign, X25519 to agree keys.
+ * They are NOT the computer's measurement key: a different key, a different store entry, a different audience. A
+ * stolen remote key cannot sign a measurement, and a measurement key cannot steer an agent; every signature here is
+ * also domain-separated ("worktrust-remote/v1/..."), so a signature made for one purpose verifies for no other.
+ *
+ * A FINGERPRINT FOR PEOPLE. 80 bits of SHA-256 over both public keys, as sixteen Crockford base32 characters in four
+ * groups (no I, L, O or U to misread). Shown on the computer's screen and on the phone when a phone is confirmed at
+ * the computer's keyboard, so a compromised issuer cannot slip in a key of its own unnoticed.
+ */
+
+export function generateDeviceKeys(random        )                   {
+  return { ed25519: random(KEY_BYTES), x25519: random(KEY_BYTES) };
+}
+
+export function publicKeysOf(secret                  )                   {
+  return { ed25519_pub: toBase64Url(ed25519PublicKey(secret.ed25519)), x25519_pub: toBase64Url(x25519PublicKey(secret.x25519)) };
+}
+
+/** For a store that holds strings (expo-secure-store, the CLI's credential store). */
+export const exportSecretKeys = (secret                  )                                      => ({
+  ed25519: toBase64Url(secret.ed25519),
+  x25519: toBase64Url(secret.x25519),
+});
+
+export function importSecretKeys(stored                                                       )                          {
+  const ed = fromBase64Url(stored.ed25519);
+  const x = fromBase64Url(stored.x25519);
+  return ed?.length === KEY_BYTES && x?.length === KEY_BYTES ? { ed25519: ed, x25519: x } : null;
+}
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const FINGERPRINT_DOMAIN = utf8Encode("worktrust-remote/v1/fingerprint\n");
+
+function base32Groups(bytes            )         {
+  let bits = 0;
+  let acc = 0;
+  let out = "";
+  for (const b of bytes) {
+    acc = (acc << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += CROCKFORD[(acc >> bits) & 31] ;
+    }
+    acc &= (1 << bits) - 1;
+  }
+  return out.match(/.{1,4}/g) .join("-");
+}
+
+function decodeKey(text        )             {
+  const bytes = fromBase64Url(text);
+  if (bytes?.length !== KEY_BYTES) throw new TypeError("a public key is 32 bytes of base64url");
+  return bytes;
+}
+
+/** "ABCD-EFGH-JKMN-PQRS" for one device's public keys. */
+export function deviceFingerprint(keys                  )         {
+  const digest = sha256(concatBytes(FINGERPRINT_DOMAIN, decodeKey(keys.ed25519_pub), decodeKey(keys.x25519_pub)));
+  return base32Groups(digest.subarray(0, 10));
+}
+
+// ---- packages/remote-protocol/src/crypto/jws.ts
+/**
+ * COMPACT SIGNED TOKENS: JWS (RFC 7515) with EdDSA over Ed25519 (RFC 8037), so the gateway can verify an assertion
+ * with any standard library, and so can the phone and the computer with this package. Three token types, told apart
+ * by `typ` and never interchangeable:
+ *   wt-remote-binding+jwt   the Passport app binds a device's remote keys to an account
+ *   wt-remote-auth+jwt      the Passport app authorizes one device at the gateway for five minutes
+ *   wt-remote-approval+jwt  a phone decides one pending approval
+ * The verifier fixes alg, typ and the key set before it looks at the token: a token cannot choose how it is checked.
+ * Header and payload are canonical JSON, so one claim set has one signing input.
+ */
+
+export const TOKEN_TYPES = ["wt-remote-binding+jwt", "wt-remote-auth+jwt", "wt-remote-approval+jwt"]         ;
+
+export const MAX_TOKEN_CHARS = 4096;
+
+/** Public keys by key id: the issuer's keys (pinned in the app and CLI builds), or a phone's bound key. */
+
+export function signToken(typ           , kid        , claims                                   , secret            )         {
+  const header = toBase64Url(utf8Encode(canonicalJson({ alg: "EdDSA", kid, typ })));
+  const payload = toBase64Url(utf8Encode(canonicalJson(claims)));
+  const signature = ed25519Sign(utf8Encode(`${header}.${payload}`), secret);
+  return `${header}.${payload}.${toBase64Url(signature)}`;
+}
+
+const decodeJson = (part        )          => {
+  const bytes = fromBase64Url(part);
+  const text = bytes === null ? null : utf8Decode(bytes);
+  return text === null ? undefined : parseJson(text);
+};
+
+export function verifyToken(token        , typ           , keys        )                         {
+  if (token.length > MAX_TOKEN_CHARS) return refuse("shape", "token: too long");
+  const parts = token.split(".");
+  if (parts.length !== 3) return refuse("shape", "token: not three parts");
+  const [h, p, s] = parts                            ;
+  const header = decodeJson(h);
+  if (typeof header !== "object" || header === null || Array.isArray(header)) return refuse("shape", "token: header");
+  const hd = header                           ;
+  if (Object.keys(hd).sort().join(",") !== "alg,kid,typ") return refuse("shape", "token: header fields");
+  if (hd.alg !== "EdDSA") return refuse("shape", "token: alg");
+  if (hd.typ !== typ) return refuse("shape", "token: typ");
+  if (typeof hd.kid !== "string" || !Object.hasOwn(keys, hd.kid)) return refuse("unknown_key", "token: kid");
+  const key = keys[hd.kid] ;
+  const signature = fromBase64Url(s);
+  if (key.length !== KEY_BYTES || signature === null) return refuse("signature", "token: signature encoding");
+  if (!ed25519Verify(signature, utf8Encode(`${h}.${p}`), key)) return refuse("signature", "token: signature");
+  const claims = decodeJson(p);
+  if (typeof claims !== "object" || claims === null || Array.isArray(claims)) return refuse("shape", "token: payload");
+  // The signed bytes must BE the canonical encoding, so one claim set has exactly one valid token form.
+  if (toBase64Url(utf8Encode(canonicalJson(claims))) !== p) return refuse("shape", "token: payload not canonical");
+  if (toBase64Url(utf8Encode(canonicalJson(hd))) !== h) return refuse("shape", "token: header not canonical");
+  return accept({ kid: hd.kid, claims: claims                            });
+}
+
+/** iat/exp checks shared by every token kind; seconds, with the protocol's skew. */
+export function checkTimes(iat        , exp        , nowMs        , maxLifetimeS        , skewMs        )                {
+  if (exp <= iat) return refuse("lifetime", "token: exp not after iat");
+  if (exp - iat > maxLifetimeS) return refuse("lifetime", "token: lives too long");
+  if (iat * 1000 > nowMs + skewMs) return refuse("not_yet_valid", "token: issued in the future");
+  if (exp * 1000 + skewMs < nowMs) return refuse("expired", "token: expired");
+  return accept(true);
+}
+
+// ---- packages/remote-protocol/src/crypto/binding.ts
+/**
+ * A REMOTE KEY BINDING: the Passport app's signed word that these public keys belong to this device of this account.
+ * The person approves the device in app.worktrust.io, signed in with a second factor; the app signs
+ *   { iss, aud, sub, device_id, kind, ed25519_pub, x25519_pub, iat, exp, jti }
+ * with a WorkTrust issuer key. `sub` is an opaque account reference for the remote system (an HMAC of the owner id
+ * under a Passport secret, prefixed usr_), never the Passport owner id, so the relay's records join to nothing else.
+ *
+ * Endpoints verify bindings against the issuer's public keys PINNED in the app and CLI builds, never against a key the
+ * relay hands them. The relay cannot forge a binding. The issuer alone cannot add a controller either: a new phone is
+ * pending on the computer until the person confirms its fingerprint at the computer's keyboard (handshake.ts).
+ */
+
+export const DEVICE_KINDS = ["phone", "computer"]         ;
+
+export const BINDING_CLAIMS_SPEC = object({
+  iss: oneOf([PASSPORT_ISSUER]),
+  aud: oneOf([GATEWAY_AUDIENCE]),
+  sub: id("usr"),
+  device_id: id("dev"),
+  kind: oneOf(DEVICE_KINDS),
+  ed25519_pub: b64({ exact: 32 }),
+  x25519_pub: b64({ exact: 32 }),
+  iat: int(0),
+  exp: int(0),
+  jti: id("jti"),
+});
+
+/** For the Passport app: validate, then sign. */
+export function issueBinding(claims                  , issuerSecret            , kid        )         {
+  const checked = validate(BINDING_CLAIMS_SPEC, claims, "$binding");
+  if (!checked.ok) throw new TypeError(checked.detail);
+  if (claims.exp - claims.iat > MAX_BINDING_LIFETIME_S || claims.exp <= claims.iat) throw new RangeError("binding lifetime");
+  return signToken("wt-remote-binding+jwt", kid, claims, issuerSecret);
+}
+
+export function verifyBinding(token        , expect                    )                            {
+  const verified = verifyToken(token, "wt-remote-binding+jwt", expect.issuerKeys);
+  if (!verified.ok) return refuse(verified.code === "shape" ? "binding" : verified.code, verified.detail);
+  const shaped = validate(BINDING_CLAIMS_SPEC, verified.value.claims, "$binding");
+  if (!shaped.ok) return refuse("binding", shaped.detail);
+  const b = shaped.value;
+  const times = checkTimes(b.iat, b.exp, expect.now, MAX_BINDING_LIFETIME_S, CLOCK_SKEW_MS);
+  if (!times.ok) return times;
+  if (expect.kind !== undefined && b.kind !== expect.kind) return refuse("binding", "$binding.kind: not the expected kind");
+  if (expect.deviceId !== undefined && b.device_id !== expect.deviceId) return refuse("wrong_device", "$binding.device_id");
+  if (expect.sub !== undefined && b.sub !== expect.sub) return refuse("account_mismatch", "$binding.sub");
+  if (expect.isRevoked?.(b)) return refuse("revoked", "$binding: revoked");
+  return accept(b);
+}
+
+/** The signing key a verified binding names, as bytes. */
+export const bindingSigningKey = (b                  )             => fromBase64Url(b.ed25519_pub) ;
+export const bindingAgreementKey = (b                  )             => fromBase64Url(b.x25519_pub) ;
+export const bindingFingerprint = (b                  )         =>
+  deviceFingerprint({ ed25519_pub: b.ed25519_pub, x25519_pub: b.x25519_pub });
+
+// ---- packages/remote-protocol/src/crypto/endorse.ts
+/**
+ * A PHONE ADDS A BROWSER (owner, 2026-11-09: "your phone approves a new browser"; docs/remote-agents/PROTOCOL.md §A phone
+ * endorses a browser). Like linking a messenger's web client: the browser shows a QR code with its issuer binding (its
+ * keys, its device id, its account), a one-time nonce and a short expiry; a CONFIRMED phone scans it, asks the device
+ * unlock, and sends each chosen computer a sealed, signed `browser.endorse` command carrying exactly those three. The
+ * computer adds the browser as a controller only if it allowed endorsements at its keyboard (`worktrust remote phones
+ * allow-endorse on`), the sender is a controller confirmed there or by a scanned QR (never one added by endorsement), the
+ * binding verifies for the computer's OWN account, the endorsement is in time and its nonce was never spent.
+ *
+ * The QR holds one link, everything in the fragment, which no browser sends to a server:
+ *   https://app.worktrust.io/remote/endorse#v=1&b=<binding>&n=<16-byte nonce>&e=<expiry, unix s>
+ * This file is the only reader and writer of that link and the one check both the phone and the computer run.
+ */
+
+export const ENDORSE_VERSION = 1;
+/** Five minutes at most from the browser showing it to the computer taking it. */
+export const ENDORSE_LIFETIME_S = 300;
+export const ENDORSE_LINK_BASE = "https://app.worktrust.io/remote/endorse";
+
+/** What travels: the QR's three fields, and the sealed `browser.endorse` payload, the same three. */
+export const ENDORSEMENT_SPEC = object({ binding: token(4096), nonce: b64({ exact: 16 }), expires_at: int(0) });
+
+/** The browser makes one for its own binding: a fresh nonce, five minutes. */
+export function createEndorsement(binding        , nowMs        , random        )              {
+  return { binding, nonce: toBase64Url(random(16)), expires_at: Math.floor(nowMs / 1000) * 1000 + ENDORSE_LIFETIME_S * 1000 };
+}
+
+export function encodeEndorseLink(e             , base         = ENDORSE_LINK_BASE)         {
+  return `${base}#v=${ENDORSE_VERSION}&b=${encodeURIComponent(e.binding)}&n=${e.nonce}&e=${Math.floor(e.expires_at / 1000)}`;
+}
+
+export function decodeEndorseLink(link        )                       {
+  if (typeof link !== "string" || link.length > 6000) return refuse("shape", "$link");
+  const hash = link.indexOf("#");
+  if (hash < 0 || link.slice(0, hash) !== ENDORSE_LINK_BASE) return refuse("shape", "$link: not a WorkTrust browser link");
+  const raw                         = {};
+  for (const part of link.slice(hash + 1).split("&")) {
+    const eq = part.indexOf("=");
+    const key = eq > 0 ? part.slice(0, eq) : "";
+    if (!["v", "b", "n", "e"].includes(key) || Object.hasOwn(raw, key)) return refuse("shape", "$link: an unknown or repeated key");
+    try { raw[key] = decodeURIComponent(part.slice(eq + 1)); } catch { return refuse("shape", "$link: encoding"); }
+  }
+  if (raw.v !== String(ENDORSE_VERSION) || !/^[1-9][0-9]{0,11}$/.test(raw.e ?? "")) return refuse("shape", "$link: version or expiry");
+  const shaped = validate(ENDORSEMENT_SPEC, { binding: raw.b, nonce: raw.n, expires_at: Number(raw.e) * 1000 }, "$endorsement");
+  return shaped.ok ? accept(shaped.value) : refuse("shape", shaped.detail);
+}
+
+/**
+ * THE CHECK, on the phone before it asks the unlock and on the computer before it adds anyone: the binding verifies against
+ * the pinned issuer keys as a controller (kind phone), for `account` (the checker's own binding's `sub`: a phone of account
+ * A never endorses a browser of account B, and a computer never takes a browser of another account), and the endorsement
+ * is in time and never lives longer than five minutes. Single use is the computer's spent-nonce list, not this function.
+ */
+export function checkEndorsement(input         , o                                                                                 )                           {
+  const shaped = validate(ENDORSEMENT_SPEC, input, "$endorsement");
+  if (!shaped.ok) return refuse("shape", shaped.detail);
+  const e = shaped.value;
+  if (e.expires_at <= o.now) return refuse("expired", "$endorsement.expires_at");
+  if (e.expires_at > o.now + ENDORSE_LIFETIME_S * 1000 + CLOCK_SKEW_MS) return refuse("lifetime", "$endorsement.expires_at");
+  const bound = verifyBinding(e.binding, { issuerKeys: o.issuerKeys, now: o.now, kind: "phone" });
+  if (!bound.ok) return refuse(bound.code, bound.detail);
+  if (bound.value.sub !== o.account) return refuse("account_mismatch", "$endorsement.binding.sub");
+  const keys = { ed25519_pub: bound.value.ed25519_pub, x25519_pub: bound.value.x25519_pub };
+  return accept({ device_id: bound.value.device_id, fingerprint: deviceFingerprint(keys), keys, binding: bound.value, nonce: e.nonce, expires_at: e.expires_at });
+}
+
 // ---- packages/remote-protocol/src/commands.ts
 /**
  * THE COMMANDS A PHONE MAY SEND, AND NOTHING ELSE. A fixed list, each with a sealed payload schema. A computer refuses
@@ -1947,6 +2198,12 @@ export const COMMAND_PAYLOAD_SPECS = {
    * in it only when the person enabled that for the root at the keyboard. Answered with project.created.
    */
   "project.create": object({ name: text(100, 1), root_id: id("rot") }),
+  /**
+   * A confirmed phone adds a browser it scanned as a controller of this computer (2026-11-09, crypto/endorse.ts): the
+   * browser's issuer binding, the QR's one-time nonce and its expiry. Taken only when the computer allowed endorsements at
+   * its keyboard, from a phone confirmed there or by a scanned QR, for the computer's own account, in time, nonce unspent.
+   */
+  "browser.endorse": ENDORSEMENT_SPEC,
   /** A release: a bundle of tasks in one project (release.ts). Ids are minted by the phone, once. */
   "release.create": object({
     release_id: id("rel"),
@@ -1991,7 +2248,7 @@ export const COMMAND_PAYLOAD_SPECS = {
 export const COMMAND_TYPES = Object.keys(COMMAND_PAYLOAD_SPECS)                          ;
 
 export const RELEASE_COMMANDS                           = new Set             (["release.create", "release.add_task", "release.reorder", "release.cancel_task", "release.start", "release.list", "pipeline.start", "pipeline.cancel"]);
-export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "project.create", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
+export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "project.create", "browser.endorse", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
 export const commandScope = (type             )                       => (DEVICE_COMMANDS.has(type) ? "device" : "session");
 
 /** Commands whose acceptance starts a run with steps, approvals and an end (state-machine.ts follows those through
@@ -2018,6 +2275,7 @@ export const COMMAND_TTL_MS                                        = {
   "session.close": 5 * MINUTE,
   "session.rename": 5 * MINUTE,
   "project.create": 10 * MINUTE,
+  "browser.endorse": 5 * MINUTE,
   "attachment.put": 60 * MINUTE,
   "attachment.clear": 10 * MINUTE,
   "preview.targets": 1 * MINUTE,
@@ -2173,6 +2431,7 @@ export const REJECT_REASONS = [
   "conflict", // a command id reused for different bytes
   "busy", // the agent is mid-turn and the command needs it idle (a release: its tasks still run, or no slot for a pipeline)
   "unreviewed", // the project's pipeline file was not reviewed at the keyboard, or changed since (2026-11-07)
+  "not_allowed", // the computer did not allow it at its keyboard (a browser endorsement without allow-endorse), or the sender may not (2026-11-09)
 ]         ;
 
 export const FAIL_REASONS = ["agent_exited", "adapter_error", "not_ready", "timeout", "internal"]         ;
@@ -2895,190 +3154,6 @@ export function readSteeredLedger(textValue        )                            
   }
   return { byRef, unreadable, pipelines };
 }
-
-// ---- packages/remote-protocol/src/crypto/keys.ts
-/**
- * REMOTE DEVICE KEYS. Each computer and each phone install has its own pair: Ed25519 to sign, X25519 to agree keys.
- * They are NOT the computer's measurement key: a different key, a different store entry, a different audience. A
- * stolen remote key cannot sign a measurement, and a measurement key cannot steer an agent; every signature here is
- * also domain-separated ("worktrust-remote/v1/..."), so a signature made for one purpose verifies for no other.
- *
- * A FINGERPRINT FOR PEOPLE. 80 bits of SHA-256 over both public keys, as sixteen Crockford base32 characters in four
- * groups (no I, L, O or U to misread). Shown on the computer's screen and on the phone when a phone is confirmed at
- * the computer's keyboard, so a compromised issuer cannot slip in a key of its own unnoticed.
- */
-
-export function generateDeviceKeys(random        )                   {
-  return { ed25519: random(KEY_BYTES), x25519: random(KEY_BYTES) };
-}
-
-export function publicKeysOf(secret                  )                   {
-  return { ed25519_pub: toBase64Url(ed25519PublicKey(secret.ed25519)), x25519_pub: toBase64Url(x25519PublicKey(secret.x25519)) };
-}
-
-/** For a store that holds strings (expo-secure-store, the CLI's credential store). */
-export const exportSecretKeys = (secret                  )                                      => ({
-  ed25519: toBase64Url(secret.ed25519),
-  x25519: toBase64Url(secret.x25519),
-});
-
-export function importSecretKeys(stored                                                       )                          {
-  const ed = fromBase64Url(stored.ed25519);
-  const x = fromBase64Url(stored.x25519);
-  return ed?.length === KEY_BYTES && x?.length === KEY_BYTES ? { ed25519: ed, x25519: x } : null;
-}
-
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const FINGERPRINT_DOMAIN = utf8Encode("worktrust-remote/v1/fingerprint\n");
-
-function base32Groups(bytes            )         {
-  let bits = 0;
-  let acc = 0;
-  let out = "";
-  for (const b of bytes) {
-    acc = (acc << 8) | b;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      out += CROCKFORD[(acc >> bits) & 31] ;
-    }
-    acc &= (1 << bits) - 1;
-  }
-  return out.match(/.{1,4}/g) .join("-");
-}
-
-function decodeKey(text        )             {
-  const bytes = fromBase64Url(text);
-  if (bytes?.length !== KEY_BYTES) throw new TypeError("a public key is 32 bytes of base64url");
-  return bytes;
-}
-
-/** "ABCD-EFGH-JKMN-PQRS" for one device's public keys. */
-export function deviceFingerprint(keys                  )         {
-  const digest = sha256(concatBytes(FINGERPRINT_DOMAIN, decodeKey(keys.ed25519_pub), decodeKey(keys.x25519_pub)));
-  return base32Groups(digest.subarray(0, 10));
-}
-
-// ---- packages/remote-protocol/src/crypto/jws.ts
-/**
- * COMPACT SIGNED TOKENS: JWS (RFC 7515) with EdDSA over Ed25519 (RFC 8037), so the gateway can verify an assertion
- * with any standard library, and so can the phone and the computer with this package. Three token types, told apart
- * by `typ` and never interchangeable:
- *   wt-remote-binding+jwt   the Passport app binds a device's remote keys to an account
- *   wt-remote-auth+jwt      the Passport app authorizes one device at the gateway for five minutes
- *   wt-remote-approval+jwt  a phone decides one pending approval
- * The verifier fixes alg, typ and the key set before it looks at the token: a token cannot choose how it is checked.
- * Header and payload are canonical JSON, so one claim set has one signing input.
- */
-
-export const TOKEN_TYPES = ["wt-remote-binding+jwt", "wt-remote-auth+jwt", "wt-remote-approval+jwt"]         ;
-
-export const MAX_TOKEN_CHARS = 4096;
-
-/** Public keys by key id: the issuer's keys (pinned in the app and CLI builds), or a phone's bound key. */
-
-export function signToken(typ           , kid        , claims                                   , secret            )         {
-  const header = toBase64Url(utf8Encode(canonicalJson({ alg: "EdDSA", kid, typ })));
-  const payload = toBase64Url(utf8Encode(canonicalJson(claims)));
-  const signature = ed25519Sign(utf8Encode(`${header}.${payload}`), secret);
-  return `${header}.${payload}.${toBase64Url(signature)}`;
-}
-
-const decodeJson = (part        )          => {
-  const bytes = fromBase64Url(part);
-  const text = bytes === null ? null : utf8Decode(bytes);
-  return text === null ? undefined : parseJson(text);
-};
-
-export function verifyToken(token        , typ           , keys        )                         {
-  if (token.length > MAX_TOKEN_CHARS) return refuse("shape", "token: too long");
-  const parts = token.split(".");
-  if (parts.length !== 3) return refuse("shape", "token: not three parts");
-  const [h, p, s] = parts                            ;
-  const header = decodeJson(h);
-  if (typeof header !== "object" || header === null || Array.isArray(header)) return refuse("shape", "token: header");
-  const hd = header                           ;
-  if (Object.keys(hd).sort().join(",") !== "alg,kid,typ") return refuse("shape", "token: header fields");
-  if (hd.alg !== "EdDSA") return refuse("shape", "token: alg");
-  if (hd.typ !== typ) return refuse("shape", "token: typ");
-  if (typeof hd.kid !== "string" || !Object.hasOwn(keys, hd.kid)) return refuse("unknown_key", "token: kid");
-  const key = keys[hd.kid] ;
-  const signature = fromBase64Url(s);
-  if (key.length !== KEY_BYTES || signature === null) return refuse("signature", "token: signature encoding");
-  if (!ed25519Verify(signature, utf8Encode(`${h}.${p}`), key)) return refuse("signature", "token: signature");
-  const claims = decodeJson(p);
-  if (typeof claims !== "object" || claims === null || Array.isArray(claims)) return refuse("shape", "token: payload");
-  // The signed bytes must BE the canonical encoding, so one claim set has exactly one valid token form.
-  if (toBase64Url(utf8Encode(canonicalJson(claims))) !== p) return refuse("shape", "token: payload not canonical");
-  if (toBase64Url(utf8Encode(canonicalJson(hd))) !== h) return refuse("shape", "token: header not canonical");
-  return accept({ kid: hd.kid, claims: claims                            });
-}
-
-/** iat/exp checks shared by every token kind; seconds, with the protocol's skew. */
-export function checkTimes(iat        , exp        , nowMs        , maxLifetimeS        , skewMs        )                {
-  if (exp <= iat) return refuse("lifetime", "token: exp not after iat");
-  if (exp - iat > maxLifetimeS) return refuse("lifetime", "token: lives too long");
-  if (iat * 1000 > nowMs + skewMs) return refuse("not_yet_valid", "token: issued in the future");
-  if (exp * 1000 + skewMs < nowMs) return refuse("expired", "token: expired");
-  return accept(true);
-}
-
-// ---- packages/remote-protocol/src/crypto/binding.ts
-/**
- * A REMOTE KEY BINDING: the Passport app's signed word that these public keys belong to this device of this account.
- * The person approves the device in app.worktrust.io, signed in with a second factor; the app signs
- *   { iss, aud, sub, device_id, kind, ed25519_pub, x25519_pub, iat, exp, jti }
- * with a WorkTrust issuer key. `sub` is an opaque account reference for the remote system (an HMAC of the owner id
- * under a Passport secret, prefixed usr_), never the Passport owner id, so the relay's records join to nothing else.
- *
- * Endpoints verify bindings against the issuer's public keys PINNED in the app and CLI builds, never against a key the
- * relay hands them. The relay cannot forge a binding. The issuer alone cannot add a controller either: a new phone is
- * pending on the computer until the person confirms its fingerprint at the computer's keyboard (handshake.ts).
- */
-
-export const DEVICE_KINDS = ["phone", "computer"]         ;
-
-export const BINDING_CLAIMS_SPEC = object({
-  iss: oneOf([PASSPORT_ISSUER]),
-  aud: oneOf([GATEWAY_AUDIENCE]),
-  sub: id("usr"),
-  device_id: id("dev"),
-  kind: oneOf(DEVICE_KINDS),
-  ed25519_pub: b64({ exact: 32 }),
-  x25519_pub: b64({ exact: 32 }),
-  iat: int(0),
-  exp: int(0),
-  jti: id("jti"),
-});
-
-/** For the Passport app: validate, then sign. */
-export function issueBinding(claims                  , issuerSecret            , kid        )         {
-  const checked = validate(BINDING_CLAIMS_SPEC, claims, "$binding");
-  if (!checked.ok) throw new TypeError(checked.detail);
-  if (claims.exp - claims.iat > MAX_BINDING_LIFETIME_S || claims.exp <= claims.iat) throw new RangeError("binding lifetime");
-  return signToken("wt-remote-binding+jwt", kid, claims, issuerSecret);
-}
-
-export function verifyBinding(token        , expect                    )                            {
-  const verified = verifyToken(token, "wt-remote-binding+jwt", expect.issuerKeys);
-  if (!verified.ok) return refuse(verified.code === "shape" ? "binding" : verified.code, verified.detail);
-  const shaped = validate(BINDING_CLAIMS_SPEC, verified.value.claims, "$binding");
-  if (!shaped.ok) return refuse("binding", shaped.detail);
-  const b = shaped.value;
-  const times = checkTimes(b.iat, b.exp, expect.now, MAX_BINDING_LIFETIME_S, CLOCK_SKEW_MS);
-  if (!times.ok) return times;
-  if (expect.kind !== undefined && b.kind !== expect.kind) return refuse("binding", "$binding.kind: not the expected kind");
-  if (expect.deviceId !== undefined && b.device_id !== expect.deviceId) return refuse("wrong_device", "$binding.device_id");
-  if (expect.sub !== undefined && b.sub !== expect.sub) return refuse("account_mismatch", "$binding.sub");
-  if (expect.isRevoked?.(b)) return refuse("revoked", "$binding: revoked");
-  return accept(b);
-}
-
-/** The signing key a verified binding names, as bytes. */
-export const bindingSigningKey = (b                  )             => fromBase64Url(b.ed25519_pub) ;
-export const bindingAgreementKey = (b                  )             => fromBase64Url(b.x25519_pub) ;
-export const bindingFingerprint = (b                  )         =>
-  deviceFingerprint({ ed25519_pub: b.ed25519_pub, x25519_pub: b.x25519_pub });
 
 // ---- packages/remote-protocol/src/crypto/assertion.ts
 /**

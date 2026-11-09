@@ -1,5 +1,5 @@
 {
-  "version": "0.11.1",
+  "version": "0.11.2",
   "files": {
     "chat-exports.mjs": "f026c5a063f62c22ba6f25474a9d9fdbb6074beebbfe1faff2a876c437a1a000",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -31,10 +31,11 @@
     "remote-changes.mjs": "2141fece4961a5bc1bb1b046f78222812617457b1ba6452275eac6a897e62e19",
     "remote-claude-events.mjs": "58822471203c6a1b66cf81c115c4d713657c3dea5c7b98df959f894ee5b2e704",
     "remote-claude-progress.mjs": "2ca626d3dbc16d8d570abe1df6477b7e44ffb43c1d9145228ec5ea1928e415ca",
-    "remote-cli.mjs": "3b291937359a1f76a2f2966ed10004b3e60876ce505a7079f060664ab9be90b6",
+    "remote-cli.mjs": "61d2f9ed71f3bfc9b9526084da8936e555373d0208e1c54aeb644e926c450788",
     "remote-coalesce.mjs": "cb0967d9cfe81e3892bcade8349d6814db98be8c2adbdb54df0b8d1b142f65d1",
     "remote-codex-events.mjs": "58657d6070a50c837737cb85f5a1eaf9c2cbc4e1adfe3e970748ab3b2af94631",
-    "remote-daemon.mjs": "f272c4eee2ff4ecfc3843dbb089a1e9249ac4e7f48756773ec44f4533aa18143",
+    "remote-daemon.mjs": "5dadcced9bd2c69be8c48afbaabbf50bd16879612ada0553aa2284a873907492",
+    "remote-endorse.mjs": "89eda4883567176703e01e44d83e987271bc2a6134e108f517b3b213719a21f9",
     "remote-inventory.mjs": "ece467b45a50a3fff8c59a13f8224bc1a8a723fbeadb2371d9843ba1147b685c",
     "remote-journal.mjs": "907ebd48c53162b22dc743ef95b53c1a6be6886a7495605b5cfa820b8de9d330",
     "remote-live-preview.mjs": "faa70f9260ac05037204c2a0c3facf4ffe42f68408948390b341b453a2932289",
@@ -45,11 +46,11 @@
     "remote-policy.mjs": "aacf7578537021ab3849095bb1f58f0ed12c453c6ca2ab1352a1716fb13b0ca4",
     "remote-preview.mjs": "fe504ad6f83dcb4a4ebdcc018686a9a5a900c47cdf8c45b75e7d02e2f3056155",
     "remote-projects.mjs": "d07997167d1f51139ff010c8753639e48c5cd33688568459e184eabb12bfff84",
-    "remote-protocol.mjs": "e816db7cce36be1f5f230c889c13a4c629924b533ea713bfa37e4e861be112f4",
+    "remote-protocol.mjs": "7b2a78e585983be40e240b9ab0b2e31a69e586bd72292071886c60b217d97a60",
     "remote-qr.mjs": "b80e2b4a5bc020cf6ed92e91d06b327cb5197de1c35b3445a0fc2c7a3bf1ab3f",
     "remote-release-plans.mjs": "11884a62b7d6dcccb5e154a26603bdf650f7b40f946329fb174d8c13729bec74",
     "remote-releases.mjs": "fb08b72593ea00013c8b679e0c0d7dee95b0fd7cc5fd31b80ac575d0e340927d",
-    "remote-run.mjs": "5a324e9c76de8cfd0bf15eed155edcc5d307da5e370a9aa70471a9566ae5ae6a",
+    "remote-run.mjs": "c72c77fdd14115e66f1f2be383ca4f1363a4cecc9dced9cc48cbb3e4bb44bc66",
     "remote-screen-approvals.mjs": "c43ab286d36a38d17639d155782ffa017f1a9b6806a09b82ed0142a1290b6000",
     "remote-screen-push.mjs": "4ee8bd48d24b2c87581e9f33d8354a86381f7febd82f89ed509a7a87c1442608",
     "remote-screen-states.mjs": "7c3c86a584bebf52461f3cab39c05ea2a13910061704d48fc622956e842940f7",
@@ -58,7 +59,7 @@
     "remote-sessions.mjs": "fad62c5c3cb9dabf177b39bcc843a78b77784e3711f8a22398f1b518a6adfc08",
     "remote-steered.mjs": "fbbd3685a8cd497ae03235d258e2116e2129aac19046759fb2468fe79911f0b3",
     "remote-steering.mjs": "7ba22e6110cea3ac75a4f084f8f92a5bd90c31a19d3ce58a88a0843bdadea834",
-    "remote-store.mjs": "15fe6a2c0640e222e834a21cf7b60747da839e975813faf2f6256aa44d08635f",
+    "remote-store.mjs": "9dc5d436890f0b63edb13d513993666e83e40946983f2387941c9705a7440ddb",
     "remote-terminal-cli.mjs": "82a048b75e412d0b6db076afbb84cab7c754dec72b6c8b6af4d4906b38e988a7",
     "remote-terminal-sessions.mjs": "6ab51824890a18768d23cedc499f3840b2b02a8ed651463c1fe2d74dd352a361",
     "remote-transport.mjs": "68650fd77ea09b5762377f87cabdc1c73a34d77324aa5bf0cd9742094a50c32b",
@@ -70,6 +71,6 @@
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
     "transcript-readers.mjs": "e9f20415c2b5d62a09f35a63075002ebd1da56edb32f242d52822d58ecbd8ac3",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "57b754e24fbf2b7cd2d1df2d2625bc750b7d7d3c5c07e4b7e476a3f551f40bc1"
+    "worktrust.mjs": "2f5b4331e3a258dedc8fbe6a02be86e255dc4f6428498852f2e44c3cd60028cd"
   }
 }

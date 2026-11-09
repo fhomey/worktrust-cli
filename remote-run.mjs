@@ -36,6 +36,9 @@ import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), kind, ...fields })}\n`);
+// A browser a phone added (2026-11-09, remote-endorse.mjs) is said in words too, so it is never news only in a JSON line.
+const notice = (kind, fields) => { if (kind === "browser_endorsed") process.stderr.write(`  ! A browser was added by your phone ${fields.by}: ${fields.fingerprint}. See or remove it: npx worktrust remote phones\n`); };
+const logged = (kind, fields = {}) => { log(kind, fields); notice(kind, fields); };
 
 export function agentEnv(settings, base = process.env) {
   const env = {};
@@ -124,7 +127,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   // The live preview (release 19): the session's granted page, live, over the browser's pipe; one per computer.
   const live = createLivePreview({ emit: (...a) => core.emit(...a), grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log, now: Date.now,
     sessionProject: (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; } });
-  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, now: Date.now, random, log, send: (f) => transport?.send(f) ?? false, inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
+  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, now: Date.now, random, log: logged, send: (f) => transport?.send(f) ?? false, inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);

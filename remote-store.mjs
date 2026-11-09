@@ -9,7 +9,9 @@
  *   remote-keys.json    the remote device keys and the secret that derives project ids (never leaves the computer)
  *   identity.json       this computer's device id and the issuer's binding of its keys
  *   settings.json       on or off, paused (and by whom), the gateway address, default agent and model, PATH for agents
- *   phones.json         phones pending a keyboard confirmation, and the confirmed ones with their fingerprints
+ *   phones.json         phones pending a keyboard confirmation, and the confirmed ones with their fingerprints (and, for a
+ *                       browser a phone added, which phone and when)
+ *   endorsements.json   the one-time nonces of browser endorsements already taken, kept a little past their expiry
  *   projects.json       the folders a phone may steer an agent in, canonical paths
  *   channels.json       the open end-to-end channels (their keys are secrets)
  *   journal.jsonl       the command journal (remote-journal.mjs); steered.jsonl the steered ledger (remote-steered.mjs)
@@ -65,12 +67,16 @@ export function loadKeys() {
 export const loadIdentity = () => readJson("identity.json");
 export const saveIdentity = (identity) => writeJson("identity.json", identity);
 
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, terminal: false });
+// allow_endorse (2026-11-09): may a confirmed phone add a browser it scanned (remote-endorse.mjs)? Off until the person says so
+// here, at the keyboard (`worktrust remote phones allow-endorse on`).
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, terminal: false, allow_endorse: false });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 
 export const loadPhones = () => ({ pending: [], confirmed: [], removed: [], ...(readJson("phones.json") ?? {}) });
 export const savePhones = (phones) => writeJson("phones.json", phones);
+export const loadEndorsements = () => readJson("endorsements.json", { spent: [] }) ?? { spent: [] };
+export const saveEndorsements = (value) => writeJson("endorsements.json", value);
 export const confirmedFingerprints = (phones = loadPhones()) => new Set(phones.confirmed.map((p) => p.fingerprint));
 /** The signing keys of the confirmed phones, by device id: the only keys whose approval decisions count. */
 export const controllerKeys = (phones = loadPhones()) => Object.fromEntries(phones.confirmed.map((p) => [p.device_id, P.fromBase64Url(p.ed25519_pub)]));

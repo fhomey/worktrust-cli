@@ -1,5 +1,13 @@
 # worktrust
 
+## 0.11.3: every device off this computer at once
+
+`npx worktrust remote phones remove --all` disconnects every phone and browser from this computer in one act, after one
+confirmation at the keyboard. The computer refuses them from their next message. Sessions they started keep running here:
+stop them with `npx worktrust remote disable`, or pause everything with `npx worktrust remote pause`. To end their keys for
+your whole account too, use Settings › MOCHI on app.worktrust.io or MOCHI settings on your phone. What is measured for the
+passport is unchanged: remote-steered sessions never count as your hours, and the measure rules stay 3.
+
 ## 0.11.2: your phone adds a browser
 
 A browser where you use app.worktrust.io can steer this computer's agents without a walk to its keyboard: the browser

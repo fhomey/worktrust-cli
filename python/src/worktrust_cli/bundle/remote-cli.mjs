@@ -8,7 +8,7 @@
  *   remote status [--json]                            what is on, paired, running, granted and installed
  *   remote pause | resume                             refuse every command for now | take them again
  *   remote disable [--forget]                         the hard off: the service removed; --forget also deletes the keys
- *   remote phones [confirm <id> | remove <id>]        phones: pending ones are confirmed here, at the keyboard
+ *   remote phones [confirm <id> | remove <id>|--all]  phones: pending ones are confirmed here; --all cuts every one at once
  *   remote phones allow-endorse on|off                may a confirmed phone add a browser it scanned (default off)
  *   remote projects add <folder> | remove <id> | list the folders a phone may steer an agent in
  *   remote run                                        the daemon in the foreground (Windows runs only this way)
@@ -152,6 +152,12 @@ async function phones(io, rest) {
     saveSettings({ ...loadSettings(), allow_endorse: rest[1] === "on" });
     io.say(rest[1] === "on" ? "  ✓ Your confirmed phones may add a browser. Each one is listed here with the phone that added it." : "  ✓ No phone may add a browser. Browsers already added stay until you remove them.");
     return;
+  }
+  if (rest[0] === "remove" && (rest[1] === "--all" || io.has("all"))) { // EVERY DEVICE OFF, FROM THE SOURCE (owner, 2026-11-09): the daemon reads this list per message
+    const all = [...list.confirmed, ...list.pending], at = Date.now(); if (all.length === 0) return io.say("  No phone or browser is connected to this computer.");
+    if (process.stdin.isTTY && !(await askTyped(`  Disconnect all ${all.length} phones and browsers from this computer now?`))) return io.say("  Nothing changed.");
+    savePhones({ ...list, pending: [], confirmed: [], removed: [...list.removed.filter((p) => !all.some((x) => x.device_id === p.device_id)), ...all.map((p) => ({ device_id: p.device_id, fingerprint: p.fingerprint, how: "keyboard", removed_at: at }))].slice(-20) });
+    return io.say(`  ✓ Disconnected ${all.length}: none of them can steer this computer any more. Live sessions they started keep running here; stop them with npx worktrust remote disable, or pause everything with npx worktrust remote pause.\n  End their keys for your whole account too: app.worktrust.io › Settings › MOCHI, or MOCHI settings on your phone.`);
   }
   if (rest[0] === "remove") {
     const phone = find(rest[1]);
@@ -340,5 +346,5 @@ export async function remoteCommand(args, io) {
   if (sub === "releases") return releasesCommand(io, rest);
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
-  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

@@ -16,6 +16,8 @@ import { existsSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { codexReport } from "./remote-adapter-codex.mjs";
+import { terminalReport, tmuxVersion } from "./remote-adapter-terminal.mjs";
+import { typingTrusted } from "./remote-screen-states.mjs";
 
 const NO = Object.freeze({ start: false, attach: false, prompt: false, steer: false, pause: false, resume: false, stop: false, structured_events: false, screen: false, focus: false, resume_by_id: false, permission_modes: ["ask"], approvals: "none", acceptance: "acknowledged" });
 export const AGENTS = Object.freeze({ "claude-code": "claude", codex: "codex", "cursor-agent": "cursor-agent", opencode: "opencode" });
@@ -115,7 +117,12 @@ export function inventory({ env = process.env, refresh = false, now = Date.now()
     const checked = P.validateAdapterReport(report);
     if (!checked.ok) throw new Error(`inventory: ${report.adapter}: ${checked.detail}`);
   }
-  cache = { reports, features, files: Object.fromEntries(Object.keys(AGENTS).map((a) => [a, findOnPath(AGENTS[a], env.PATH)])), at: now };
+  // Claude Code in a terminal (release 19): tmux on its own socket. Kept beside the reports, sent only when turned on (offered).
+  const tmux = findOnPath("tmux", env.PATH), claude = reports.find((r) => r.adapter === "claude-code");
+  const terminal = terminalReport({ claude: claude?.installed ? { ...claude, features: features["claude-code"] } : null, tmux: tmux ? tmuxVersion(probe(tmux, ["-V"], env)) : null });
+  const checkedTerminal = P.validateAdapterReport(terminal);
+  if (!checkedTerminal.ok) throw new Error(`inventory: claude-code (terminal): ${checkedTerminal.detail}`);
+  cache = { reports, features, terminal, files: { ...Object.fromEntries(Object.keys(AGENTS).map((a) => [a, findOnPath(AGENTS[a], env.PATH)])), tmux }, at: now };
   return cache;
 }
 export const adapterOf = (inv, id) => inv.reports.find((r) => r.adapter === id);
@@ -127,6 +134,10 @@ export const adapterOf = (inv, id) => inv.reports.find((r) => r.adapter === id);
  * listed as installed and offered nothing.
  */
 export function offered(inv, settings) {
-  if (settings?.codex === true) return inv;
-  return { ...inv, reports: inv.reports.map((r) => (r.adapter === "codex" && r.capabilities.start ? { ...r, capabilities: NO } : r)) };
+  const reports = settings?.codex === true ? inv.reports : inv.reports.map((r) => (r.adapter === "codex" && r.capabilities.start ? { ...r, capabilities: NO } : r));
+  // Terminal sessions (release 19) only after `worktrust remote terminal on`: an older phone refuses a second report of one adapter.
+  // Typing from a phone only on a screen detector whose fixtures were recorded from the real agent (remote-screen-states.mjs).
+  // Answering its dialogs from a phone (screen-hash approvals) needs the same: approvals "screen" only then.
+  const terminal = inv.terminal?.capabilities.start && typingTrusted("claude-code") ? { ...inv.terminal, capabilities: { ...inv.terminal.capabilities, prompt: true, approvals: "screen" } } : inv.terminal;
+  return { ...inv, reports: settings?.terminal === true && terminal ? [...reports, terminal] : reports };
 }

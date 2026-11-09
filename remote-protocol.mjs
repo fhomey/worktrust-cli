@@ -644,11 +644,202 @@ export function availableActions(report               )                 {
   };
 }
 
+/**
+ * The report a session or a start means: its adapter in its mode (release 19: one adapter may be reported twice, structured
+ * and terminal). An absent mode is structured, as every report before release 19 was.
+ */
+export function reportFor                                                                    (reports                                 , adapter               , mode                     )           {
+  const want = mode ?? "structured";
+  return reports?.find((r) => r.adapter === adapter && r.mode === want) ?? null;
+}
+
 /** A model may be named only if the computer listed it; null asks for the agent's own default. */
 export function isModelReported(report               , model               )          {
   if (model === null) return true;
   return report.models !== null && report.models.includes(model);
 }
+
+// ---- packages/remote-protocol/src/transfer.ts
+/**
+ * FILES FROM THE PHONE, AND A LOCAL PREVIEW BACK (owner, 2026-11-07 22:50). docs/remote-agents/PROTOCOL.md "Attachments"
+ * and "Local preview". Everything here is sealed: the relay sees the types, their timing and size classes, never a name,
+ * a byte of a file or of a picture.
+ *
+ * ATTACHMENTS. An image, a PDF or a document travels in chunks of at most 512 KiB (`attachment.put`), each naming the whole
+ * file's size, its chunk count and its SHA-256; the computer keeps the chunks apart, joins them when all arrived, checks the
+ * hash and that the bytes are what the type says (a PNG starts like a PNG), and only then writes ONE file into the
+ * session's project at `.worktrust/inbox/<session_id>/<safe name>` (mode 0600, never executable). `attachment.stored`
+ * answers every chunk with the count received (a measured progress) and, once whole, the file's path relative to the
+ * project, which a later `agent.start` / `agent.prompt` names by its id (`attachments`), so the agent is told to read it.
+ * Caps: 25 MB a file, 100 MB a session. `attachment.clear` deletes the session's inbox.
+ *
+ * LOCAL PREVIEW. The phone's "Deploy" segment is a LOCAL preview, never a production deploy: `preview.render` asks the
+ * computer to render a page of a dev server on 127.0.0.1 at a port the person granted for that project at the keyboard
+ * (`worktrust remote preview allow <port>`), or a built HTML file in the project the person granted, at a phone, tablet or
+ * desktop viewport, with the person's own installed Chrome or Chromium (headless; nothing is installed). The answer is a
+ * PNG in chunks (`preview.image`) and its record (`preview.rendered`: the page's title and HTTP status as the computer saw
+ * them). `preview.targets` lists what is granted and whether something listens. Never a URL the phone writes, never
+ * another host, never a port forward.
+ */
+
+export const ATTACHMENT_CHUNK_BYTES = 524_288;
+export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_SESSION_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+export const MAX_ATTACHMENT_CHUNKS = Math.ceil(MAX_ATTACHMENT_BYTES / ATTACHMENT_CHUNK_BYTES);
+export const ATTACHMENT_TYPES = [
+  "image/png", "image/jpeg", "image/heic", "image/webp", "application/pdf", "text/plain", "text/markdown", "text/csv",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]         ;
+
+export const MAX_ATTACHMENTS_PER_PROMPT = 20;
+
+export const PREVIEW_VIEWPORTS = { mobile: { width: 390, height: 844 }, tablet: { width: 820, height: 1180 }, desktop: { width: 1440, height: 900 } }         ;
+export const PREVIEW_CHUNK_BYTES = 524_288;
+export const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
+export const MAX_PREVIEW_CHUNKS = Math.ceil(MAX_PREVIEW_BYTES / PREVIEW_CHUNK_BYTES);
+/** A path on the granted dev server: starts with one slash, URL characters only, never `//` (another host). */
+export const PREVIEW_PATH = /^\/(?!\/)[A-Za-z0-9._~!$&'()*+,;=:@%\/?#-]{0,299}$/;
+
+export const TRANSFER_COMMAND_SPECS = {
+  "attachment.put": object({
+    attachment_id: id("att"),
+    name: text(200, 1),
+    content_type: oneOf(ATTACHMENT_TYPES),
+    size: int(1, MAX_ATTACHMENT_BYTES),
+    sha256: b64({ exact: 32 }),
+    chunk: int(0, MAX_ATTACHMENT_CHUNKS - 1),
+    chunks: int(1, MAX_ATTACHMENT_CHUNKS),
+    data: b64({ max: ATTACHMENT_CHUNK_BYTES }),
+  }),
+  "attachment.clear": object({}),
+  "preview.targets": object({ project_id: id("prj") }),
+  "preview.render": object({
+    preview_id: id("pvw"),
+    project_id: id("prj"),
+    target: oneOf(["port", "file"]),
+    port: nullable(int(1, 65_535)),
+    /** For a port: the path on that server ("/" by default). For a file: its path inside the project. */
+    path: text(300, 1),
+    viewport: oneOf(["mobile", "tablet", "desktop"]),
+    full_page: bool(),
+  }),
+}         ;
+
+export const TRANSFER_EVENT_SPECS = {
+  "attachment.stored": object({
+    attachment_id: id("att"),
+    received: int(0, MAX_ATTACHMENT_CHUNKS),
+    chunks: int(1, MAX_ATTACHMENT_CHUNKS),
+    /** Once whole and checked: the file's path relative to the project; null while chunks are still coming. */
+    path: nullable(text(400, 1)),
+    size: int(1, MAX_ATTACHMENT_BYTES),
+    content_type: oneOf(ATTACHMENT_TYPES),
+  }),
+  "attachment.cleared": object({ removed: int(0) }),
+  "preview.targets": object({
+    project_id: id("prj"),
+    ports: list(object({ port: int(1, 65_535), listening: bool() }), 20),
+    files: list(text(300, 1), 50),
+    browser: bool(),
+  }),
+  "preview.image": object({ preview_id: id("pvw"), chunk: int(0, MAX_PREVIEW_CHUNKS - 1), chunks: int(1, MAX_PREVIEW_CHUNKS), data: b64({ max: PREVIEW_CHUNK_BYTES }) }),
+  "preview.rendered": object({
+    preview_id: id("pvw"),
+    project_id: id("prj"),
+    viewport: oneOf(["mobile", "tablet", "desktop"]),
+    width: int(1, 4096),
+    height: int(1, 16_384),
+    /** The page's own <title>, or null. */
+    title: nullable(text(300, 1)),
+    /** The dev server's HTTP status as the computer read it; null for a file. */
+    http_status: nullable(int(100, 599)),
+    bytes: int(1, MAX_PREVIEW_BYTES),
+    sha256: b64({ exact: 32 }),
+    chunks: int(1, MAX_PREVIEW_CHUNKS),
+  }),
+}         ;
+
+export const attachmentRule = (a                                                          )                =>
+  a.chunk >= a.chunks ? "a chunk past the count" : a.chunks !== Math.ceil(a.size / ATTACHMENT_CHUNK_BYTES) ? "a chunk count that is not the size's" : null;
+export const previewRule = (r                                                          )                =>
+  r.target === "port" ? (r.port === null || !PREVIEW_PATH.test(r.path) ? "a port and a path on it" : null) : r.port !== null || !/^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]+\.html?$/.test(r.path) ? "a project file, an .html one, and no port" : null;
+
+// ---- packages/remote-protocol/src/live-preview.ts
+/**
+ * THE LIVE PREVIEW (release 19, 2026-11-09; owner's preview option A): the session's granted dev page (or built file), live
+ * and touchable on the phone. The computer runs the person's own Chrome headless in a throw-away profile, drives it over
+ * the DevTools protocol through a PIPE (never a debugging port), and sends what it draws as JPEG frames on the session's
+ * transient lane (envelopes.ts: never journaled, never buffered, newest wins); the phone's taps, scrolls and typed text
+ * go back as these commands and are applied to the page.
+ *
+ * What a phone may say is closed: a granted target and a PATH on it (never a URL or a host), a viewport preset, a tap or a
+ * scroll at page coordinates inside the viewport, literal text, one of three keys, follow or stop. The computer holds the
+ * page to the granted origin: every navigation or request elsewhere, a file:// page, a download, a popup and a permission
+ * prompt is blocked and counted in `blocked`, never followed. One live preview per computer; it stops when nobody follows
+ * it (the computer's timeout) or the session closes, and the browser and its profile are removed.
+ */
+
+export const LIVE_VIEWPORTS = ["mobile", "tablet", "desktop"]         ;
+
+/** The keys a phone may press in a live page, besides typing literal text. */
+export const LIVE_KEYS = ["Enter", "Backspace", "Tab"]         ;
+export const MAX_LIVE_TEXT = 1000;
+/** A frame's JPEG, at most (a sealed body holds 1 MiB of plaintext; base64 grows it by a third). */
+export const MAX_FRAME_BYTES = 393_216;
+export const LIVE_BLOCK_KINDS = ["navigation", "request", "popup", "download", "permission", "file"]         ;
+export const LIVE_STATES = ["starting", "live", "stopped", "failed"]         ;
+export const LIVE_REASONS = ["no_browser", "not_listening", "not_granted", "busy", "unfollowed", "closed", "browser_exited", "stopped", "failed"]         ;
+
+const x = int(0, 4095);
+const y = int(0, 16_383);
+
+export const LIVE_COMMAND_SPECS = {
+  /** Start the session project's granted port (with a path on it) or granted file, in a viewport preset. */
+  "preview.live_start": object({ target: oneOf(["port", "file"]), port: nullable(int(1, 65_535)), path: text(300, 1), viewport: oneOf(LIVE_VIEWPORTS) }),
+  /** One touch: a tap or a scroll at page coordinates, literal text, or one allowed key. */
+  "preview.live_input": union("kind", {
+    tap: object({ kind: oneOf(["tap"]), x, y }),
+    scroll: object({ kind: oneOf(["scroll"]), x, y, dy: int(-4000, 4000) }),
+    text: object({ kind: oneOf(["text"]), text: text(MAX_LIVE_TEXT, 1) }),
+    key: object({ kind: oneOf(["key"]), key: oneOf(LIVE_KEYS) }),
+  }),
+  /** Another preset, live (the page stays; its viewport changes). */
+  "preview.live_viewport": object({ viewport: oneOf(LIVE_VIEWPORTS) }),
+  /** true: keep it going (renewed, the computer's own timeout); false: stop it now. */
+  "preview.live_follow": object({ follow: bool() }),
+}         ;
+
+const counts = object({ navigation: int(0), request: int(0), popup: int(0), download: int(0), permission: int(0), file: int(0) });
+
+export const LIVE_EVENT_SPECS = {
+  /** The live preview's state, on every change: ordered and kept like any session event (small, no picture). */
+  "preview.live": object({
+    state: oneOf(LIVE_STATES),
+    viewport: oneOf(LIVE_VIEWPORTS),
+    width: int(1, 4096),
+    height: int(1, 16_384),
+    /** The page's own <title> and its path on the granted origin, as the computer read them; null when unknown. */
+    title: nullable(text(300, 1)),
+    path: nullable(text(300, 1)),
+    /** What the computer refused the page, counted since the start. */
+    blocked: counts,
+    reason: nullable(oneOf(LIVE_REASONS)),
+  }),
+  /** One frame as the browser drew it, JPEG; only ever on the transient lane (envelopes.ts). */
+  "preview.frame": object({ width: int(1, 4096), height: int(1, 16_384), data: b64({ max: MAX_FRAME_BYTES }) }),
+}         ;
+
+export const NO_BLOCKS                       = { navigation: 0, request: 0, popup: 0, download: 0, permission: 0, file: 0 };
+
+/** A port and a path on it, or a granted .html file and no port: never a URL, a host, a scheme or `..`. */
+export const liveStartRule = (r           )                =>
+  r.target === "port" ? (r.port === null || !PREVIEW_PATH.test(r.path) ? "a port and a path on it" : null)
+    : r.port !== null || !/^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]+\.html?$/.test(r.path) ? "a project file, an .html one, and no port" : null;
+
+/** Text a page may be typed: printable, no control character (a newline is the Enter key). */
+// eslint-disable-next-line no-control-regex
+export const liveTextOk = (t        )          => !/[\u0000-\u001f\u007f-\u009f]/.test(t);
 
 // ---- packages/remote-protocol/src/attention.ts
 /**
@@ -1439,112 +1630,6 @@ export function deliveryHops(r             )                                    
   return { to_relay_ms: span(r.sent_at, r.relay_ack_seen_at), on_computer_ms: span(r.received_at, r.accepted_at) };
 }
 
-// ---- packages/remote-protocol/src/transfer.ts
-/**
- * FILES FROM THE PHONE, AND A LOCAL PREVIEW BACK (owner, 2026-11-07 22:50). docs/remote-agents/PROTOCOL.md "Attachments"
- * and "Local preview". Everything here is sealed: the relay sees the types, their timing and size classes, never a name,
- * a byte of a file or of a picture.
- *
- * ATTACHMENTS. An image, a PDF or a document travels in chunks of at most 512 KiB (`attachment.put`), each naming the whole
- * file's size, its chunk count and its SHA-256; the computer keeps the chunks apart, joins them when all arrived, checks the
- * hash and that the bytes are what the type says (a PNG starts like a PNG), and only then writes ONE file into the
- * session's project at `.worktrust/inbox/<session_id>/<safe name>` (mode 0600, never executable). `attachment.stored`
- * answers every chunk with the count received (a measured progress) and, once whole, the file's path relative to the
- * project, which a later `agent.start` / `agent.prompt` names by its id (`attachments`), so the agent is told to read it.
- * Caps: 25 MB a file, 100 MB a session. `attachment.clear` deletes the session's inbox.
- *
- * LOCAL PREVIEW. The phone's "Deploy" segment is a LOCAL preview, never a production deploy: `preview.render` asks the
- * computer to render a page of a dev server on 127.0.0.1 at a port the person granted for that project at the keyboard
- * (`worktrust remote preview allow <port>`), or a built HTML file in the project the person granted, at a phone, tablet or
- * desktop viewport, with the person's own installed Chrome or Chromium (headless; nothing is installed). The answer is a
- * PNG in chunks (`preview.image`) and its record (`preview.rendered`: the page's title and HTTP status as the computer saw
- * them). `preview.targets` lists what is granted and whether something listens. Never a URL the phone writes, never
- * another host, never a port forward.
- */
-
-export const ATTACHMENT_CHUNK_BYTES = 524_288;
-export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-export const MAX_SESSION_ATTACHMENT_BYTES = 100 * 1024 * 1024;
-export const MAX_ATTACHMENT_CHUNKS = Math.ceil(MAX_ATTACHMENT_BYTES / ATTACHMENT_CHUNK_BYTES);
-export const ATTACHMENT_TYPES = [
-  "image/png", "image/jpeg", "image/heic", "image/webp", "application/pdf", "text/plain", "text/markdown", "text/csv",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-]         ;
-
-export const MAX_ATTACHMENTS_PER_PROMPT = 20;
-
-export const PREVIEW_VIEWPORTS = { mobile: { width: 390, height: 844 }, tablet: { width: 820, height: 1180 }, desktop: { width: 1440, height: 900 } }         ;
-export const PREVIEW_CHUNK_BYTES = 524_288;
-export const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
-export const MAX_PREVIEW_CHUNKS = Math.ceil(MAX_PREVIEW_BYTES / PREVIEW_CHUNK_BYTES);
-/** A path on the granted dev server: starts with one slash, URL characters only, never `//` (another host). */
-export const PREVIEW_PATH = /^\/(?!\/)[A-Za-z0-9._~!$&'()*+,;=:@%\/?#-]{0,299}$/;
-
-export const TRANSFER_COMMAND_SPECS = {
-  "attachment.put": object({
-    attachment_id: id("att"),
-    name: text(200, 1),
-    content_type: oneOf(ATTACHMENT_TYPES),
-    size: int(1, MAX_ATTACHMENT_BYTES),
-    sha256: b64({ exact: 32 }),
-    chunk: int(0, MAX_ATTACHMENT_CHUNKS - 1),
-    chunks: int(1, MAX_ATTACHMENT_CHUNKS),
-    data: b64({ max: ATTACHMENT_CHUNK_BYTES }),
-  }),
-  "attachment.clear": object({}),
-  "preview.targets": object({ project_id: id("prj") }),
-  "preview.render": object({
-    preview_id: id("pvw"),
-    project_id: id("prj"),
-    target: oneOf(["port", "file"]),
-    port: nullable(int(1, 65_535)),
-    /** For a port: the path on that server ("/" by default). For a file: its path inside the project. */
-    path: text(300, 1),
-    viewport: oneOf(["mobile", "tablet", "desktop"]),
-    full_page: bool(),
-  }),
-}         ;
-
-export const TRANSFER_EVENT_SPECS = {
-  "attachment.stored": object({
-    attachment_id: id("att"),
-    received: int(0, MAX_ATTACHMENT_CHUNKS),
-    chunks: int(1, MAX_ATTACHMENT_CHUNKS),
-    /** Once whole and checked: the file's path relative to the project; null while chunks are still coming. */
-    path: nullable(text(400, 1)),
-    size: int(1, MAX_ATTACHMENT_BYTES),
-    content_type: oneOf(ATTACHMENT_TYPES),
-  }),
-  "attachment.cleared": object({ removed: int(0) }),
-  "preview.targets": object({
-    project_id: id("prj"),
-    ports: list(object({ port: int(1, 65_535), listening: bool() }), 20),
-    files: list(text(300, 1), 50),
-    browser: bool(),
-  }),
-  "preview.image": object({ preview_id: id("pvw"), chunk: int(0, MAX_PREVIEW_CHUNKS - 1), chunks: int(1, MAX_PREVIEW_CHUNKS), data: b64({ max: PREVIEW_CHUNK_BYTES }) }),
-  "preview.rendered": object({
-    preview_id: id("pvw"),
-    project_id: id("prj"),
-    viewport: oneOf(["mobile", "tablet", "desktop"]),
-    width: int(1, 4096),
-    height: int(1, 16_384),
-    /** The page's own <title>, or null. */
-    title: nullable(text(300, 1)),
-    /** The dev server's HTTP status as the computer read it; null for a file. */
-    http_status: nullable(int(100, 599)),
-    bytes: int(1, MAX_PREVIEW_BYTES),
-    sha256: b64({ exact: 32 }),
-    chunks: int(1, MAX_PREVIEW_CHUNKS),
-  }),
-}         ;
-
-export const attachmentRule = (a                                                          )                =>
-  a.chunk >= a.chunks ? "a chunk past the count" : a.chunks !== Math.ceil(a.size / ATTACHMENT_CHUNK_BYTES) ? "a chunk count that is not the size's" : null;
-export const previewRule = (r                                                          )                =>
-  r.target === "port" ? (r.port === null || !PREVIEW_PATH.test(r.path) ? "a port and a path on it" : null) : r.port !== null || !/^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]+\.html?$/.test(r.path) ? "a project file, an .html one, and no port" : null;
-
 // ---- packages/remote-protocol/src/state-machine.ts
 /**
  * DELIVERY AND EXECUTION, AS A PURE FUNCTION. One command's state, from the phone's draft to its end:
@@ -1788,6 +1873,11 @@ export const COMMAND_PAYLOAD_SPECS = {
     prompt: nullable(text(MAX_PROMPT_CHARS, 1)),
     /** The session's name on the phone's project tree (2026-11-07), sealed; renameable with session.rename. */
     name: optional(nullable(text(MAX_SESSION_NAME, 1))),
+    /**
+     * Which of the adapter's reports to start (release 19, 2026-11-09): `terminal` runs the agent in a terminal session the
+     * person can also attach at the desk. Absent means structured, as before.
+     */
+    mode: optional(oneOf(ADAPTER_MODES)),
   }),
   /**
    * A new turn for an agent that waits for input. Sent while a turn runs, it waits (command.queued) and runs when the turn
@@ -1830,7 +1920,11 @@ export const COMMAND_PAYLOAD_SPECS = {
   /** A new name for the session (2026-11-07); answered with device.inventory, which lists every session by name. */
   "session.rename": object({ name: text(MAX_SESSION_NAME, 1) }),
   /** The last lines of a terminal session's screen, answered with agent.screen. */
-  "screen.read": object({ lines: int(1, 2000) }),
+  /**
+   * `follow` (release 19, 2026-11-09): true asks the computer to send the screen again whenever it changes (agent.screen,
+   * coalesced) for a while (the computer's limit, renewed by every read that follows), false stops it. Absent: one read.
+   */
+  "screen.read": object({ lines: int(1, 2000), follow: optional(bool()) }),
   /** Ask for a device.inventory; `refresh_models` runs the agents' own model listers first. */
   "inventory.get": object({ refresh_models: bool() }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
@@ -1846,6 +1940,8 @@ export const COMMAND_PAYLOAD_SPECS = {
   "pairing.revoke": object({}),
   /** Files from the phone and a local preview back (transfer.ts, 2026-11-07). */
   ...TRANSFER_COMMAND_SPECS,
+  /** The live preview (release 19, live-preview.ts): session commands. */
+  ...LIVE_COMMAND_SPECS,
   /**
    * One new, empty project folder named `name` inside the root `root_id` (2026-11-07), granted as a project; `git init`
    * in it only when the person enabled that for the root at the keyboard. Answered with project.created.
@@ -1927,6 +2023,10 @@ export const COMMAND_TTL_MS                                        = {
   "preview.targets": 1 * MINUTE,
   "preview.render": 2 * MINUTE,
   "screen.read": 1 * MINUTE,
+  "preview.live_start": 2 * MINUTE,
+  "preview.live_input": 1 * MINUTE,
+  "preview.live_viewport": 1 * MINUTE,
+  "preview.live_follow": 1 * MINUTE,
   "inventory.get": 5 * MINUTE,
   "device.configure": 10 * MINUTE,
   "pairing.revoke": 24 * 60 * MINUTE,
@@ -1960,6 +2060,8 @@ export function validateCommandPayload                       (type   , value    
   if (type === "device.configure" && Object.keys(payload).length === 0) return refuse("payload", "$payload: names no setting");
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
+  if (type === "preview.live_start") { const bad = liveStartRule(payload             ); if (bad) return refuse("payload", `$payload: ${bad}`); }
+  if (type === "preview.live_input") { const i = payload             ; if (i.kind === "text" && !liveTextOk(i.text)) return refuse("payload", "$payload.text: literal text, no control character"); }
   if (type === "project.create" && !projectNameOk((payload                                    ).name))
     return refuse("payload", "$payload.name: one folder name of [A-Za-z0-9._-], not starting with a dot");
   if (type === "release.reorder") {
@@ -2124,6 +2226,8 @@ export const EVENT_BODY_SPECS = {
     project_label: nullable(label(256)),
     /** The name the phone gave it (agent.start's name, a release task's label), or null. */
     name: optional(nullable(label(100))),
+    /** `terminal` for a session in a terminal the desk can attach (release 19); absent means structured. */
+    mode: optional(oneOf(ADAPTER_MODES)),
   }),
   "command.device_received": object({}),
   /** started_at: the computer's clock when the acceptance began a turn (usage.ts); absent for any other acceptance. */
@@ -2227,6 +2331,8 @@ export const EVENT_BODY_SPECS = {
         task_id: optional(nullable(id("tsk"))),
         /** Background jobs its agent reports still running (2026-11-08: "ready, but a job is still running"); absent when it cannot tell. */
         background_jobs: optional(int(0, 99)),
+        /** `terminal` for a terminal session (release 19); absent means structured. */
+        mode: optional(oneOf(ADAPTER_MODES)),
       }),
       100,
     ),
@@ -2243,6 +2349,8 @@ export const EVENT_BODY_SPECS = {
   "agents.active": AGENTS_ACTIVE_SPEC,
   /** Attachments (session) and the local preview (device), transfer.ts. */
   ...TRANSFER_EVENT_SPECS,
+  /** The live preview (release 19, live-preview.ts): its state, and its frames on the transient lane only. */
+  ...LIVE_EVENT_SPECS,
 }                                                  ;
 
 export const DEVICE_EVENT_TYPES = Object.keys(EVENT_BODY_SPECS)                              ;
@@ -2317,7 +2425,8 @@ export function validateEventBody                           (type   , value     
       const r = validateAdapterReport(report);
       if (!r.ok) return refuse("payload", `$body.adapters: ${r.detail}`);
     }
-    if (new Set(inv.adapters.map((a) => a.adapter)).size !== inv.adapters.length) return refuse("payload", "$body.adapters: an adapter twice");
+    // One report per (adapter, mode) since release 19: Claude Code structured and in a terminal are two reports.
+    if (new Set(inv.adapters.map((a) => `${a.adapter}/${a.mode}`)).size !== inv.adapters.length) return refuse("payload", "$body.adapters: an adapter twice");
   }
   return checked;
 }
@@ -2393,6 +2502,20 @@ export const COMMAND_ENVELOPE_SPEC = object({
   authorization: b64({ exact: 64 }),
 });
 
+/**
+ * THE TRANSIENT LANE (release 19, 2026-11-09). A pushed terminal screen (agent.screen with no command) is news only
+ * until the next one: the computer keeps none, the relay buffers and records none, and a phone that reconnects asks for
+ * the screen again (screen.read). It travels beside the session's ordered stream, never in it: its `event_seq` is the
+ * lane's own number (rising per session; a computer starts it from its clock, so a restart never goes back), it never
+ * moves the stream's cursor, and a phone applies one only when its number is above the last transient one it applied.
+ * So the stream stays gap-free for every phone, whoever followed. Only the types below may take the lane.
+ */
+export const EVENT_LANES = ["transient"]         ;
+export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame"]);
+/** Types that may ONLY travel on the transient lane (a live preview's frames: never journaled, never replayed). */
+export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame"]);
+export const isTransientEvent = (e                            )          => e.lane === "transient";
+
 export const EVENT_ENVELOPE_SPEC = object({
   protocol_version: version,
   session_id: nullable(id("ses")),
@@ -2405,6 +2528,8 @@ export const EVENT_ENVELOPE_SPEC = object({
   command_id: nullable(id("cmd")),
   /** The content-free push hint (attention.ts). */
   notify: oneOf(NOTIFY_HINTS),
+  /** Absent: the session's ordered stream. `transient`: beside it (EVENT_LANES above), kept by nobody. */
+  lane: optional(oneOf(EVENT_LANES)),
   body_ciphertext: sealed(),
 });
 
@@ -2529,6 +2654,9 @@ export function validateEventEnvelope(value         )                         {
   if (!COMMAND_RECEIPT_EVENTS.has(type) && DEVICE_SCOPED_EVENTS.has(type) !== (e.session_id === null))
     return refuse("shape", "$event.session_id: a session event names a session, a device event none");
   if (COMMAND_RECEIPT_EVENTS.has(type) && e.command_id === null) return refuse("shape", "$event.command_id: a receipt names its command");
+  if (isTransientEvent(e) && (!TRANSIENT_EVENT_TYPES.has(type) || e.command_id !== null || e.session_id === null || e.notify !== "none"))
+    return refuse("shape", "$event.lane: only a pushed screen or frame, of a session, without a command or a push hint, is transient");
+  if (TRANSIENT_ONLY_TYPES.has(type) && !isTransientEvent(e)) return refuse("shape", "$event.lane: a live preview's frame travels on the transient lane only");
   return checked;
 }
 
@@ -2651,11 +2779,12 @@ export function replayAfter                                          (
  * A START IS CHECKED TWICE. The phone offers only what the computer reported; the computer checks again on receipt,
  * against its own current report, because a report the phone saw may be old and a phone may be wrong. A start that
  * names a model the adapter did not list, a permission mode it does not offer, or a resume id where the adapter
- * cannot resume, is refused (command.rejected) and nothing is started.
+ * cannot resume, is refused (command.rejected) and nothing is started; so is a start whose mode (structured, terminal) is not
+ * the report's own (release 19).
  */
 
 export function checkStart(payload                               , report                           )                      {
-  if (!report || report.adapter !== payload.adapter || !report.installed || !report.capabilities.start) return "unsupported";
+  if (!report || report.adapter !== payload.adapter || report.mode !== (payload.mode ?? "structured") || !report.installed || !report.capabilities.start) return "unsupported";
   if (!isModelReported(report, payload.model)) return "unknown_model";
   if (!report.capabilities.permission_modes.includes(payload.permission_mode)) return "unsupported";
   if (payload.resume !== null && !report.capabilities.resume_by_id) return "unsupported";

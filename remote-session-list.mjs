@@ -1,7 +1,30 @@
 /**
- * THE PROJECT TREE'S SESSION LIST, split out of remote-sessions.mjs (its size), unchanged: the journal's sessions and the
- * live ones, as device.inventory lists them.
+ * WHAT THE SESSIONS REPORT, split out of remote-sessions.mjs (its size), unchanged: the project tree's session list (the
+ * journal's sessions and the live ones, as device.inventory lists them), a session's status.report and the live feed's rows.
  */
+import * as P from "./remote-protocol.mjs";
+
+const NO_ETA = { kind: "unavailable", source: "none", reason: "no_source" };
+
+/** The agent's own plan as the denominator when it has one; otherwise the steps counted (never a percentage). */
+export const progressOf = (s) => {
+  const plan = P.planProgress(s.state.progress?.plan ?? null);
+  return plan.kind === "measured" ? plan : { kind: "steps", started: s.state.started, completed: s.state.completed };
+};
+
+/** One session's status.report: its commands, attention, progress and open approvals. */
+export const statusReport = (ctx, s) => {
+  const commands = ctx.journal.commandsOf(s.session_id).slice(-100);
+  return { state: commands.at(-1)?.state ?? "DEVICE_RECEIVED", control: "none", attention: s.attention, last_event_seq: ctx.journal.lastSeq(s.session_id),
+    progress: progressOf(s), eta: NO_ETA, pending_approvals: ctx.approvals.pendingOf(s.session_id).slice(0, 16), commands };
+};
+
+/** The live feed's rows (live.ts), without the release mapping the scheduler adds. */
+export const activeRows = (live) => [...live.values()].filter((s) => s.run && !s.closed).map((s) => {
+  const open = [...s.subagents.values()].filter((a) => !P.isFinalSubagentState(a.state));
+  return { session_id: s.session_id, project_id: s.project_id, adapter: s.adapter, activity: s.attention?.activity ?? "unknown", progress: progressOf(s), tokens: s.tokens,
+    started_at: s.turnOpen ? s.turnStartedAt : null, subagents: open.slice(0, P.MAX_ACTIVE_SUBAGENTS), subagents_cut: open.length > P.MAX_ACTIVE_SUBAGENTS };
+});
 
 /**
  * The project tree (2026-11-07): every session this computer knows, live first in its state, then those the journal

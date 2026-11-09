@@ -15,6 +15,7 @@
  */
 import { spawn } from "node:child_process";
 import { writeFileSync, rmSync } from "node:fs";
+import { PLAN_HINT } from "./remote-approval-bridge.mjs";
 
 export const APPROVAL_TOOL = "mcp__worktrust_remote__approve";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -39,8 +40,8 @@ export const REMOTE_DENY = Object.freeze([
 
 /** The planning tools of the session's own MCP server (remote-approval-bridge.mjs): they only write a plan, so no prompt. */
 export const PLAN_TOOLS = Object.freeze(["mcp__worktrust_remote__plan_release", "mcp__worktrust_remote__plan_task", "mcp__worktrust_remote__plan_list"]);
-/** The one line the session's system prompt gains (owner, 2026-11-08: the agent arranges its own work). */
-export const PLAN_HINT = "WorkTrust remote: plan multi-step work with plan_release and report each task with plan_task; the person follows it on their phone.";
+/** The one line the session's system prompt gains (owner, 2026-11-08: the agent arranges its own work); one text, the bridge's. */
+export { PLAN_HINT };
 
 export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfig }) {
   if (mode !== "ask" && mode !== "plan") throw new Error("the protocol offers the ask and plan modes only");
@@ -108,4 +109,5 @@ export function startClaude({ file, cwd, env, args, onLine, onExit, onNoise = ()
   };
 }
 
-export const removeQuietly = (file) => rmSync(file, { force: true });
+/** A session's file, gone; a session that never had one (a Codex run without the bridge) is no error that ends onExit early. */
+export const removeQuietly = (file) => { if (typeof file === "string" && file) rmSync(file, { force: true }); };

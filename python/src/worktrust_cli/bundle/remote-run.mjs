@@ -22,10 +22,14 @@ import { inventory as listAgents, offered } from "./remote-inventory.mjs";
 const inventory = (o) => offered(listAgents(o), loadSettings());
 import { createApprovals } from "./remote-approvals.mjs";
 import { createSessions } from "./remote-sessions.mjs";
+import { createTerminalSessions, withTerminal } from "./remote-terminal-sessions.mjs";
+import { createTmux, NO_TMUX, writeTmuxConfig } from "./remote-adapter-terminal.mjs";
+import { detectScreen } from "./remote-screen-states.mjs";
 import { createReleases } from "./remote-releases.mjs";
 import { createPipelines } from "./remote-pipeline.mjs";
 import { createAttachments } from "./remote-attachments.mjs";
 import { createPreview } from "./remote-preview.mjs";
+import { createLivePreview } from "./remote-live-preview.mjs";
 import { appendPipelineMark } from "./remote-steered.mjs";
 import { createDaemonCore } from "./remote-daemon.mjs";
 import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
@@ -117,7 +121,10 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   const attachments = createAttachments({ journal, now: Date.now, emit: (...a) => core.emit(...a), log,
     sessionProject: (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; } });
   const preview = createPreview({ emit: (...a) => core.emit(...a), projects: loadProjects, grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log });
-  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, now: Date.now, random, log, send: (f) => transport?.send(f) ?? false, inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
+  // The live preview (release 19): the session's granted page, live, over the browser's pipe; one per computer.
+  const live = createLivePreview({ emit: (...a) => core.emit(...a), grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log, now: Date.now,
+    sessionProject: (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; } });
+  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, now: Date.now, random, log, send: (f) => transport?.send(f) ?? false, inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
@@ -127,6 +134,13 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
     onTaskEnded: (id, outcome) => releases.taskEnded(id, outcome), onActivity: () => releases?.activity(),
     onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)), attachments });
   ctx.onApprovalOpened = sessions.onApprovalOpened; ctx.onApprovalSettled = sessions.onApprovalSettled;
+  // Terminal sessions (release 19, off until `worktrust remote terminal on`): Claude Code in tmux on WorkTrust's own socket.
+  const tmuxFile = listAgents({ env: agentEnv(loadSettings()) }).files.tmux;
+  const tmux = tmuxFile ? createTmux({ file: tmuxFile, config: writeTmuxConfig(runDir), env: agentEnv(loadSettings()) }) : NO_TMUX;
+  const terminal = createTerminalSessions({ journal, now: Date.now, emit: core.emit, settings: loadSettings, projects: loadProjects, inventory: () => inventory({ env: agentEnv(loadSettings()) }),
+    tmux, claudeFile: () => listAgents({ env: agentEnv(loadSettings()) }).files["claude-code"], replay: core.replay, running: () => sessions.runningCount(), detect: (lines) => detectScreen("claude-code", lines), approvals,
+    onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)) });
+  const registry = withTerminal(sessions, terminal);
   // Releases and pipelines (2026-11-07): one queue for every release's tasks, the reviewed pipeline of each project.
   const pipelines = createPipelines({ journal, now: Date.now, random, emit: core.emit, projects: loadProjects, reviews: loadPipelineReviews, log, logDir: remotePath("pipelines"),
     markLedger: appendPipelineMark, env: (prepend) => stageEnv(loadSettings(), prepend), onEnded: (p) => releases?.pipelineEnded(p), commandOf });
@@ -136,7 +150,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   ctx.plan = (session, op, args) => releases.plan(session, op, args);
   releases.recover(); // tasks an earlier daemon left running: interrupted, never run again
   pipelines.recover(); // and its pipeline runs
-  core.attach(sessions, approvals, releases);
+  core.attach(registry, approvals, releases);
 
   const dispatchFrame = async (frame) => {
     if (frame.frame === "hello") core.receiveHello(frame.hello);
@@ -161,7 +175,8 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
     stopping = true;
     approvals.close();
     await pipelines.stopAll();
-    await sessions.stopAll();
+    await live.stopAll(); // the browser ended, its profile removed
+    await registry.stopAll(); // the structured agents; a terminal session lives on in tmux
     transport.close();
     release();
     process.exit(code);

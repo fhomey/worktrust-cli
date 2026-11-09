@@ -16,16 +16,15 @@ import { adapterOf } from "./remote-inventory.mjs";
 import { claudeArgs, isClaudeSessionId, removeQuietly, startClaude, writeMcpConfig } from "./remote-adapter-claude-code.mjs";
 import { backgroundJobs, emptyClaudeState, endClaudeRun, mapClaudeLine } from "./remote-claude-events.mjs";
 import { collectChanges, snapshotChanges } from "./remote-changes.mjs";
-import { isCodexThreadId, startCodex } from "./remote-adapter-codex.mjs";
+import { isCodexThreadId, startCodex, writeBridgeSession } from "./remote-adapter-codex.mjs";
 import { emptyCodexState, mapCodexMessage, unwrapShell } from "./remote-codex-events.mjs";
 import { createCoalescer } from "./remote-coalesce.mjs";
 import { accept, announceQueue, claudeReplay, codexLanded, dropWaiting, interruptedEnd, interruptOf, steerLive, steerModeOf } from "./remote-steering.mjs";
 import { classifyAction } from "./remote-policy.mjs";
-import { listSessions } from "./remote-session-list.mjs";
+import { activeRows, listSessions, statusReport } from "./remote-session-list.mjs";
 
 export const DEFAULT_MAX_SESSIONS = 4;
 const LEDGER_EVERY_MS = 10 * 60_000;
-const NO_ETA = { kind: "unavailable", source: "none", reason: "no_source" };
 
 export { createCoalescer } from "./remote-coalesce.mjs"; // kept here for the modules that import it from sessions
 
@@ -171,10 +170,14 @@ export function createSessions(ctx) {
     ctx.onActivity?.();
   }
 
-  /** Codex: the thread id reaches the ledger before its first turn (startCodex calls onThread before turn/start). */
+  /**
+   * Codex: the thread id reaches the ledger before its first turn (startCodex calls onThread before turn/start). Its
+   * planning tools are the session's own bridge, its token in a 0600 file beside Claude Code's MCP config (2026-11-09).
+   */
   function spawnCodex(s, resume) {
     s.token = ctx.approvals.register(s); // so its open approvals are denied when it ends (P3-8)
-    s.run = startCodex({ file: ctx.inventory().files.codex, cwd: s.projectPath, env: ctx.agentEnv(), model: s.model, mode: s.mode, resume,
+    const plans = ctx.bridgePath && ctx.socket ? { node: ctx.node, bridge: ctx.bridgePath, session: s.mcpFile = writeBridgeSession(join(ctx.runDir, `${s.session_id}.codex.json`), { socket: ctx.socket(), token: s.token }) } : null;
+    s.run = startCodex({ file: ctx.inventory().files.codex, cwd: s.projectPath, env: ctx.agentEnv(), model: s.model, mode: s.mode, resume, plans,
       onMessage: (msg) => onCodex(s, msg), onExit: (how) => onExit(s, how),
       onThread: (id) => { s.agent_ref = id; mark(s); ctx.journal.recordSession({ session_id: s.session_id, agent_session_ref: id }); },
       approve: async (tool, input) => (await ctx.approvals.request(s, tool, input))?.behavior === "allow" });
@@ -277,17 +280,7 @@ export function createSessions(ctx) {
     return null;
   }
 
-  /** The agent's own plan as the denominator when it has one; otherwise the steps counted (never a percentage). */
-  const progressOf = (s) => {
-    const plan = P.planProgress(s.state.progress?.plan ?? null);
-    return plan.kind === "measured" ? plan : { kind: "steps", started: s.state.started, completed: s.state.completed };
-  };
-
-  const statusOf = (s) => {
-    const commands = ctx.journal.commandsOf(s.session_id).slice(-100);
-    return { state: commands.at(-1)?.state ?? "DEVICE_RECEIVED", control: "none", attention: s.attention, last_event_seq: ctx.journal.lastSeq(s.session_id),
-      progress: progressOf(s), eta: NO_ETA, pending_approvals: ctx.approvals.pendingOf(s.session_id).slice(0, 16), commands };
-  };
+  const statusOf = (s) => statusReport(ctx, s);
 
   return {
     list: () => [...live.values()].filter((s) => !s.closed).map((s) => ({ session_id: s.session_id, project_id: s.project_id, adapter: s.adapter, origin: "phone", attention: s.attention ?? { activity: "unknown", needs: null, state_change_seq: 0, completion_seq: null }, title: null })),
@@ -338,11 +331,7 @@ export function createSessions(ctx) {
     },
     runningCount: () => [...live.values()].filter((s) => s.run).length,
     /** The live feed's rows (live.ts), without the release mapping the scheduler adds. */
-    activeList: () => [...live.values()].filter((s) => s.run && !s.closed).map((s) => {
-      const open = [...s.subagents.values()].filter((a) => !P.isFinalSubagentState(a.state));
-      return { session_id: s.session_id, project_id: s.project_id, adapter: s.adapter, activity: s.attention?.activity ?? "unknown", progress: progressOf(s), tokens: s.tokens,
-        started_at: s.turnOpen ? s.turnStartedAt : null, subagents: open.slice(0, P.MAX_ACTIVE_SUBAGENTS), subagents_cut: open.length > P.MAX_ACTIVE_SUBAGENTS };
-    }),
+    activeList: () => activeRows(live),
     async stopAll() { for (const s of live.values()) if (s.run) { s.stopping = true; await s.run.stop(500); } },
   };
 }

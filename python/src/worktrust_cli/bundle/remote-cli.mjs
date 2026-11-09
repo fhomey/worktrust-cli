@@ -21,6 +21,9 @@
  *                                                     deems safe without asking, which the person accepts here
  *   remote releases [released <number>]               the releases on this computer; mark a ready one released (the
  *                                                     phone never can: publishing stays at the desk)
+ *   remote terminal on | off | list | start [<folder>] and remote attach <id>   terminal sessions (release 19): Claude Code
+ *                                                     in tmux on WorkTrust's own socket, seen on the phone, attached here
+ *                                                     (remote-terminal-cli.mjs; off by default)
  */
 import { basename } from "node:path";
 import { hostname } from "node:os";
@@ -43,7 +46,7 @@ import { checkRoot, MAX_ROOTS, rootIdOf, rootLabel } from "./remote-projects.mjs
 const fingerprintOf = (keys) => P.deviceFingerprint(keys.public);
 const pretty = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
 /** A question only a person at this keyboard answers: a terminal, a typed "yes"; --yes and Enter are No. */
-async function askTyped(question) {
+export async function askTyped(question) {
   if (!process.stdin.isTTY) return false;
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   const answer = (await prompt.question(`  ${question} Type yes to confirm: `)).trim().toLowerCase();
@@ -321,5 +324,7 @@ export async function remoteCommand(args, io) {
     return;
   }
   if (sub === "releases") return releasesCommand(io, rest);
-  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | releases [released <n>]");
+  if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
+  if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
+  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

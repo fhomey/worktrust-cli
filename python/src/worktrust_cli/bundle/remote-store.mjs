@@ -65,7 +65,7 @@ export function loadKeys() {
 export const loadIdentity = () => readJson("identity.json");
 export const saveIdentity = (identity) => writeJson("identity.json", identity);
 
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false });
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, terminal: false });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 
@@ -101,11 +101,12 @@ export const saveChannels = (channels) => writeJson("channels.json", channels.ma
 
 /**
  * THE ISSUER KEYS THIS RELEASE TRUSTS. Bindings are verified against keys pinned in the build, never against a key a
- * server hands over. The Passport app's issuer is not live yet, so no key is pinned and `remote enable` refuses plainly.
+ * server hands over. Pinned 2026-11-09 from https://app.worktrust.io/api/remote/keys (live since release 18; GATEWAY.md
+ * §10 step 8): kid wtr-2026-11, Ed25519. A rotation pins the next key in a later release before the issuer uses it.
  * For a gateway on this computer only (scripts/dev-remote-relay.mjs, the tests): WORKTRUST_REMOTE_DEV_ISSUER="<kid>:<base64url key>" is read when
  * the gateway is this computer's own loopback address, and never otherwise (devIssuerAllowed).
  */
-export const PINNED_ISSUER_KEYS = Object.freeze({});
+export const PINNED_ISSUER_KEYS = Object.freeze({ "wtr-2026-11": "Xlsn0fDsC0u3bmXj7FVg1uePKmOlV2yXV3ep9BaRmnA" });
 export const isLoopbackGateway = (url) => {
   try {
     const u = new URL(url);

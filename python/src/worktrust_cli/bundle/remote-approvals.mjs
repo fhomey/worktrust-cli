@@ -11,6 +11,10 @@
  * This file is the only place that may send agent.approval_required (scripts/check-remote-cli.mjs holds it). The same
  * socket takes the session's planning calls (`{ token, plan: { op, args } }`, 2026-11-08) and hands them to ctx.plan,
  * the release queue's: they never reach the approval path and never run anything.
+ *
+ * A terminal session's dialog (release 19, remote-screen-approvals.mjs) comes in with its action already classified by the
+ * same policy (`preset`); the same gate decides it, and `onPhone` hears only a decision a phone signed (a timeout, a lost
+ * phone or the computer's own refusal answers nothing on the screen).
  */
 import { createServer } from "node:net";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
@@ -36,9 +40,9 @@ export function createApprovals(ctx) {
   };
 
   /** One permission request from the bridge → the answer the bridge gives Claude Code. */
-  async function request(session, toolName, input) {
+  async function request(session, toolName, input, preset = null) {
     if (ctx.paused()) return deny("WorkTrust remote is paused on this computer; denied");
-    const { action, reason } = classifyAction(session.adapter, toolName, input, session.projectPath);
+    const { action, reason } = preset ?? classifyAction(session.adapter, toolName, input, session.projectPath);
     if (!phoneMayDecide(action)) {
       ctx.emit(session.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: `Denied on the computer (${action.tool}): ${reason}` }, session.command_id);
       return deny(`WorkTrust remote: ${reason}`);
@@ -49,7 +53,7 @@ export function createApprovals(ctx) {
     const record = { approval_id, session_id: session.session_id, computer_device_id: ctx.deviceId, action_hash, class: action.class, expires_at };
     const answer = new Promise((resolve) => {
       const timer = setTimeout(() => finish(approval_id, deny("WorkTrust remote: no decision in time; denied")), Math.max(0, expires_at - ctx.now()));
-      pending.set(approval_id, { record, resolve, timer, session_id: session.session_id, input });
+      pending.set(approval_id, { record, resolve, timer, session_id: session.session_id, input, onPhone: preset?.onPhone ?? null });
     });
     ctx.onApprovalOpened?.(session.session_id, approval_id);
     ctx.emit(session.session_id, "agent.approval_required", { approval_id, action, action_hash, expires_at }, session.command_id, "needs_you");
@@ -75,9 +79,12 @@ export function createApprovals(ctx) {
       if (!checked.ok) return checked;
       const open = pending.get(checked.value.approval_id);
       ctx.journal.spend(checked.value.approval_id, ctx.now());
+      open.onPhone?.(checked.value.decision);
       finish(checked.value.approval_id, checked.value.decision === "approve" ? { behavior: "allow", updatedInput: open.input } : deny("WorkTrust remote: denied on your phone"));
       return checked;
     },
+    /** A session's open approvals answered "no" without any phone (a terminal dialog the person answered at the desk). */
+    withdraw(sessionId, message) { for (const [id, p] of pending) if (p.session_id === sessionId) finish(id, deny(`WorkTrust remote: ${message}`)); },
     denyAll() { for (const id of [...pending.keys()]) finish(id, deny("WorkTrust remote: the daemon stopped; denied")); },
     async listen(dir) {
       let path;
@@ -107,8 +114,11 @@ export function createApprovals(ctx) {
             conn.end(`${JSON.stringify(planned)}\n`);
             return;
           }
+          // Codex asks through its app-server (remote-adapter-codex.mjs); its bridge carries the planning tools only, so an
+          // approval over the socket with a Codex session's token is no request of Codex's (2026-11-09).
           const answer = !session || typeof msg.tool_name !== "string" || !msg.input || typeof msg.input !== "object"
             ? deny("WorkTrust remote: unknown session; denied")
+            : session.adapter === "codex" ? deny("WorkTrust remote: Codex asks through its app-server; denied")
             : await request(session, msg.tool_name, msg.input);
           conn.end(`${JSON.stringify(answer)}\n`);
         });

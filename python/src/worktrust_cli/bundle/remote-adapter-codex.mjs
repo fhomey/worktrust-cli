@@ -13,22 +13,59 @@
  *                                         only an approvable class reaches the phone, everything else is declined here
  * The approval policy is `untrusted` and the sandbox `workspace-write` (`read-only` in the plan mode): Codex asks before
  * anything it does not already trust, and never writes outside the project on its own. No free argument reaches Codex.
+ *
+ * THE PLANNING TOOLS (2026-11-09), as Claude Code has them: the session's own MCP server (remote-approval-bridge.mjs,
+ * `--plans-only`) is the ONE server of the run, given as a `--config` override on Codex's command line, never written to
+ * the person's ~/.codex/config.toml. Its socket and token are in a file of this user's only (writeBridgeSession), so the
+ * command line, readable in a process list, names a path and no secret. Measured on Codex 0.154.0 (2026-11-09): the
+ * override starts the bridge, `enabled_tools` keeps it to the three, `tools.<name>.approval_mode="approve"` runs them
+ * without a prompt (else Codex asks by `mcpServer/elicitation/request`), and the server's instructions reach the agent.
  */
 import { spawn } from "node:child_process";
+import { chmodSync, realpathSync, writeFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { changePaths, codexApprovalAsTool, refusalFor } from "./remote-codex-events.mjs";
+import { PLAN_TOOL_NAMES } from "./remote-approval-bridge.mjs";
 
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const THREAD = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isCodexThreadId = (value) => typeof value === "string" && THREAD.test(value);
 
+/** A TOML basic string (Codex parses a `--config` value as TOML); a value TOML could not carry is refused, never mangled. */
+const toml = (value) => {
+  if (typeof value !== "string" || !value || /[\u0000-\u001f\u007f]/.test(value)) throw new Error("not a value Codex's config can carry");
+  return JSON.stringify(value);
+};
+const realOr = (path) => { try { return realpathSync(path); } catch { return path; } };
+
 /**
  * The fixed command line. The person's own Codex config stays (its model, its notify hook), but a remote session never
  * widens the sandbox or reaches a configured MCP server (review 2026-11-07, P2-1): no extra writable roots, no network in
- * the sandbox, no mcp_servers. MCP servers a Codex PLUGIN brings still start (measured on 0.154.0); that is part of the
+ * the sandbox, and `mcp_servers` replaced whole: empty, or the session's own bridge alone (`plans`: { node, bridge,
+ * session }, absolute paths). MCP servers a Codex PLUGIN brings still start (measured on 0.154.0); that is part of the
  * risk the person accepts when they turn Codex on (`worktrust remote codex on`).
+ * The project is named `untrusted` for this run (2026-11-09): measured on 0.154.0, a `workspace-write` thread in a
+ * project Codex does not know WRITES `[projects."<path>"] trust_level = "trusted"` into the person's config.toml; named
+ * here, nothing is written, and the repository's own .codex config stays out, as `--setting-sources user` keeps a
+ * repository's settings out of Claude Code.
  */
-export function codexArgs() {
-  return ["app-server", "--config", "sandbox_workspace_write.network_access=false", "--config", "sandbox_workspace_write.writable_roots=[]", "--config", "mcp_servers={}"];
+export function codexArgs({ cwd, plans = null }) {
+  if (typeof cwd !== "string" || !isAbsolute(cwd)) throw new Error("a Codex session runs in an absolute project path");
+  let servers = "mcp_servers={}";
+  if (plans) {
+    if (![plans.node, plans.bridge, plans.session].every((p) => typeof p === "string" && isAbsolute(p))) throw new Error("the bridge is named by absolute paths");
+    const args = [plans.bridge, "--plans-only", "--session", plans.session].map(toml).join(",");
+    servers = `mcp_servers={worktrust_remote={command=${toml(plans.node)},args=[${args}],enabled_tools=[${PLAN_TOOL_NAMES.map(toml).join(",")}],tools={${PLAN_TOOL_NAMES.map((n) => `${n}={approval_mode="approve"}`).join(",")}}}}`;
+  }
+  const trust = `projects={${[...new Set([cwd, realOr(cwd)])].map((p) => `${toml(p)}={trust_level="untrusted"}`).join(",")}}`;
+  return ["app-server", "--config", "sandbox_workspace_write.network_access=false", "--config", "sandbox_workspace_write.writable_roots=[]", "--config", servers, "--config", trust];
+}
+
+/** The bridge's channel for one Codex session: its socket and token, this user only (0600), removed with the session. */
+export function writeBridgeSession(file, { socket, token }) {
+  writeFileSync(file, JSON.stringify({ socket, token }), { mode: 0o600 });
+  chmodSync(file, 0o600);
+  return file;
 }
 
 /** thread/start or thread/resume parameters from the protocol's closed options. */
@@ -43,17 +80,20 @@ export function threadParams({ cwd, model, mode, resume }) {
 const text = (t) => [{ type: "text", text: t }];
 
 /**
- * o: { file, cwd, env, model, mode, resume, onMessage(msg), onThread(threadId), onExit(how), approve(tool, input) → Promise<boolean> }.
+ * o: { file, cwd, env, model, mode, resume, plans?, onMessage(msg), onThread(threadId), onExit(how), approve(tool, input) → Promise<boolean> }.
  * → { pid, alive, write(text), steer(text) → Promise<{ ok }>, interrupt() → Promise<boolean>, stop(), close() }.
  */
 export function startCodex(o) {
-  const child = spawn(o.file, codexArgs(), { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
+  const child = spawn(o.file, codexArgs({ cwd: o.cwd, plans: o.plans ?? null }), { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
   let buffer = "", exited = false, nextId = 1, threadId = null, turnId = null, ready = false;
   const waiting = new Map(), queue = [], fileChanges = {};
   const send = (msg) => { if (!exited) child.stdin.write(`${JSON.stringify(msg)}\n`); };
   const call = (method, params) => new Promise((resolve) => { if (exited) { resolve({ error: { message: "codex exited" } }); return; } const id = nextId++; waiting.set(id, resolve); send({ id, method, params }); });
   const turn = (t) => call("turn/start", { threadId, input: text(t) });
   async function answer(msg) {
+    // An MCP server's question (a tool call to approve, a form): the planning tools never ask (approval_mode above), and
+    // nothing else of an MCP server is the phone's to answer. Declined in the elicitation's own shape.
+    if (msg.method === "mcpServer/elicitation/request") { send({ id: msg.id, result: { action: "decline", content: null } }); return; }
     const asks = msg.method === "item/permissions/requestApproval" ? null : codexApprovalAsTool(msg.method, msg.params, fileChanges, o.cwd);
     let allowed = false;
     if (asks) { allowed = true; for (const a of asks) if (!(await o.approve(a.tool, a.input))) { allowed = false; break; } }

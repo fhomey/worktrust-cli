@@ -16,6 +16,7 @@ import { confirmedFingerprints, controllerKeys, loadChannels, loadPhones, loadPr
 import { createProject, rootLabel, worktreeMain } from "./remote-projects.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
+const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
 const DEVICE_COMMANDS = new Set(["inventory.get", "device.configure", "status.get", "pairing.revoke", "release.list", "pipeline.cancel"]);
 const KEEP_REMOVED = 20;
 const MAX_PENDING_PHONES = 10;
@@ -31,7 +32,7 @@ export function createDaemonCore(o) {
   function sealAll(record) {
     for (const [id, channel] of channels) {
       if (!confirmed().has(channel.peer_fingerprint)) { channels.delete(id); continue; } // a revoked phone hears nothing
-      const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify };
+      const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify, ...(record.lane ? { lane: record.lane } : {}) };
       const sealed = P.sealEvent(channel, draft, record.body, o.random);
       if (!sealed.ok) { o.log("seal_refused", { type: record.type, code: sealed.code }); continue; }
       channels.set(id, sealed.value.channel);
@@ -40,7 +41,13 @@ export function createDaemonCore(o) {
     persist();
   }
 
-  function emit(sessionId, type, body, commandId = null, notify = "none") {
+  /**
+   * `transient` (release 19; a pushed terminal screen, remote-screen-push.mjs): the session's TRANSIENT LANE
+   * (envelopes.ts), sealed for the phones and never journaled, so a replay never brings back a stale screen and the
+   * session's own sequence has no number missing. Its numbers rise per session from this computer's clock.
+   */
+  const laneSeq = new Map();
+  function emit(sessionId, type, body, commandId = null, notify = "none", { transient = false } = {}) {
     let shaped = P.validateEventBody(type, body);
     if (!shaped.ok && type === "agent.completed" && body.result) {
       // A result over its caps keeps the reply and names the files; the diffs are said to be cut.
@@ -49,6 +56,11 @@ export function createDaemonCore(o) {
       shaped = P.validateEventBody(type, body);
     }
     if (!shaped.ok) { o.log("event_refused", { type, detail: shaped.code }); return; }
+    if (transient) {
+      const seq = Math.max((laneSeq.get(sessionId) ?? 0) + 1, o.now());
+      laneSeq.set(sessionId, seq);
+      return sealAll({ session_id: sessionId, event_seq: seq, type, occurred_at: o.now(), command_id: null, notify: "none", lane: "transient", body });
+    }
     const record = { session_id: sessionId, event_seq: o.journal.nextSeq(sessionId), type, occurred_at: o.now(), command_id: commandId, notify, body };
     o.journal.recordEvent(record);
     sealAll(record);
@@ -140,7 +152,10 @@ export function createDaemonCore(o) {
     if (P.RELEASE_COMMANDS.has(env.type)) return releases ? releases.handle(env, payload) : "unsupported"; // remote-releases.mjs
     if (env.type === "attachment.put" || env.type === "attachment.clear") return o.attachments ? o.attachments.handle(env, payload) : "unsupported"; // remote-attachments.mjs
     if (env.type === "preview.targets" || env.type === "preview.render") return o.preview ? o.preview.handle(env, payload) : "unsupported"; // remote-preview.mjs
-    return sessions.handle(env, payload);
+    if (LIVE_COMMANDS.has(env.type)) return o.live ? o.live.handle(env, payload) : "unsupported"; // remote-live-preview.mjs
+    const handled = await sessions.handle(env, payload);
+    if (env.type === "session.close") await o.live?.sessionClosed(env.session_id); // its live preview ends with it
+    return handled;
   }
 
   /** The order of this function is the at-most-once rule (see the header). */

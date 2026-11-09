@@ -12,13 +12,30 @@
  * Fail closed: no daemon, a lost socket, a malformed answer or six minutes without one is a denial. This is not the
  * WorkTrust MCP door and opens no network connection. It also carries the agent's PLANNING tools (plan_release,
  * plan_task, plan_list; 2026-11-08), answered by the daemon's release queue for the session's own project.
+ *
+ * CODEX STARTS IT TOO (2026-11-09), for the planning tools only: `--plans-only` (no `approve`: Codex asks through its
+ * app-server, never here) and `--session <file>`, the session's socket and token in a file of this user's only (0600, in
+ * ~/.worktrust/remote/run/, removed with the session), because Codex takes the server from a `--config` on its own
+ * command line and a token there would be readable in any process list. Claude Code hands the same two in the env of
+ * the MCP config the daemon wrote. Either way, one session's token, registered by the daemon for that session alone.
  */
+import { readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
 
 export const TOOL = "approve";
-const SOCKET = process.env.WORKTRUST_REMOTE_APPROVAL_SOCKET ?? "";
-const TOKEN = process.env.WORKTRUST_REMOTE_APPROVAL_TOKEN ?? "";
+const ARGV = process.argv.slice(2);
+/** The session's channel: `--session <file>` (Codex) or the MCP config's env (Claude Code); "" on anything unreadable. */
+export function channelOf(argv = ARGV, env = process.env) {
+  const at = argv.indexOf("--session");
+  if (at < 0) return { socket: env.WORKTRUST_REMOTE_APPROVAL_SOCKET ?? "", token: env.WORKTRUST_REMOTE_APPROVAL_TOKEN ?? "" };
+  try {
+    const c = JSON.parse(readFileSync(argv[at + 1], "utf8"));
+    return { socket: typeof c?.socket === "string" ? c.socket : "", token: typeof c?.token === "string" ? c.token : "" };
+  } catch { return { socket: "", token: "" }; }
+}
+const { socket: SOCKET, token: TOKEN } = channelOf();
+export const PLANS_ONLY = ARGV.includes("--plans-only");
 const WAIT_MS = 6 * 60_000;
 const deny = (message) => ({ behavior: "deny", message });
 
@@ -74,6 +91,8 @@ export function askPlan(op, args, socket = SOCKET, token = TOKEN, waitMs = 30_00
  * THE PLANNING TOOLS (owner, 2026-11-08: the agent arranges its own work, the phone shows it on Status). Short on
  * purpose: their descriptions travel with every turn. The project is the session's own; nothing here runs anything.
  */
+/** The one line that asks the agent to plan with them: Claude Code's --append-system-prompt, Codex's server instructions. */
+export const PLAN_HINT = "WorkTrust remote: plan multi-step work with plan_release and report each task with plan_task; the person follows it on their phone.";
 const n = (description) => ({ type: "integer", description });
 const PLAN_TOOLS = [
   { name: "plan_release", op: "release", description: "Plan multi-step work as a release on the phone's Status: tasks you then do yourself. Check plan_list first.",
@@ -83,23 +102,27 @@ const PLAN_TOOLS = [
     inputSchema: { type: "object", properties: { release: n("release number, to add"), title: { type: "string" }, estimate_min: n("minutes"), task_id: { type: "string" }, state: { type: "string", enum: ["running", "done", "failed"] }, note: { type: "string" } } } },
   { name: "plan_list", op: "list", description: "This project's open releases and tasks.", inputSchema: { type: "object", properties: {} } },
 ];
+export const PLAN_TOOL_NAMES = Object.freeze(PLAN_TOOLS.map((t) => t.name));
 
 const reply = (id, result) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
 const error = (id, code, message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } })}\n`);
 
-export async function handle(message, ask = askDaemon, plan = askPlan) {
+export async function handle(message, ask = askDaemon, plan = askPlan, plansOnly = PLANS_ONLY) {
   const { id, method, params } = message ?? {};
-  if (method === "initialize") return { id, result: { protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "worktrust-remote", version: "1" } } };
+  if (method === "initialize") return { id, result: { protocolVersion: typeof params?.protocolVersion === "string" ? params.protocolVersion : "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "worktrust-remote", version: "1" },
+    // Codex puts a server's instructions beside its tools (measured on 0.154.0: in tool_search, "worktrust_remote: <line>"),
+    // so they reach the agent without replacing the person's own developer instructions. Claude Code has its line already.
+    ...(plansOnly ? { instructions: PLAN_HINT } : {}) } };
   if (method === "ping") return { id, result: {} };
-  if (method === "tools/list") return { id, result: { tools: [{ name: TOOL, description: "WorkTrust remote: asks the person's confirmed phone to approve one permission request, or denies it.", inputSchema: { type: "object", properties: { tool_name: { type: "string" }, input: { type: "object" }, tool_use_id: { type: "string" } }, required: ["tool_name", "input"] } },
-    ...PLAN_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))] } };
+  const approveTool = plansOnly ? [] : [{ name: TOOL, description: "WorkTrust remote: asks the person's confirmed phone to approve one permission request, or denies it.", inputSchema: { type: "object", properties: { tool_name: { type: "string" }, input: { type: "object" }, tool_use_id: { type: "string" } }, required: ["tool_name", "input"] } }];
+  if (method === "tools/list") return { id, result: { tools: [...approveTool, ...PLAN_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))] } };
   if (method === "tools/call") {
     const planTool = PLAN_TOOLS.find((t) => t.name === params?.name);
     if (planTool) {
       const answer = await plan(planTool.op, params.arguments && typeof params.arguments === "object" ? params.arguments : {});
       return { id, result: { content: [{ type: "text", text: JSON.stringify(answer) }], ...(answer?.ok ? {} : { isError: true }) } };
     }
-    if (params?.name !== TOOL) return { id, error: { code: -32602, message: "unknown tool" } };
+    if (params?.name !== TOOL || plansOnly) return { id, error: { code: -32602, message: "unknown tool" } };
     const a = params.arguments ?? {};
     const answer = typeof a.tool_name === "string" && a.input && typeof a.input === "object"
       ? await ask({ tool_name: a.tool_name, input: a.input, tool_use_id: typeof a.tool_use_id === "string" ? a.tool_use_id : null })

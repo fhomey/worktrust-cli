@@ -1,5 +1,14 @@
 # worktrust
 
+## 0.11.1: terminal sessions, and the live preview you can touch
+
+`npx worktrust remote terminal on` lets the phone start Claude Code in a terminal session on WorkTrust's own tmux socket
+(off until you turn it on), which you can also join at the desk with `npx worktrust remote attach <id>`. The phone reads
+the session's screen, is sent it when it changes while someone follows it, and answers a dialog the agent shows only
+when the screen still looks the way it did when you read it. The local preview can now be live: the page itself, on the
+phone, touchable, through this computer's own browser. Codex gets the same three planning tools as Claude Code. What is
+measured for the passport is unchanged: remote-steered sessions never count as your hours, and the measure rules stay 3.
+
 ## 0.11.0: steer your own agents from your phone
 
 `npx worktrust remote` pairs this computer with the WorkTrust app and lets the phone steer the coding agents that run

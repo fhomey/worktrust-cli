@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -57,6 +57,14 @@
     "remote-steering.mjs",
     "remote-codex-events.mjs",
     "remote-adapter-codex.mjs",
+    "remote-adapter-terminal.mjs",
+    "remote-terminal-sessions.mjs",
+    "remote-terminal-cli.mjs",
+    "remote-screen-states.mjs",
+    "remote-screen-approvals.mjs",
+    "remote-screen-push.mjs",
+    "remote-cdp.mjs",
+    "remote-live-preview.mjs",
     "remote-projects.mjs",
     "remote-pipeline-config.mjs",
     "remote-pipeline-parsers.mjs",

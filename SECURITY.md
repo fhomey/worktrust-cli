@@ -209,6 +209,31 @@ the platform keeps only the listed keys, from a CLI key alone, and shows them to
 `worktrust mod remove` and `worktrust disconnect` take it out of the settings and delete the plugin
 and its counts.
 
+## Remote agents (`npx worktrust remote`, not yet released)
+
+What it is: standing remote execution of AI agents on this computer, steered from a confirmed phone. Its limits:
+
+- Separate key, separate audience. The remote keys (`~/.worktrust/remote/remote-keys.json`, 0600) are not the measurement
+  key and no remote module reads the measurement credentials (`scripts/check-remote-cli.mjs` refuses one that names them).
+  Bindings are verified against issuer keys pinned in the release; a test-only issuer key is honoured only for a gateway on
+  this computer's loopback.
+- Controllers are confirmed here. A phone becomes a controller by scanning the QR this terminal draws (its secret proves
+  it saw this screen and is mixed into the first handshake) or by a typed code confirmed at this keyboard. The issuer alone
+  cannot add a controller. `remote phones remove` drops one at once.
+- The gateway reads no content: commands and events are sealed between the phone and this computer (XChaCha20-Poly1305
+  under keys from an authenticated X25519 handshake). The gateway sees ids, message types, times and size classes.
+- At most once. Every command is written to `~/.worktrust/remote/journal.jsonl` and flushed to disk before an agent runs; a
+  repeat is answered from the journal, and a command an interrupted daemon left mid-way is closed as failed, never run again.
+- Approvals are classified on this computer. Only project edits, the reviewed test, build and lint commands, and outward
+  messages shown whole can be approved from a phone, each by a signed decision bound to the exact action, single use,
+  five minutes at most; offline or no answer is a denial. Claude Code also gets deny rules for pushes, installs, deploys
+  and secret reads, and loads only your user settings, so a repository's own rules or hooks do not apply remotely.
+- What it does not stop: an approved test command runs the project's own test code, which can do what that code does;
+  grant only folders whose code you trust. The phone's keys are on the phone: until you revoke it, whoever unlocks it can
+  steer agents within these rules. macOS asks for folder access per program, so the access you grant the service's `node`
+  covers every script that `node` runs.
+- Hours. A remote-steered session is never your AI Hours (see README).
+
 ## Python distribution and explicit agent observations
 
 The official [PyPI package](https://pypi.org/project/worktrust/) runs the same measurement

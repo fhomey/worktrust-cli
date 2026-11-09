@@ -66,7 +66,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 
-import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs";
+import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs"; import { remoteSteeredOf } from "./remote-steered.mjs"; // 2026-11-07: a day steered from a phone is measured headless, steered_from "remote", never the person's hours (owner decision 1)
 
 async function main() {
 const args = process.argv.slice(2), NODE_FLAGS = process.versions.node === "26.5.0" ? ["--no-concurrent-sparkplug"] : [];
@@ -244,7 +244,7 @@ const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await impor
 const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
 const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot", "gemini-cli"]; // the registry's keys, the name each line carries (0.10.35: Gemini CLI)
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
-const READER_FILES = ["history-outbox.mjs", "transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
+const READER_FILES = ["history-outbox.mjs", "transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs", "remote-steered.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
 /** The roots this machine's transcripts live under; a test names its own. */
 const claudeRoot = () => value("transcript-root") ?? join(homedir(), ".claude", "projects");
 const codexRoot = () => { const given = value("codex-root"); if (given) return given.replace(/^~(?=\/|$)/, homedir()); return value("transcript-root") ? null : join(homedir(), ".codex", "sessions"); };
@@ -516,7 +516,7 @@ function stretchesOf(file, since, saved = null) {
   messages.sort((a, b) => a.at - b.at);
   const byDay = byDayOf(messages);
   const agents = agentsByDay(file, since), session = kind.kind();
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay, session); return stretch && { ...stretch, ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const remote = remoteSteeredOf(file, ofDay), kindOf = remote ? "headless" : session; const stretch = measure(cwd, ofDay, kindOf); return stretch && { ...stretch, ref: stretchRef(file, day), steered: remote ? "remote" : steered, session: kindOf, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
 }
 /** stretchesOf for a Claude Code transcript, from its read position when `saved` holds a usable one; `positionAt(t)` on the list is the position to keep. */
 function claudeStretchesOf(file, since, saved) {
@@ -548,7 +548,7 @@ function claudeStretchesOf(file, since, saved) {
     const byDay = byDayOf(messages), positions = {};
     const agents = agentsByDay(file, since, saved?.a ?? null, positions), session = kind.kind();
     subs = positions;
-    stretches = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const stretch = measure(cwd, ofDay, session); return stretch && { ...stretch, ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+    stretches = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const remote = remoteSteeredOf(file, ofDay), kindOf = remote ? "headless" : session; const stretch = measure(cwd, ofDay, kindOf); return stretch && { ...stretch, ref: stretchRef(file, day), steered: remote ? "remote" : steered, session: kindOf, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
   }
   // A read that failed keeps no position: the next run reads the file whole.
   if (!at.failed && at.end !== undefined && carry !== null) {
@@ -1335,7 +1335,7 @@ function historyEntries(floor = null, all = false) {
       // The live window belongs to the hook: a stretch that log_work may still report is not history.
       if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
       // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
-      const stretch = { ...measure(cwd, messages, session), ref: stretchRef(file, day), steered, session, agents: agents.get(day) ?? null, live: liveOf(file, day) };
+      const remote = remoteSteeredOf(file, messages), kindOf = remote ? "headless" : session; const stretch = { ...measure(cwd, messages, kindOf), ref: stretchRef(file, day), steered: remote ? "remote" : steered, session: kindOf, agents: agents.get(day) ?? null, live: liveOf(file, day) };
       // ONE LINE PER PROCESS PER DAY (0.10.33), as live: an autonomous run joins its process's day, sent below as one line.
       if (isProcessRun(stretch)) {
         const key = processKey(CODEX_ROLLOUT.test(file) ? "codex" : ANTIGRAVITY_TRANSCRIPT.test(file) ? "antigravity" : DATABASE_SESSION.test(file) ? file.slice(0, file.indexOf(":")) : null, stretch, false);
@@ -1478,7 +1478,7 @@ function folderEntries(given) {
       report.stretches += 1;
       if (present.has(ref) || seen.has(ref)) { report.skipped += 1; continue; }
       seen.add(ref);
-      const rest = payloadFor({ ...measure(cwd, messages), ref, steered: null, agents: null });
+      const remote = remoteSteeredOf(file, messages), rest = payloadFor({ ...measure(cwd, messages, remote ? "headless" : null), ref, steered: remote ? "remote" : null, session: remote ? "headless" : null, agents: null }); // a copied steered session stays out of the person's hours (P2-d)
       const entry = { ...rest, title: rest.layer ? `AI-assisted work from a copied session folder · ${rest.layer}` : "AI-assisted work from a copied session folder", ...(rest.timeline ? { duration_basis: "reconstructed" } : {}) };
       if (client !== "claude") entrySource.set(entry, client);
       entryFile.set(entry, { file, from: firstOf(messages), folder: null });

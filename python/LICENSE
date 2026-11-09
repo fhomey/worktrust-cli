@@ -1,23 +1,27 @@
 WorkTrust CLI Licence
 
-Version 1.0, in force from WorkTrust CLI version 0.10.18 (17 October 2026).
-Status: draft, subject to legal review.
+Version 1.1, in force from WorkTrust CLI version 0.10.39 (7 November 2026).
 
-Copyright (c) 2026 Oravtia B.V. (WorkTrust), registered with the Dutch Chamber of
+Copyright (c) 2026 Oravita B.V. (WorkTrust), registered with the Dutch Chamber of
 Commerce (KvK) under number 98076051. All rights reserved.
 
 1. What this licence covers
 
 "The Software" means the WorkTrust command-line tool in every form in which
-Oravtia B.V. distributes it: the "worktrust" package on npm, the "worktrust"
+Oravita B.V. distributes it: the "worktrust" package on npm, the "worktrust"
 package on PyPI, the scripts served from worktrust.io, the WorkTrust preservation
 kit, and the files these install on a computer (including the WorkTrust mod for
-Claude Code), together with their documentation. "You" means the person or
-organisation that installs or runs the Software.
+Claude Code), together with their documentation and their source code wherever
+it is published, including the public repository github.com/fhomey/worktrust-cli
+and any copy or fork of it. "You" means the person or organisation that obtains,
+reads, installs or runs the Software.
+
+By downloading, installing, running or reading the source code of the Software,
+you accept this licence. If you do not accept it, do none of these things.
 
 2. What you may do
 
-Oravtia B.V. grants the licences below free of charge. Each is non-exclusive,
+Oravita B.V. grants the licences below free of charge. Each is non-exclusive,
 non-transferable, non-sublicensable and revocable, and covers installing and
 running the unmodified Software on computers you own or control.
 
@@ -40,10 +44,12 @@ running the unmodified Software on computers you own or control.
      Software and run it to evaluate it.
 
 You may make the copies needed to install and run the Software and a reasonable
-number of backup copies. You may read the source code to understand and check
-what the Software does on your computer, and you may test it on your own computer
-to report a security problem as described in SECURITY.md. Being able to read the
-source code gives you no other right.
+number of backup copies. You may read the source code for one purpose only: to
+understand and check what the Software does on your computer. You may test it on
+your own computer to report a security problem as described in SECURITY.md. Being
+able to read the source code gives you no other right, and a copy or fork made on
+a code-hosting platform (such as the fork that GitHub's terms allow on a public
+repository) gives no right to use the code at all.
 
 3. What you may not do
 
@@ -61,7 +67,23 @@ Except as section 2 allows or mandatory law permits, you may not:
   f. remove or change any copyright notice, this licence or any other notice in
      the Software; or
   g. present a modified or rebuilt copy as the Software or as an official
-     WorkTrust release.
+     WorkTrust release;
+  h. use the Software, its source code, its documentation, or anything you
+     learned from reading them, as a model, reference, template or starting point
+     for any software, product or service other than the WorkTrust service. This
+     includes reimplementing, porting, translating or rewriting it in another
+     programming language; reproducing its structure, sequence and organisation,
+     its protocols, message formats or interfaces; and giving it to another
+     person or to an AI system to do any of these things;
+  i. use any of the above to design, build, operate or improve a platform,
+     product or service of your own or of anyone else, whether or not it
+     competes with WorkTrust; or
+  j. allow or help anyone else to do anything this section forbids.
+
+The Software may only be used for the WorkTrust service, in the ways section 2
+describes. The restrictions in this section are contractual obligations: they
+apply also where copyright alone would not prevent the act, and they bind anyone
+who obtains the source code, from any source.
 
 Nothing in this licence restricts what mandatory law allows a lawful user of a
 computer program to do, including the acts permitted by Articles 5 and 6 of
@@ -69,20 +91,22 @@ Directive 2009/24/EC as implemented in the Dutch Copyright Act (Auteurswet).
 
 4. Ownership and all rights reserved
 
-The Software is licensed, not sold. Oravtia B.V. (WorkTrust) retains all right,
+The Software is licensed, not sold. Oravita B.V. (WorkTrust) retains all right,
 title and interest in the Software and keeps all rights that this licence does
 not expressly grant. This licence grants no right to the name WorkTrust, its
 logos or other marks.
 
 The archives, reports and other files the Software produces from your own data
-belong to you. This licence gives Oravtia B.V. no right to them; what you send to
+belong to you. This licence gives Oravita B.V. no right to them; what you send to
 the WorkTrust service is governed by the service's terms and privacy statement.
 
 5. Earlier versions
 
 Versions of the Software up to and including 0.10.17 were published under the MIT
 licence. Those versions remain available under that licence for those versions
-only. This licence applies to version 0.10.18 and every later version.
+only. Versions 0.10.18 up to and including 0.10.38 were published under version
+1.0 of this licence. This version 1.1 applies to version 0.10.39 and every later
+version.
 
 6. Third-party components
 
@@ -103,10 +127,11 @@ https://worktrust.io/privacy. This licence grants no right to the service.
 
 8. Termination
 
-This licence ends automatically if you breach it. Oravtia B.V. may also end it by
+This licence ends automatically if you breach it. Oravita B.V. may also end it by
 notice, for example when it ends the WorkTrust service. When it ends, you must
 stop using the Software and delete every copy you hold. Sections 3, 4, 9, 10 and
-11 survive termination.
+11 survive termination. A breach of section 3 entitles Oravtia B.V. to every remedy the
+law provides, including an injunction and compensation for its damage.
 
 9. No warranty
 
@@ -117,7 +142,7 @@ without interruption.
 
 10. Limitation of liability
 
-To the fullest extent the law allows, Oravtia B.V. is not liable for any damage
+To the fullest extent the law allows, Oravita B.V. is not liable for any damage
 arising from or in connection with the Software or its use, whether in contract,
 tort or otherwise, including loss of data, profit or business. This does not
 limit liability for intent or deliberate recklessness, or any liability that

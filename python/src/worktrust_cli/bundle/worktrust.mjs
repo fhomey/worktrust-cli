@@ -26,6 +26,8 @@
  *                                              command on a coupled computer offers an export lying in ~/Downloads once.
  *   npx worktrust disconnect                   show what comes out, ask, take it out again
  *   npx worktrust status                       what is coupled here
+ *   npx worktrust remote enable|pair|status|pause|resume|disable|phones|projects|run   steer this computer's agents
+ *                                       from your phone (remote-cli.mjs; opt-in, its own key, never the measurement key)
  *   npx worktrust@latest preserve              how long each AI app here keeps its sessions (--apply keeps them,
  *                                       --archive [dir] a local metadata-only record, --verify [dir] checks it,
  *                                       --summary [dir] counts hours, tokens and parallel sessions from it);
@@ -71,12 +73,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const { moduleArgs, moduleExecutable, readPrivateFile, writePrivateFile } = await import("./package-integrity.mjs").catch(() => ({}));
 
 const args = process.argv.slice(2);
-const VALUED = ["--name", "--origin", "--url", "--export", "--from-folder"];
+const VALUED = ["--name", "--origin", "--url", "--export", "--from-folder", "--gateway"];
 const command = args.includes("--help") ? "help" : args.includes("--version") ? "version" : args.find((arg, at) => !arg.startsWith("--") && !(at > 0 && VALUED.includes(args[at - 1]))) ?? "default";
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.10.38";
+const CLI_VERSION = "0.11.0";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -108,7 +110,7 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
+const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-changes.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["transcript-readers.mjs", "session-databases.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -1654,6 +1656,8 @@ function help() {
   say("                         days this computer's own sessions lack, reconstructed, never verified hours (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
+  say("  worktrust remote       steer this computer's agents from your phone: enable, pair (a QR), status, pause, resume,");
+  say("                         disable, phones, projects, run. Opt-in, its own key, never counted as your AI Hours");
   say("  worktrust mcp off      hours only: the WorkTrust door out of every AI app here, nothing of it in your sessions;");
   say("                         the session hook keeps measuring your hours, and update leaves the door out");
   say("  worktrust mcp on       the door back in, so your AI can log finished work (about 40 tokens per session)");
@@ -1688,7 +1692,9 @@ const PERSON_ONLY = new Set(["default", "connect", "update", "history", "disconn
 const agentShell = AGENT_ENV.find((name) => process.env[name] && process.env[name] !== "0");
 // `mcp off` and `mcp on` change what this computer's AI apps load: the person's. Bare `mcp` stays the bridge the apps start.
 const doorSwitch = command === "mcp" && ["off", "on"].includes(args[args.indexOf("mcp") + 1]);
-if (agentShell && (PERSON_ONLY.has(command) || doorSwitch)) {
+// Remote control (2026-11-07) is the person's act at the keyboard: an agent cannot enable, pair, extend or run its own leash; `remote status` only reads.
+const remoteAct = command === "remote" && args[args.indexOf("remote") + 1] !== "status";
+if (agentShell && (PERSON_ONLY.has(command) || doorSwitch || remoteAct)) {
   say();
   say(`  worktrust${command === "default" ? "" : ` ${command}`} is run by the person, in their own terminal, never by an AI agent for them (this shell is an agent's: ${agentShell}).`);
   say("  Nothing was read, sent or changed. See AGENTS.md in the package: https://www.npmjs.com/package/worktrust");
@@ -1743,6 +1749,7 @@ else if (command === "codex") await offerCodex();
 else if (command === "antigravity") await offerAntigravity();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") await status();
+else if (command === "remote") await (await import("./remote-cli.mjs")).remoteCommand(args.slice(args.indexOf("remote") + 1).filter((a, i, all) => !a.startsWith("--") && !(i > 0 && ["--gateway", "--origin"].includes(all[i - 1]))), { say, fail, ask, has, flag, origin: ORIGIN, os: OS, openBrowser, prepare: async () => { await prepareBundledRuntime(); return { node: NODE, nodeArgs: [...NODE_FLAGS, ...NODE_ARGS], entry: STABLE }; } });
 else if (command === "preserve") await preserve();
 else if (command === "mod") await mod();
 else if (command === "git") await gitCommits();

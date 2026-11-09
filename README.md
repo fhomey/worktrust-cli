@@ -1,5 +1,18 @@
 # worktrust
 
+## 0.11.0: steer your own agents from your phone
+
+`npx worktrust remote` pairs this computer with the WorkTrust app and lets the phone steer the coding agents that run
+here (Claude Code and Codex): start a chat in a project, choose the agent and its model from the ones this computer
+reports, send photos and files into the project's inbox (at most 25 MB a file), approve what the agent asks, and follow
+its work. Everything between the phone and this computer is sealed end to end; the relay passes it without reading it.
+The local agent plans its own work with three tools on its session (a release, its tasks, their state and estimate), so
+the phone's Status shows one table of what runs, what waits ("after release 22") and what ended. A session reports its
+active time, the background jobs an agent left running, and, inside a git worktree, the repository it belongs to. A
+local preview renders a dev server you allowed, as desktop, tablet or phone, with this computer's own browser. A phone
+app from before this version cannot read what 0.11.0 sends: update both. What is measured for the passport is unchanged:
+remote-steered sessions never count as your hours, and the measure rules stay 3.
+
 ## 0.10.38: an export says what it can about its own clock
 
 `npx worktrust history --export` now sends, beside each run's timeline, the facts WorkTrust checks to tell an edited
@@ -697,6 +710,34 @@ does not offer its earlier work. Other retained files and your local evidence ar
 automatic server or archive erasure.
 Then revoke the key in WorkTrust: Sources → Devices → this computer → Revoke.
 
+## Remote agents: steer this computer's agents from your phone (`npx worktrust remote`, not yet released)
+
+Off until you run `npx worktrust remote enable` at this keyboard; an AI agent's shell is refused every `remote` command
+except `status`.
+
+- `enable` makes a REMOTE key pair for this computer (Ed25519 and X25519, files of mode 0600 in `~/.worktrust/remote/`),
+  never the measurement key, and has it approved in WorkTrust with your second factor; then it starts a service while you
+  are logged in (launchd on macOS, a systemd user unit on Linux, linger off; on Windows `npx worktrust remote run` in a
+  terminal) and draws a QR code for the WorkTrust app. `pair` draws a new one: five minutes, one phone, once. A phone
+  that scanned it is confirmed; one that typed the code instead waits for `npx worktrust remote phones confirm`.
+- `projects add <folder>` grants a folder (its real path; never your home folder, the disk's root or a folder holding
+  keys, keychains, browser profiles or wallets). A phone starts agents only in granted folders, several at once (four by
+  default).
+- From a phone you may approve: a file edit inside the project, a test, build or lint command from a short reviewed list,
+  and a message an agent sends through a connector, shown whole (channel, every recipient, subject, text, attachment
+  names). Everything else is decided at this keyboard or not at all: installs from the network, `git push`, deploys,
+  deleting outside the project, reading secret files, any "always allow". It is denied on this computer, and the phone is
+  told why.
+- One outbound connection to the WorkTrust gateway, end-to-end encrypted: the gateway relays sealed messages and reads no
+  prompt, file, path, output or model name. No port is opened on this computer.
+- A session steered from a phone is never your AI Hours: the service records it in `~/.worktrust/remote/steered.jsonl`
+  before the agent starts, and the session hook sends it as an agent run (`session_kind` headless, `steered_from`
+  remote).
+- `status`, `pause`, `resume`, `disable` (the hard off; `--forget` also deletes the remote keys), `phones`, `projects`.
+
+Remote needs Node 22.4 or later (the Python package bundles one). The production gateway is not live yet; nothing
+connects until one is set.
+
 ## Requirements
 
 Node 18 or later for the base CLI. SQLite session readers require Node 22.5 or later with `node:sqlite`;
@@ -709,11 +750,14 @@ Security reports: see [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-Use is allowed under the WorkTrust CLI Licence; copying, modifying or redistributing the code is not. See LICENSE.
+Use is allowed under the WorkTrust CLI Licence, for the WorkTrust service only; copying, modifying or redistributing the
+code is not, and neither is using it, or what you learned from reading it, as a model for any other product or
+platform (rewriting, porting or translating it included). See LICENSE.
 The licence is free of charge. `preserve` (with `--apply`, `--archive`, `--verify` and `--summary`) is for everyone,
 with or without an account; every other feature is for WorkTrust account holders, and without an account the rest may
 only be installed and evaluated. The archives and files the CLI makes from your own data are yours.
-From 0.10.18 on; versions up to and including 0.10.17 were published under the MIT licence and stay under it.
+Version 1.1 of the licence applies from 0.10.39; 0.10.18 to 0.10.38 were published under version 1.0; versions up to and
+including 0.10.17 were published under the MIT licence and stay under it.
 
 ## Release signatures and the limits of verification
 

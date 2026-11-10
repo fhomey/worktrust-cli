@@ -56,8 +56,8 @@
  * (input plus cache creation, cache reads excluded), which the door calls `newInput`. The figures the terminal shows come
  * from WorkTrust's receipts.
  *
- * CONFIDENTIAL PROJECTS never open: `~/.worktrust-counter.json` { "exclude": ["client-x"] } is
- * honoured here too, matched against the transcript's project directory, before a file is read.
+ * EXCLUDED PROJECTS never open, CONFIDENTIAL ones send hours and tokens under one fixed marker, never a name, code, path or
+ * commit (`worktrust project exclude|confidential [folder]`, project-modes.mjs, docs/CONFIDENTIAL-WORK.md).
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, lstatSync, openSync, closeSync, fsyncSync, fstatSync, linkSync, unlinkSync, readSync, constants } from "node:fs";
@@ -66,7 +66,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 
-import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs"; import { remoteSteeredOf } from "./remote-steered.mjs"; // 2026-11-07: a day steered from a phone is measured headless, steered_from "remote", never the person's hours (owner decision 1)
+import { readProjectModes, projectModeOf, confidentialPayload, CONFIDENTIAL_REPO_CODE } from "./project-modes.mjs"; import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs"; import { remoteSteeredOf } from "./remote-steered.mjs"; // 2026-11-07: a day steered from a phone is measured headless, steered_from "remote", never the person's hours (owner decision 1)
 
 async function main() {
 const args = process.argv.slice(2), NODE_FLAGS = process.versions.node === "26.5.0" ? ["--no-concurrent-sparkplug"] : [];
@@ -221,10 +221,8 @@ function coupling() {
   return codexCoupling();
 }
 
-const excludes = (() => {
-  try { return (JSON.parse(readFileSync(join(homedir(), ".worktrust-counter.json"), "utf8")).exclude ?? []).map(String); } catch { return []; }
-})();
-const excluded = (path) => excludes.some((text) => text && path.includes(text));
+const PROJECT_MODES = readProjectModes();
+const excluded = (path) => projectModeOf(path, PROJECT_MODES) === "exclude";
 /**
  * THE READERS live beside this file: Codex and Antigravity in transcript-readers.mjs (the counter imports it too, one
  * reader), the database clients in session-databases.mjs. The install copies both into ~/.worktrust with this hook.
@@ -234,7 +232,7 @@ const { CODEX_ROLLOUT = /(?!)/, codexIdOf = (file) => String(file).split(/[\\/]/
 // THE STRETCH'S DERIVED RECORD (0.7.4: split from this file): tool calls named by kind, verification, recovery, delegation,
 // context and routing, for the local archive only. A copy without the module still measures and sends exactly as before.
 const { callOf = (block) => ({ id: block.id, kinds: [], family: String(block.name), digest: "" }), deriveStretch = () => ({}), complexityOf = null, recoveryOf = null, resultOf = (block) => ({ id: block.tool_use_id, failed: block.is_error === true, refusal: null }) } = (await import("./stretch-evidence.mjs").catch(() => null)) ?? {};
-const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {} } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
+const { DATABASE_SESSION = /(?!)/, databaseLines = () => null, databaseSessions = function* () {}, databaseStores = () => [] } = (await import("./session-databases.mjs").catch(() => null)) ?? {};
 // A WEB CHAT'S DATA EXPORT AS HISTORY (0.10.10, owner 2026-10-10): chat-exports.mjs reads a ChatGPT or Claude export (the counter
 // imports the same reader); `--history --export <path>` sends its conversations as RECONSTRUCTED days, never measured, never tokens.
 const { EXPORT_CLIENTS = [], EXPORT_TITLES = {}, exportSessions = null, exportRef = null, exportRunRef = null, findExports = null } = (await import("./chat-exports.mjs").catch(() => null)) ?? {};
@@ -242,9 +240,9 @@ const { modCounts = () => null } = (await import("./claude-mod.mjs").catch(() =>
 const liveOf = (file, day) => modCounts(String(file).split(/[\\/]/).pop().replace(/\.jsonl$/, ""), day) ?? codexLive(file, day); // 0.10.16: a Codex rollout's own
 const { stackOfFiles = () => [], displayStackOfFiles = () => [] } = (await import("./stack-rules.mjs").catch(() => null)) ?? {}; // 0.10.11: core's stack rules and the display-only keys (tools_seen), generated (build-stack-rules --check); absent → nothing named, never a guess
 const EXPORT_PATHS = []; for (let i = 0; i < args.length; i += 1) if (args[i] === "--export" && args[i + 1]) EXPORT_PATHS.push(args[i + 1]);
-const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot", "gemini-cli"]; // the registry's keys, the name each line carries (0.10.35: Gemini CLI)
+const DATABASE_CLIENTS = ["hermes", "goose", "opencode", "openclaw", "cursor", "copilot", "gemini-cli", "ollama", "open-webui"]; // the registry's keys, the name each line carries (0.10.35: Gemini CLI; 2026-11-09: the Ollama app, Open WebUI)
 const LIVE_SOURCE = new RegExp(`^(codex|antigravity|${DATABASE_CLIENTS.join("|")}):`); // a sweep entry's id → the client it names (every database client, 0.6.16)
-const READER_FILES = ["history-outbox.mjs", "transcript-readers.mjs", "session-databases.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs", "remote-steered.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
+const READER_FILES = ["project-modes.mjs", "history-outbox.mjs", "transcript-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "stack-rules.mjs", "claude-mod.mjs", "remote-steered.mjs"]; // 0.7.4: the derived record travels with the hook; 0.10.10: the export reader; 0.10.11: the stack rules; 0.10.15: the mod
 /** The roots this machine's transcripts live under; a test names its own. */
 const claudeRoot = () => value("transcript-root") ?? join(homedir(), ".claude", "projects");
 const codexRoot = () => { const given = value("codex-root"); if (given) return given.replace(/^~(?=\/|$)/, homedir()); return value("transcript-root") ? null : join(homedir(), ".codex", "sessions"); };
@@ -851,8 +849,9 @@ const STEERED_HERE = process.env.SSH_CONNECTION || process.env.SSH_CLIENT || pro
 /** The one payload shape this script can build. Every key is a number, a date or an enum value. */
 function payloadFor(stretch) {
   const cwd = stretch.cwd && existsSync(stretch.cwd) ? stretch.cwd : null;
-  const repo = cwd ? repoOf(cwd) : null;
-  const repoCode = cwd && !repo ? repoCodeOf(cwd) : null; // a code, never a name, for a repository it may not name
+  const confidential = projectModeOf(stretch.cwd, PROJECT_MODES) === "confidential"; // 2026-11-09: no name, no code, no commit; the marker below
+  const repo = cwd && !confidential ? repoOf(cwd) : null;
+  const repoCode = cwd && !repo && !confidential ? repoCodeOf(cwd) : null; // a code, never a name, for a repository it may not name
   const touched = cwd ? pathsTouched(cwd, new Date(stretch.from).toISOString(), new Date(stretch.to).toISOString()) : { paths: [], committed: false, shas: [] };
   const { layer, layers } = layersOf(touched.paths), stack = stackOfFiles(touched.paths), toolsSeen = displayStackOfFiles(touched.paths); // 0.10.11: the stack and the tools seen, from the same paths, keys only, two fields
   // The seventh kind, used as it is defined: a stretch that changed no artefact is knowing
@@ -910,7 +909,8 @@ function payloadFor(stretch) {
   // WHAT STAYS ON THIS COMPUTER (0.7.1): the stretch's derived record rides beside the payload for the local archive, never in it.
   // The same record rides beside the payload for the local archive (preserve --archive).
   if (evidence) DERIVED.set(payload, evidence);
-  return payload;
+  const sealed = confidential ? confidentialPayload(payload) : payload; if (evidence) DERIVED.set(sealed, evidence);
+  return sealed;
 }
 
 /**
@@ -1659,7 +1659,7 @@ if (flag("evidence-summary")) {
   process.stdout.write(`${JSON.stringify(summary)}\n`);
   return await exitFlushed(0);
 }
-if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entryFile.get(entry).folder })); PROGRESS.sink?.end(); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); return await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
+if (flag("archive-lines")) { const lines = historyEntries(null, true).map((entry) => JSON.stringify({ ...entry, ...(DERIVED.get(entry) ?? {}), client: entrySource.get(entry) ?? "claude", started_at: new Date(entryFile.get(entry).from).toISOString(), folder: entry.repo_code === CONFIDENTIAL_REPO_CODE ? null : entryFile.get(entry).folder })); PROGRESS.sink?.end(); process.stdout.write(`${[...lines, JSON.stringify({ archive_end: lines.length })].join("\n")}\n`); return await exitFlushed(0); } // one write and a count, so the reader tells a whole answer from a cut one
 // THE EXPORTS IN A FOLDER (0.10.10, for the bare `npx worktrust`): which lie there, by vendor and digest, and which this computer
 // already sent or was asked about; reads, prints one JSON line, sends nothing. `--export-offered <digest>` records a No.
 if (flag("find-exports")) { const named = value("find-exports"), state = readExportsState(); const found = (findExports ? await findExports(named && !named.startsWith("--") ? named : undefined) : []).map((one) => ({ ...one, sent: state[one.digest]?.sent === true, offered: Boolean(state[one.digest]) })); process.stdout.write(`${JSON.stringify(found)}\n`); return await exitFlushed(0); }
@@ -1740,7 +1740,7 @@ if (flag("history")) {
     const sizes = plan.map((item) => ({ lines: item.batch.length, bytes: Buffer.byteLength(item.body, "utf8"), timeline_bytes: item.batch.reduce((n, entry) => n + timelineOfEntry(entry), 0) }));
     const kinds = { interactive: 0, headless: 0, scheduled: 0, unknown: 0 };
     for (const entry of entries) kinds[entry.session_kind ?? "unknown"] += 1;
-    console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry)?.file)).size, unreadable: READ_FAILURES.n, days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients,
+    console.log(JSON.stringify({ sessions: new Set(entries.map((entry) => entryFile.get(entry)?.file)).size, unreadable: READ_FAILURES.n, stores: databaseStores(Object.fromEntries(DATABASE_CLIENTS.map((client) => [client, value(`${client}-root`)]).filter(([, root]) => root)), Boolean(value("transcript-root"))), days: new Set(entries.map((entry) => entry.at.slice(0, 10))).size, first: months[0] ?? null, last: months.at(-1) ?? null, ...(fromExports ? { exports: fromExports.reports } : {}), ...(fromFolder ? { folder: fromFolder.report } : {}), clients,
       batches: { count: sizes.length, largest_bytes: Math.max(0, ...sizes.map((one) => one.bytes)), largest_timeline_bytes: Math.max(0, ...sizes.map((one) => one.timeline_bytes)), largest_lines: Math.max(0, ...sizes.map((one) => one.lines)), each: sizes }, session_kinds: kinds }));
     return await exitFlushed(0);
   }

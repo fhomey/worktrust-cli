@@ -88,10 +88,16 @@ export function appendPipelineMark(record, file = steeredFile()) {
   try { writeSync(fd, `${canonical(record)}\n`); fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-/** The agent's own session id a reader file names: Claude Code's <uuid>.jsonl, a Codex rollout's trailing uuid, a database session's id. */
+/**
+ * The agent's own session id a reader file names: Claude Code's <uuid>.jsonl, a Codex rollout's trailing uuid, a database
+ * session's id (`<client>:<database>#<session id>`, session-databases.mjs: the part after the last `#`; 2026-11-09, before
+ * which an OpenCode session steered from a phone named no ref and was measured as the person's).
+ */
 export function sessionRefsOf(file) {
   const name = String(file).split(/[\\/]/).at(-1).replace(/\.jsonl$/, "");
   const refs = new Set([name]);
+  const hash = name.lastIndexOf("#");
+  if (hash >= 0) refs.add(name.slice(hash + 1));
   const uuid = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(name)?.[1];
   if (uuid) refs.add(uuid);
   const colon = name.lastIndexOf(":");

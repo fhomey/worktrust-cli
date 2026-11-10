@@ -36,6 +36,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync, openSync, closeSync, unlinkSync, readSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { readProjectModes, projectModeOf, strictestMode } from "./project-modes.mjs"; // 2026-11-09: exclude and confidential
 
 /** DEVICE PROOF (2026-10-03): through `worktrust hook` a bound computer hands over WORKTRUST_DEVICE_KEY; every call is then signed. */
 const proofFor = (url, body) => {
@@ -436,6 +437,9 @@ const DRY = !SEND && !STAGE;
 
 const EXCLUDE = [];
 const LEAVE_OUT = [];
+// THE PROJECT MODES (project-modes.mjs): a confidential project is counted under the one context every confidential project
+// shares, with no name digest beside it, and its commits are not read.
+const PROJECT_MODES = { exclude: [], confidential: [] };
 for (let i = 0; i < args.length; i += 1) if (args[i] === "--exclude" && args[i + 1]) EXCLUDE.push(args[i + 1].toLowerCase());
 /**
  * A claude.ai DATA EXPORT (Settings → Privacy → Export data) read beside the transcripts:
@@ -457,15 +461,15 @@ for (let i = 0; i < args.length; i += 1) if (args[i] === "--claude-export" && ar
 const CHATGPT_EXPORTS = [];
 for (let i = 0; i < args.length; i += 1) if (args[i] === "--chatgpt-export" && args[i + 1]) CHATGPT_EXPORTS.push(args[i + 1]);
 try {
-  const config = JSON.parse(readFileSync(join(homedir(), ".worktrust-counter.json"), "utf8"));
-  for (const entry of Array.isArray(config.exclude) ? config.exclude : []) EXCLUDE.push(String(entry).toLowerCase());
+  const config = readProjectModes();
+  PROJECT_MODES.exclude = config.exclude; PROJECT_MODES.confidential = config.confidential;
   // GUARDRAILS (2026-09-27): `leaveOut` names WORDS a turn must not carry (a client, a project, a
   // person, a subject); a turn carrying one is a filter miss, like the built-in categories below.
   // The app writes this file from the person's own list; the words never leave this machine.
   for (const entry of Array.isArray(config.leaveOut) ? config.leaveOut : []) { const word = String(entry).trim(); if (word) LEAVE_OUT.push(word); }
 } catch { /* no config file is the common case */ }
 const LEAVE_OUT_RE = LEAVE_OUT.length ? new RegExp(`(^|[^\\p{L}\\p{N}])(${LEAVE_OUT.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\p{L}\\p{N}])`, "iu") : null;
-const excluded = (dir) => EXCLUDE.some((needle) => dir.toLowerCase().includes(needle));
+const excluded = (dir) => EXCLUDE.some((needle) => dir.toLowerCase().includes(needle)) || projectModeOf(dir, PROJECT_MODES) === "exclude";
 /**
  * v0.8 harness. `--classify` reads JSON lines `{"text": …, "second": …}` from stdin and prints the
  * form, the act kind and the second-turn type per line — the test suite's door, and a way to see
@@ -796,6 +800,7 @@ const unitsByMonth = new Map(); // month → Map("unit|signal" → { unit, signa
  */
 const contextOf = (projectDir) => createHash("sha256").update(`context:${projectDir}`).digest("hex").slice(0, 16);
 let currentContext = null; // the project the next bump belongs to
+const CONFIDENTIAL_CONTEXT = contextOf("worktrust-confidential"); let currentConfidential = false; // one context for every confidential project
 const contextNames = new Map(); // digest → directory key, printed locally, NEVER sent
 const contextBasenames = new Map(); // digest → the transcript's own cwd basename, the project's real name — local only
 const byMonthContext = new Map(); // month → Map("signal|context" → count)
@@ -916,9 +921,10 @@ for await (const session of sessions()) {
   const pendingTests = new Map(); // tool_use id → the run's unit, day and month
   const testQueue = []; // runs without an id (a replayed store), matched to the next result in order
   const projectDir = session.projectDir;
-  currentContext = projectDir ? contextOf(projectDir) : null;
-  if (projectDir && !contextNames.has(currentContext)) contextNames.set(currentContext, projectDir);
-  if (session.basename && currentContext && !contextBasenames.has(currentContext)) contextBasenames.set(currentContext, session.basename);
+  currentConfidential = strictestMode([projectDir, session.basename, session.cwd], PROJECT_MODES) === "confidential";
+  currentContext = currentConfidential ? CONFIDENTIAL_CONTEXT : projectDir ? contextOf(projectDir) : null;
+  if (projectDir && !currentConfidential && !contextNames.has(currentContext)) contextNames.set(currentContext, projectDir);
+  if (session.basename && currentContext && !currentConfidential && !contextBasenames.has(currentContext)) contextBasenames.set(currentContext, session.basename);
   const sessionUnit = unitOf(file);
   let lineNo = 0;
   // Streamed either way; a Codex rollout's stream is shaped into transcript lines as it passes.
@@ -939,8 +945,8 @@ for await (const session of sessions()) {
     // The transcript names its own working directory; its last segment is the project's real
     // name ("davosnl.com", "dlg-platform") — the directory key above encodes "/" and "." alike
     // as "-", so it cannot say where a name starts. Kept locally, digested for the slug.
-    if (currentContext && line.cwd && !contextBasenames.has(currentContext)) { const base = String(line.cwd).split("/").filter(Boolean).at(-1); if (base) contextBasenames.set(currentContext, base); }
-    if (currentContext && line.cwd && !contextCwds.has(currentContext)) contextCwds.set(currentContext, String(line.cwd));
+    if (currentContext && !currentConfidential && line.cwd && !contextBasenames.has(currentContext)) { const base = String(line.cwd).split("/").filter(Boolean).at(-1); if (base) contextBasenames.set(currentContext, base); }
+    if (currentContext && !currentConfidential && line.cwd && !contextCwds.has(currentContext)) contextCwds.set(currentContext, String(line.cwd));
     currentDay = line.timestamp ? String(line.timestamp).slice(0, 10) : null;
     const month = line.timestamp ? String(line.timestamp).slice(0, 7) : null;
     // ── structural half ──

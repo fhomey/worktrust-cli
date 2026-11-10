@@ -69,7 +69,7 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 
 // allow_endorse (2026-11-09): may a confirmed phone add a browser it scanned (remote-endorse.mjs)? Off until the person says so
 // here, at the keyboard (`worktrust remote phones allow-endorse on`).
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, terminal: false, allow_endorse: false });
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 

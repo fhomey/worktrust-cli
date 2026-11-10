@@ -1,5 +1,28 @@
 # worktrust
 
+## 0.11.4: local models measured, confidential client work, OpenCode in MOCHI
+
+**Local models, used directly.** The Ollama app's chats and Open WebUI's are now read like every other database client:
+the model, the time of each turn and, for Open WebUI, the token counts it kept (the Ollama app keeps none, so none are
+sent or estimated). Never a title, a message, a file or a prompt. A model used through OpenCode, Goose, Hermes or OpenClaw
+was already measured with that client. Because these are days no earlier version measured, the measure rules become 4:
+`npx worktrust update` on a computer measured by rules 3 offers the re-measure once and says why.
+
+**Confidential client work.** `npx worktrust project confidential [folder]` marks a client's repository: its hours and
+token counts still count, under one fixed marker, and no repository name, branch, remote, path, commit or app title
+leaves the computer. Your passport names that share inside your verified hours as "Confidential client work".
+`npx worktrust project exclude [folder]` leaves a folder out entirely, `project normal` undoes either, and `project list`
+shows what you set. Only you change these at your keyboard; an agent's shell may only list them.
+
+**OpenCode in MOCHI.** Your phone can steer OpenCode on this computer, and through it a local model such as Qwen on
+Ollama. Like Codex it is off by default: `npx worktrust remote opencode on` says what OpenCode can do without asking and
+asks for a typed yes; `off` switches it off again. Its runs ask your phone before every command, edit and fetch, and a
+remote-steered session never counts as your hours.
+
+**The import window.** An AI app on this computer is shown the `import_history` tool only in the hour after you copy the
+import prompt in Sources on app.worktrust.io, so it no longer costs every session the tool's description.
+`npx worktrust history` is unchanged.
+
 ## 0.11.3: every device off this computer at once
 
 `npx worktrust remote phones remove --all` disconnects every phone and browser from this computer in one act, after one

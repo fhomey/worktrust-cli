@@ -18,6 +18,9 @@ import { backgroundJobs, emptyClaudeState, endClaudeRun, mapClaudeLine } from ".
 import { collectChanges, snapshotChanges } from "./remote-changes.mjs";
 import { isCodexThreadId, startCodex, writeBridgeSession } from "./remote-adapter-codex.mjs";
 import { emptyCodexState, mapCodexMessage, unwrapShell } from "./remote-codex-events.mjs";
+import { isOpenCodeSessionId, mintOpenCodeSessionId } from "./remote-adapter-opencode.mjs";
+import { emptyOpenCodeState } from "./remote-opencode-events.mjs";
+import { spawnOpenCode } from "./remote-opencode-session.mjs";
 import { createCoalescer } from "./remote-coalesce.mjs";
 import { accept, announceQueue, claudeReplay, codexLanded, dropWaiting, interruptedEnd, interruptOf, steerLive, steerModeOf } from "./remote-steering.mjs";
 import { classifyAction } from "./remote-policy.mjs";
@@ -25,6 +28,9 @@ import { activeRows, listSessions, statusReport } from "./remote-session-list.mj
 
 export const DEFAULT_MAX_SESSIONS = 4;
 const LEDGER_EVERY_MS = 10 * 60_000;
+/** Per agent: the shape of its own session id (a resume names one), and a fresh stream state. */
+const AGENT_ID = { "claude-code": isClaudeSessionId, codex: isCodexThreadId, opencode: isOpenCodeSessionId };
+const FRESH_STATE = { "claude-code": emptyClaudeState, codex: emptyCodexState, opencode: emptyOpenCodeState };
 
 export { createCoalescer } from "./remote-coalesce.mjs"; // kept here for the modules that import it from sessions
 
@@ -98,7 +104,7 @@ export function createSessions(ctx) {
   /** What still waits goes out, then every subagent still open is stopped: the map never shows one working forever. */
   function endRun(s) {
     s.coalesce.flush();
-    if (s.adapter === "codex") return; // Codex reports no subagents to close
+    if (s.adapter !== "claude-code") return; // Codex and OpenCode report no subagents to close
     const end = endClaudeRun(s.state, ctx.now());
     s.state = end.state;
     for (const e of end.events) deliver(s, e);
@@ -188,6 +194,7 @@ export function createSessions(ctx) {
 
   function spawnAgent(s, resume) {
     if (s.adapter === "codex") return spawnCodex(s, resume);
+    if (s.adapter === "opencode") return spawnOpenCode(ctx, s, { mark, onExit, afterMapped, everyMs: LEDGER_EVERY_MS }); // remote-opencode-session.mjs
     const features = ctx.inventory().features["claude-code"];
     s.token = ctx.approvals.register(s);
     s.mcpFile = writeMcpConfig(join(ctx.runDir, `${s.session_id}.mcp.json`), { node: ctx.node, bridge: ctx.bridgePath, socket: ctx.socket(), token: s.token });
@@ -206,10 +213,10 @@ export function createSessions(ctx) {
     if (!project) return "not_found";
     const refused = P.checkStart(payload, adapterOf(ctx.inventory(), payload.adapter));
     if (refused) return refused;
-    if (payload.adapter !== "claude-code" && payload.adapter !== "codex") return "unsupported";
-    if (payload.resume !== null && !(payload.adapter === "codex" ? isCodexThreadId : isClaudeSessionId)(payload.resume)) return "unsupported";
+    if (!AGENT_ID[payload.adapter]) return "unsupported";
+    if (payload.resume !== null && !AGENT_ID[payload.adapter](payload.resume)) return "unsupported";
     const s = { session_id: env.session_id, project_id: project.project_id, projectPath: project.path, adapter: payload.adapter, model: payload.model, mode: payload.permission_mode,
-      agent_ref: payload.resume ?? (payload.adapter === "codex" ? null : randomUUID()), how: "started", first: ctx.now(), queue: [], state: payload.adapter === "codex" ? emptyCodexState() : emptyClaudeState(),
+      agent_ref: payload.resume ?? (payload.adapter === "codex" ? null : payload.adapter === "opencode" ? mintOpenCodeSessionId(ctx.now(), ctx.random) : randomUUID()), how: "started", first: ctx.now(), queue: [], state: FRESH_STATE[payload.adapter](),
       coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: env.task === true, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: payload.name ?? null, active: 0, countedTurn: null };
     live.set(s.session_id, s);
     ctx.journal.recordSession({ session_id: s.session_id, adapter: s.adapter, project_id: s.project_id, agent_session_ref: s.agent_ref, model: s.model, mode: s.mode, at: ctx.now(), name: s.name, active_ms: 0 });
@@ -229,9 +236,9 @@ export function createSessions(ctx) {
     if (!saved || saved.closed) return null;
     const project = ctx.projects().find((p) => p.project_id === saved.project_id);
     const ref = s?.agent_ref ?? saved.agent_session_ref;
-    if (!project || !(saved.adapter === "codex" ? isCodexThreadId : isClaudeSessionId)(ref)) return null;
+    if (!project || !AGENT_ID[saved.adapter]?.(ref)) return null;
     if ([...live.values()].filter((x) => x.run).length >= (ctx.settings().max_sessions ?? DEFAULT_MAX_SESSIONS)) return null;
-    s = s ?? { session_id: sessionId, project_id: saved.project_id, projectPath: project.path, adapter: saved.adapter, model: saved.model ?? null, mode: saved.mode ?? "ask", agent_ref: ref, how: "started", first: ctx.now(), queue: [], state: saved.adapter === "codex" ? emptyCodexState() : emptyClaudeState(),
+    s = s ?? { session_id: sessionId, project_id: saved.project_id, projectPath: project.path, adapter: saved.adapter, model: saved.model ?? null, mode: saved.mode ?? "ask", agent_ref: ref, how: "started", first: ctx.now(), queue: [], state: FRESH_STATE[saved.adapter](),
       coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: false, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: saved.name ?? null, active: saved.active_ms ?? null, countedTurn: null };
     live.set(sessionId, s);
     spawnAgent(s, s.agent_ref);

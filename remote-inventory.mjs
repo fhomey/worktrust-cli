@@ -5,8 +5,9 @@
  * `cursor-agent models`). Claude Code has no lister: since 2026-11-08 (owner: the phone chooses Claude's models as it
  * does Codex's) its models are the ALIASES its own --model help names ("an alias for the latest model (e.g. 'fable',
  * 'opus', or 'sonnet')"), read from this computer's version, each a value `claude --model` takes; a help without that
- * line lists nothing ("not listed"), never a guess. Claude Code and Codex have adapters; the others report "installed, no
- * adapter yet" (every capability false).
+ * line lists nothing ("not listed"), never a guess. Claude Code, Codex and (2026-11-09) OpenCode have adapters; OpenCode is
+ * reported capable only when its own `run --help` names every flag the adapter uses (remote-adapter-opencode.mjs). The
+ * others report "installed, no adapter yet" (every capability false).
  *
  * No shell: each probe is execFile with fixed arguments, a timeout and no input. Nothing here leaves the computer except
  * inside a sealed device.inventory.
@@ -16,6 +17,7 @@ import { existsSync, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { codexReport } from "./remote-adapter-codex.mjs";
+import { openCodeReport } from "./remote-adapter-opencode.mjs";
 import { terminalReport, tmuxVersion } from "./remote-adapter-terminal.mjs";
 import { typingTrusted } from "./remote-screen-states.mjs";
 
@@ -110,7 +112,7 @@ export function inventory({ env = process.env, refresh = false, now = Date.now()
     const version = probe(file, ["--version"], env);
     if (adapter === "claude-code") { const help = probe(file, ["--help"], env); features["claude-code"] = claudeFeatures(help); reports.push(claudeReport(version, help, now)); continue; }
     // Codex (2026-11-07): its app-server, when this version has one (remote-adapter-codex.mjs); models from `codex debug models`.
-    const codex = adapter === "codex" ? codexReport(version, probe(file, ["app-server", "--help"], env)) : null;
+    const codex = adapter === "codex" ? codexReport(version, probe(file, ["app-server", "--help"], env)) : adapter === "opencode" ? openCodeReport(version, probe(file, ["run", "--help"], env)) : null;
     reports.push({ adapter, mode: "structured", installed: true, version: version ? version.trim().slice(0, 200) : null, signed_in: null, capabilities: codex?.usable ? { ...NO, ...codex.capabilities } : NO, ...listModels(adapter, file, env, now), default_model: null });
   }
   for (const report of reports) {
@@ -134,7 +136,9 @@ export const adapterOf = (inv, id) => inv.reports.find((r) => r.adapter === id);
  * listed as installed and offered nothing.
  */
 export function offered(inv, settings) {
-  const reports = settings?.codex === true ? inv.reports : inv.reports.map((r) => (r.adapter === "codex" && r.capabilities.start ? { ...r, capabilities: NO } : r));
+  // OpenCode the same (owner, 2026-11-09): it reads the project's files without asking; `worktrust remote opencode on`.
+  const off = (r) => (r.adapter === "codex" || r.adapter === "opencode") && settings?.[r.adapter] !== true && r.capabilities.start;
+  const reports = inv.reports.map((r) => (off(r) ? { ...r, capabilities: NO } : r));
   // Terminal sessions (release 19) only after `worktrust remote terminal on`: an older phone refuses a second report of one adapter.
   // Typing from a phone only on a screen detector whose fixtures were recorded from the real agent (remote-screen-states.mjs).
   // Answering its dialogs from a phone (screen-hash approvals) needs the same: approvals "screen" only then.

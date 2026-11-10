@@ -1,7 +1,7 @@
 /**
  * THE SESSION DATABASES — the clients that keep their sessions in SQLite, read into Claude Code's shape (2026-10-05).
  *
- * Hermes Agent, Goose, OpenCode and OpenClaw keep no transcript file: each writes its sessions to its own SQLite
+ * Hermes Agent, Goose, OpenCode and OpenClaw (and, through session-local-models.mjs, the Ollama app and Open WebUI) keep no transcript file: each writes its sessions to its own SQLite
  * database. This reads them through node:sqlite (Node 22.5+), read-only, into the same lines transcript-readers.mjs
  * makes of the files, so the session hook's one clock reads them all. Each query takes roles, clocks, models and token
  * counts and no text column (scripts/test-database-clients.mjs holds every query to that). It ships beside the hook,
@@ -147,8 +147,7 @@ export function gooseLines(pseudo) {
     const messages = db.prepare(`select role, created_timestamp as at,
       case when json_valid(content_json) then (select group_concat(json_extract(value, '$.type')) from json_each(content_json)) end as kinds
       from messages where session_id = ? order by created_timestamp, id`).all(id);
-    const ledger = db.prepare("select 1 from sqlite_master where type = 'table' and name = 'usage_ledger'").get() ? db.prepare("select created_timestamp as at, model, input_tokens as input, output_tokens as output, cache_read_tokens as cache_read, cache_write_tokens as cache_write from usage_ledger where session_id = ? order by created_timestamp, id").all(id)
-      : null;
+    const ledger = db.prepare("select 1 from sqlite_master where type = 'table' and name = 'usage_ledger'").get() ? db.prepare("select created_timestamp as at, model, input_tokens as input, output_tokens as output, cache_read_tokens as cache_read, cache_write_tokens as cache_write from usage_ledger where session_id = ? order by created_timestamp, id").all(id) : null;
     const fallbackModel = cleanModel(session.model);
     const lines = messages.map((message) => {
       const kinds = new Set(String(message.kinds ?? "").split(","));
@@ -181,10 +180,7 @@ export function gooseLines(pseudo) {
  * leaves the database (text lives in the `part` table, which is never read). A subagent's session (`parent_id`) is not
  * read. How it was steered is not said: the terminal, the desktop app and a phone on `opencode serve` look alike here.
  */
-export function opencodeHomes(given) {
-  if (given) return [given.replace(/^~(?=\/|$)/, homedir())];
-  return [join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode")];
-}
+export function opencodeHomes(given) { return given ? [given.replace(/^~(?=\/|$)/, homedir())] : [join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode")]; }
 const opencodeDatabases = (home) => { try { return readdirSync(home).filter((name) => /^opencode(-[A-Za-z0-9_.-]+)?\.db$/.test(name)).sort().map((name) => join(home, name)); } catch { return []; } };
 export function* opencodeSessions(homes) {
   for (const home of homes) for (const file of opencodeDatabases(home)) {
@@ -548,6 +544,7 @@ const DATABASE_CLIENTS = {
   cursor: { homes: cursorHomes, sessions: cursorSessions, lines: cursorLines },
   copilot: { homes: copilotHomes, sessions: copilotSessions, lines: copilotLines },
   "gemini-cli": { homes: geminiHomes, sessions: geminiSessions, lines: geminiLines },
+  ...((await import("./session-local-models.mjs").catch(() => null))?.LOCAL_MODEL_CLIENTS ?? {}), // 2026-11-09: the Ollama app and Open WebUI; without the module, not read
 };
 export const DATABASE_SESSION = new RegExp(`^(${Object.keys(DATABASE_CLIENTS).join("|")}):.+#[A-Za-z0-9_.:-]{1,120}$`);
 /** Every attended session of every database client; `given` names a client's own home (a test), `onlyGiven` reads no other. */
@@ -558,4 +555,6 @@ export function* databaseSessions(given = {}, onlyGiven = false) {
   }
 }
 export const databaseLines = (pseudo) => DATABASE_CLIENTS[pseudo.slice(0, pseudo.indexOf(":"))]?.lines(pseudo) ?? null;
+/** What each client with a store report found (the local models): read with its count of chats, or present and not read with why. */
+export const databaseStores = (given = {}, onlyGiven = false) => Object.entries(DATABASE_CLIENTS).flatMap(([client, r]) => (r.stores ? r.stores(given[client] ? r.homes(given[client]) : onlyGiven ? [] : r.homes()) : []));
 // ── end database clients ──

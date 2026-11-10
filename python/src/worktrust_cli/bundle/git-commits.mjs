@@ -17,6 +17,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, r
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import * as rules from "./commit-rules.mjs";
+import { readProjectModes, projectModeOf } from "./project-modes.mjs";
 
 /** The walker's id primitive (apps/worktrust/app/src/lib/scoring/ids.ts), byte for byte. */
 export function uuidFrom(...parts) {
@@ -204,10 +205,12 @@ export function transcriptCwds(home = homedir(), limit = LIMITS.transcripts) {
   return [...cwds];
 }
 
-/** The person's own exclusions (~/.worktrust-counter.json `exclude`, the counter's file): a folder under one is never read. */
-function excluded(dir, home) {
-  try { const list = JSON.parse(readFileSync(join(home, ".worktrust-counter.json"), "utf8")).exclude; return Array.isArray(list) && list.some((prefix) => typeof prefix === "string" && prefix && resolve(dir).startsWith(resolve(prefix))); } catch { return false; }
-}
+/**
+ * The person's project modes (project-modes.mjs, `worktrust project`): an EXCLUDED folder is never read, and a CONFIDENTIAL one is
+ * not read here either (2026-11-09): a commit is not an hour, and its repository's label and references are what the mode keeps
+ * on this computer. Both apply to a folder the sessions named and to one the person added.
+ */
+const keptOut = (dir, home) => projectModeOf(dir, readProjectModes(home)) !== "normal";
 
 // ── this computer's answers ──
 export function stateFile(home = homedir()) { return join(home, ".worktrust", "git.json"); }
@@ -224,9 +227,9 @@ export function saveState(state, home = homedir()) {
 /** The work trees to offer: the folders the sessions named, plus the ones the person added; none they removed. */
 export function discoverRepos(state, home = homedir()) {
   const roots = new Set();
-  for (const cwd of transcriptCwds(home)) { if (excluded(cwd, home)) continue; const root = repoRootOf(cwd); if (root) roots.add(root); }
+  for (const cwd of transcriptCwds(home)) { if (keptOut(cwd, home)) continue; const root = repoRootOf(cwd); if (root) roots.add(root); }
   for (const [root, entry] of Object.entries(state.repos)) if (entry?.how === "typed" && existsSync(root)) roots.add(root);
-  return [...roots].sort();
+  return [...roots].filter((root) => !keptOut(root, home)).sort();
 }
 
 /** What each of the three ways in reads: the table the consent shows (and the Sources card, in the app's words). */

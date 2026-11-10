@@ -20,6 +20,7 @@
  *                                                     built HTML file, per granted folder (rendered with your Chrome)
  *   remote codex on | off                             offer Codex to a phone (off by default): Codex runs the reads it
  *                                                     deems safe without asking, which the person accepts here
+ *   remote opencode on | off                          the same for OpenCode (off by default; remote-agent-switch.mjs)
  *   remote releases [released <number>]               the releases on this computer; mark a ready one released (the
  *                                                     phone never can: publishing stays at the desk)
  *   remote terminal on | off | list | start [<folder>] and remote attach <id>   terminal sessions (release 19): Claude Code
@@ -281,7 +282,7 @@ function status(io) {
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
     gateway: settings.gateway, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length,
-    agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false) };
+    agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false) };
   if (io.has("json")) { io.say(JSON.stringify(summary, null, 2)); return; }
   io.say(`  Remote: ${settings.enabled ? (settings.paused ? `paused (${settings.paused === "desk" ? "here" : "from a phone"})` : "on") : "off"}`);
   io.say(`  Paired: ${identity ? `${identity.device_id} · key ${summary.fingerprint}` : "no"}`);
@@ -289,7 +290,7 @@ function status(io) {
   io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);
   io.say(`  Phones: ${summary.phones.confirmed} confirmed (${summary.phones.browsers_added} browsers added by a phone), ${summary.phones.pending} pending · Folders granted: ${summary.projects}`);
   io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`);
-  for (const a of summary.agents) io.say(`  Agent: ${a.adapter} ${a.version ?? ""} · ${a.adapter_ready ? "remote adapter ready" : "installed, no adapter yet"} · models: ${a.models}`);
+  for (const a of summary.agents) io.say(`  Agent: ${a.adapter} ${a.version ?? ""} · ${a.switched_off ? `installed, switched off: npx worktrust remote ${a.adapter} on` : a.adapter_ready ? "remote adapter ready" : "installed, no adapter yet"} · models: ${a.models}`);
 }
 
 export async function remoteCommand(args, io) {
@@ -330,21 +331,9 @@ export async function remoteCommand(args, io) {
     for (const p of loadProjects()) { const g = grants[p.project_id]; if (g) io.say(`    ${p.path}: ports ${g.ports.join(", ") || "none"} · files ${g.files.join(", ") || "none"}`); }
     return;
   }
-  if (sub === "codex") {
-    const s = loadSettings();
-    if (rest[0] === "off") { saveSettings({ ...s, codex: false }); io.say("  Codex is no longer offered to a phone."); return; }
-    if (rest[0] !== "on") { io.say(`  Codex is ${s.codex ? "on" : "off"} for remote. npx worktrust remote codex on | off`); return; }
-    io.say("  Codex from a phone: it asks before every command it does not trust and every edit, and the computer classifies those.");
-    io.say("  But it runs the reads it deems safe (cat, rg, head, sed -n) WITHOUT asking. This computer ends a turn as soon as a");
-    io.say("  command reads a secret path (keys, .env, credentials), but by then the read has started. MCP servers a Codex plugin");
-    io.say("  brings still start. Claude Code has deny rules for those reads; Codex has none on this version.");
-    if (!(await askTyped("  Offer Codex to your phones anyway? Type yes: "))) io.fail("Codex stays off");
-    saveSettings({ ...s, codex: true });
-    io.say("  ✓ Codex is offered to your phones. npx worktrust remote codex off takes it back.");
-    return;
-  }
+  if (sub === "codex" || sub === "opencode") return (await import("./remote-agent-switch.mjs")).agentSwitch(io, sub, rest, askTyped);
   if (sub === "releases") return releasesCommand(io, rest);
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
-  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

@@ -78,7 +78,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.4";
+const CLI_VERSION = "0.11.5";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session

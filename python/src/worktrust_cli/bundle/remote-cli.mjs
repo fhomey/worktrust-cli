@@ -158,7 +158,7 @@ async function phones(io, rest) {
     const all = [...list.confirmed, ...list.pending], at = Date.now(); if (all.length === 0) return io.say("  No phone or browser is connected to this computer.");
     if (process.stdin.isTTY && !(await askTyped(`  Disconnect all ${all.length} phones and browsers from this computer now?`))) return io.say("  Nothing changed.");
     savePhones({ ...list, pending: [], confirmed: [], removed: [...list.removed.filter((p) => !all.some((x) => x.device_id === p.device_id)), ...all.map((p) => ({ device_id: p.device_id, fingerprint: p.fingerprint, how: "keyboard", removed_at: at }))].slice(-20) });
-    return io.say(`  ✓ Disconnected ${all.length}: none of them can steer this computer any more. Live sessions they started keep running here; stop them with npx worktrust remote disable, or pause everything with npx worktrust remote pause.\n  End their keys for your whole account too: app.worktrust.io › Settings › MOCHI, or MOCHI settings on your phone.`);
+    return io.say(`  ✓ Disconnected ${all.length}: none of them can steer this computer any more. Live sessions they started keep running here; stop them with npx worktrust remote disable, or pause everything with npx worktrust remote pause.\n  End their keys for your whole account too: app.worktrust.io › Settings › Remote Agent, or Remote Agent settings on your phone.`);
   }
   if (rest[0] === "remove") {
     const phone = find(rest[1]);

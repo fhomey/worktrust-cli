@@ -1,6 +1,18 @@
 # worktrust
 
-## 0.11.4: local models measured, confidential client work, OpenCode in MOCHI
+## 0.11.5: Remote Agent (the new name), and a link needs your authenticator
+
+**Remote Agent.** What was called MOCHI is now called Remote Agent everywhere you read it: in this CLI's messages, in
+Settings › Remote Agent on app.worktrust.io and on your phone, where its tab is Devs. Its terms moved to
+worktrust.io/remote-agent-terms; the old address forwards there. Nothing it does changed.
+
+**A link needs your authenticator.** Approving this computer on app.worktrust.io, and adding a new phone or browser, now
+asks for a code from your authenticator app; an e-mailed code no longer does. A link stays with the account and the phone
+that made it, and it ends when you remove that authenticator. A phone asked by code is still confirmed at this keyboard:
+`npx worktrust remote phones confirm <fingerprint>`. What is measured for the passport is unchanged: the measure rules
+stay 4.
+
+## 0.11.4: local models measured, confidential client work, OpenCode in Remote Agent
 
 **Local models, used directly.** The Ollama app's chats and Open WebUI's are now read like every other database client:
 the model, the time of each turn and, for Open WebUI, the token counts it kept (the Ollama app keeps none, so none are
@@ -14,7 +26,7 @@ leaves the computer. Your passport names that share inside your verified hours a
 `npx worktrust project exclude [folder]` leaves a folder out entirely, `project normal` undoes either, and `project list`
 shows what you set. Only you change these at your keyboard; an agent's shell may only list them.
 
-**OpenCode in MOCHI.** Your phone can steer OpenCode on this computer, and through it a local model such as Qwen on
+**OpenCode in Remote Agent.** Your phone can steer OpenCode on this computer, and through it a local model such as Qwen on
 Ollama. Like Codex it is off by default: `npx worktrust remote opencode on` says what OpenCode can do without asking and
 asks for a typed yes; `off` switches it off again. Its runs ask your phone before every command, edit and fetch, and a
 remote-steered session never counts as your hours.
@@ -28,7 +40,7 @@ import prompt in Sources on app.worktrust.io, so it no longer costs every sessio
 `npx worktrust remote phones remove --all` disconnects every phone and browser from this computer in one act, after one
 confirmation at the keyboard. The computer refuses them from their next message. Sessions they started keep running here:
 stop them with `npx worktrust remote disable`, or pause everything with `npx worktrust remote pause`. To end their keys for
-your whole account too, use Settings › MOCHI on app.worktrust.io or MOCHI settings on your phone. What is measured for the
+your whole account too, use Settings › Remote Agent on app.worktrust.io or Remote Agent settings on your phone. What is measured for the
 passport is unchanged: remote-steered sessions never count as your hours, and the measure rules stay 3.
 
 ## 0.11.2: your phone adds a browser

@@ -1,5 +1,5 @@
 {
-  "version": "0.11.4",
+  "version": "0.11.5",
   "files": {
     "chat-exports.mjs": "f026c5a063f62c22ba6f25474a9d9fdbb6074beebbfe1faff2a876c437a1a000",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -24,7 +24,7 @@
     "project-modes.mjs": "ada26e68297fbeb90e4e91d75a90fd2d7cc107b999a9702840675b5a7529463e",
     "remote-adapter-claude-code.mjs": "a5ef08186128d9fe4023944378bb0ff5682a8ae64ffdb07ef5e76cc51894d721",
     "remote-adapter-codex.mjs": "d2fd6c61d9e3c4a45e9b10da1aa3c15d45c86629d6456e4a8d25ad95b13eb209",
-    "remote-adapter-opencode.mjs": "ab3ccc5e958ef17ceda595853e40a4521f5452f8d54e8fbf269299a397760a63",
+    "remote-adapter-opencode.mjs": "ddd7f3ec0b4ba92f4744453d60fda338b63550e3ec7b23fa3acc668df1d64eb7",
     "remote-adapter-terminal.mjs": "9237d3747a25126fcdad42c0eab10e69393754388a6014b30fb0890b9c735888",
     "remote-agent-switch.mjs": "7ff5448f29f05a47d7298d730b21243a1bcf8a215b434a0c7fbf5f3cb0889041",
     "remote-approval-bridge.mjs": "092f17b7969e4f35bea064315d04dcde1faa6a3fd3e737dcc05aece82c7a37c4",
@@ -34,7 +34,7 @@
     "remote-changes.mjs": "2141fece4961a5bc1bb1b046f78222812617457b1ba6452275eac6a897e62e19",
     "remote-claude-events.mjs": "58822471203c6a1b66cf81c115c4d713657c3dea5c7b98df959f894ee5b2e704",
     "remote-claude-progress.mjs": "2ca626d3dbc16d8d570abe1df6477b7e44ffb43c1d9145228ec5ea1928e415ca",
-    "remote-cli.mjs": "bf2e1577b141e4dfe1fdb22d7a4fb6127dadc85c74796ce3b108455f75093b8b",
+    "remote-cli.mjs": "87e092e30d3fc91ad91ea24322344eba2f7059b7be3fce23cbfb07532a20e8f7",
     "remote-coalesce.mjs": "cb0967d9cfe81e3892bcade8349d6814db98be8c2adbdb54df0b8d1b142f65d1",
     "remote-codex-events.mjs": "58657d6070a50c837737cb85f5a1eaf9c2cbc4e1adfe3e970748ab3b2af94631",
     "remote-daemon.mjs": "5dadcced9bd2c69be8c48afbaabbf50bd16879612ada0553aa2284a873907492",
@@ -42,7 +42,7 @@
     "remote-inventory.mjs": "43954e427141b4303ca13d22068d50bfc81e544b085bce335b8e8d59dc520468",
     "remote-journal.mjs": "907ebd48c53162b22dc743ef95b53c1a6be6886a7495605b5cfa820b8de9d330",
     "remote-live-preview.mjs": "faa70f9260ac05037204c2a0c3facf4ffe42f68408948390b341b453a2932289",
-    "remote-opencode-events.mjs": "8ee6b070f4c4787e10305f105b925e6b5f95bff99c1e1f44577aeca0ef8c347e",
+    "remote-opencode-events.mjs": "3108375501ead2c2c78bce1435cc2a9fe6d2af1d7ff1fb42e12ff3e0f5d9af9c",
     "remote-opencode-session.mjs": "681b201d833a7d7d025122b3a79663bcdc0a989aefd39d8018a28113d8810caf",
     "remote-pairing.mjs": "ae03427b6510e52da08aaf9387d5e08516ee25380c7efa420432f4e1e936a7c5",
     "remote-pipeline-config.mjs": "00cde6a61ce21144c51ac56fce42fee159aa9dba6586218a7ea790ce4a6bd40b",
@@ -77,6 +77,6 @@
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
     "transcript-readers.mjs": "e9f20415c2b5d62a09f35a63075002ebd1da56edb32f242d52822d58ecbd8ac3",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "6c065d9bed11f3d0f2085c6214eac5e3296becdd3298bacd7af8db0939fa9b79"
+    "worktrust.mjs": "7412a4f3ad490319dc6a474c451bedc365bd1224b48f9bb50ed15fea3be39960"
   }
 }

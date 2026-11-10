@@ -1,5 +1,5 @@
 /**
- * THE OPENCODE ADAPTER (owner, 2026-11-09: steer OpenCode, and through it Qwen on Ollama, from MOCHI). OpenCode runs as
+ * THE OPENCODE ADAPTER (owner, 2026-11-09: steer OpenCode, and through it Qwen on Ollama, from Remote Agent). OpenCode runs as
  * `opencode run --format json`, ONE PROCESS PER RUN, no shell between us and it; read from OpenCode's source
  * (anomalyco/opencode packages/cli/src/commands/commands.ts, run/run.ts, run/noninteractive.ts, session-target.ts; the
  * permission docs; read 2026-11-09). NOT VERIFIED on a real install: OpenCode is not on the build machine; the tests run a

@@ -1,6 +1,6 @@
 /**
  * OPENCODE'S `run --format json` STREAM, MAPPED TO THE PROTOCOL (owner, 2026-11-09: steer OpenCode, and through it Qwen on
- * Ollama, from MOCHI). Pure: one line in, the protocol's events out. Read from OpenCode's source (anomalyco/opencode,
+ * Ollama, from Remote Agent). Pure: one line in, the protocol's events out. Read from OpenCode's source (anomalyco/opencode,
  * packages/cli/src/run/noninteractive.ts, the `renderer`'s `emit`, read 2026-11-09): every line is
  * `{ type, timestamp, sessionID, ... }`, and these are the ones it writes:
  *

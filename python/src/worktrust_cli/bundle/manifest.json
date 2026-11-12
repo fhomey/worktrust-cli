@@ -1,5 +1,5 @@
 {
-  "version": "0.11.5",
+  "version": "0.11.6",
   "files": {
     "chat-exports.mjs": "f026c5a063f62c22ba6f25474a9d9fdbb6074beebbfe1faff2a876c437a1a000",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -34,7 +34,7 @@
     "remote-changes.mjs": "2141fece4961a5bc1bb1b046f78222812617457b1ba6452275eac6a897e62e19",
     "remote-claude-events.mjs": "58822471203c6a1b66cf81c115c4d713657c3dea5c7b98df959f894ee5b2e704",
     "remote-claude-progress.mjs": "2ca626d3dbc16d8d570abe1df6477b7e44ffb43c1d9145228ec5ea1928e415ca",
-    "remote-cli.mjs": "87e092e30d3fc91ad91ea24322344eba2f7059b7be3fce23cbfb07532a20e8f7",
+    "remote-cli.mjs": "f2ce16401a2c63db6628c83b01b18c949e96545c5ff34ecb8d3d2bd70d473998",
     "remote-coalesce.mjs": "cb0967d9cfe81e3892bcade8349d6814db98be8c2adbdb54df0b8d1b142f65d1",
     "remote-codex-events.mjs": "58657d6070a50c837737cb85f5a1eaf9c2cbc4e1adfe3e970748ab3b2af94631",
     "remote-daemon.mjs": "5dadcced9bd2c69be8c48afbaabbf50bd16879612ada0553aa2284a873907492",
@@ -44,7 +44,7 @@
     "remote-live-preview.mjs": "faa70f9260ac05037204c2a0c3facf4ffe42f68408948390b341b453a2932289",
     "remote-opencode-events.mjs": "3108375501ead2c2c78bce1435cc2a9fe6d2af1d7ff1fb42e12ff3e0f5d9af9c",
     "remote-opencode-session.mjs": "681b201d833a7d7d025122b3a79663bcdc0a989aefd39d8018a28113d8810caf",
-    "remote-pairing.mjs": "ae03427b6510e52da08aaf9387d5e08516ee25380c7efa420432f4e1e936a7c5",
+    "remote-pairing.mjs": "536fa695d1d684314dd572e9af2b77266a4e20246b7105d946b5fb60039e8344",
     "remote-pipeline-config.mjs": "00cde6a61ce21144c51ac56fce42fee159aa9dba6586218a7ea790ce4a6bd40b",
     "remote-pipeline-parsers.mjs": "43ca0d332d7bc883c4759a754a555815ae5dfe133446b91ba9f2e48a350fa20f",
     "remote-pipeline.mjs": "b856ead989b29ddb618ef69bbacd104bae2b02c9d1c5214291d08ce469a8b24e",
@@ -77,6 +77,6 @@
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
     "transcript-readers.mjs": "e9f20415c2b5d62a09f35a63075002ebd1da56edb32f242d52822d58ecbd8ac3",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "7412a4f3ad490319dc6a474c451bedc365bd1224b48f9bb50ed15fea3be39960"
+    "worktrust.mjs": "9c89d6397852a6a971e3b31a8513fa09754f3870f4a28787abc3c333c80157dc"
   }
 }

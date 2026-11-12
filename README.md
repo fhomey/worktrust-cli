@@ -1,5 +1,17 @@
 # worktrust
 
+## 0.11.6: approve a computer with your phone
+
+**Two roads to approve this computer for Remote Agent.** `npx worktrust remote app` shows the approval as a QR code in
+the terminal, without opening a browser: scan it with the WorkTrust app, check the code and key, accept Remote Agent's
+terms and approve with your authenticator code. `npx worktrust remote web` opens the approval page in your browser, as
+before. `npx worktrust remote enable` asks which one you want. A request lives ten minutes; the page and the app count
+it down and tell you when to run the command again.
+
+**A command the CLI does not know** now says so ("Unknown command: …") before the help, and ends with a failure code.
+
+No measure change: the measure rules stay 4.
+
 ## 0.11.5: Remote Agent (the new name), and a link needs your authenticator
 
 **Remote Agent.** What was called MOCHI is now called Remote Agent everywhere you read it: in this CLI's messages, in
@@ -771,7 +783,7 @@ does not offer its earlier work. Other retained files and your local evidence ar
 automatic server or archive erasure.
 Then revoke the key in WorkTrust: Sources → Devices → this computer → Revoke.
 
-## Remote agents: steer this computer's agents from your phone (`npx worktrust remote`, not yet released)
+## Remote Agent: steer this computer's agents from your phone or browser (`npx worktrust remote`)
 
 Off until you run `npx worktrust remote enable` at this keyboard; an AI agent's shell is refused every `remote` command
 except `status`.
@@ -781,6 +793,9 @@ except `status`.
   are logged in (launchd on macOS, a systemd user unit on Linux, linger off; on Windows `npx worktrust remote run` in a
   terminal) and draws a QR code for the WorkTrust app. `pair` draws a new one: five minutes, one phone, once. A phone
   that scanned it is confirmed; one that typed the code instead waits for `npx worktrust remote phones confirm`.
+- Two roads to approve the computer's key: `npx worktrust remote app` shows the approval as a QR code here (no browser);
+  the WorkTrust app scans it and you approve with your authenticator code. `npx worktrust remote web` opens the approval
+  page in your browser. `enable` asks which (Enter is the app); without a terminal, or with `--yes`, it opens the browser.
 - `projects add <folder>` grants a folder (its real path; never your home folder, the disk's root or a folder holding
   keys, keychains, browser profiles or wallets). A phone starts agents only in granted folders, several at once (four by
   default).
@@ -796,8 +811,15 @@ except `status`.
   remote).
 - `status`, `pause`, `resume`, `disable` (the hard off; `--forget` also deletes the remote keys), `phones`, `projects`.
 
-Remote needs Node 22.4 or later (the Python package bundles one). The production gateway is not live yet; nothing
-connects until one is set.
+- From a browser (app.worktrust.io › Remote Agent): approve the browser in WorkTrust with your passkey, your
+  authenticator and a 6-digit PIN (asked again after five minutes without your input; agents keep running meanwhile).
+  Run `npx worktrust remote pair` here and paste the link it prints into the browser. Then confirm the browser's
+  fingerprint at this keyboard: `npx worktrust remote phones confirm <fingerprint>`. A browser is never confirmed by the
+  link alone. With `npx worktrust remote phones allow-endorse on`, a phone confirmed here may add a browser it scanned
+  instead (off by default). A PIN reset in WorkTrust removes every browser link; phones keep theirs.
+
+Remote needs Node 22.4 or later (the Python package bundles one). It connects to the WorkTrust gateway
+(`wss://remote.worktrust.io`, live since 2026-11-09).
 
 ## Requirements
 

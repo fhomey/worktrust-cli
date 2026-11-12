@@ -209,9 +209,9 @@ the platform keeps only the listed keys, from a CLI key alone, and shows them to
 `worktrust mod remove` and `worktrust disconnect` take it out of the settings and delete the plugin
 and its counts.
 
-## Remote agents (`npx worktrust remote`, not yet released)
+## Remote Agent (`npx worktrust remote`)
 
-What it is: standing remote execution of AI agents on this computer, steered from a confirmed phone. Its limits:
+What it is: standing remote execution of AI agents on this computer, steered from a confirmed phone or browser. Its limits:
 
 - Separate key, separate audience. The remote keys (`~/.worktrust/remote/remote-keys.json`, 0600) are not the measurement
   key and no remote module reads the measurement credentials (`scripts/check-remote-cli.mjs` refuses one that names them).

@@ -26,7 +26,7 @@
  *                                              command on a coupled computer offers an export lying in ~/Downloads once.
  *   npx worktrust disconnect                   show what comes out, ask, take it out again
  *   npx worktrust status                       what is coupled here
- *   npx worktrust remote enable|pair|status|pause|resume|disable|phones|projects|run   steer this computer's agents
+ *   npx worktrust remote app|web|enable|pair|status|pause|resume|disable|phones|projects|run   steer this computer's agents
  *                                       from your phone (remote-cli.mjs; opt-in, its own key, never the measurement key)
  *   npx worktrust@latest preserve              how long each AI app here keeps its sessions (--apply keeps them,
  *                                       --archive [dir] a local metadata-only record, --verify [dir] checks it,
@@ -78,7 +78,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.5";
+const CLI_VERSION = "0.11.6";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -1776,7 +1776,9 @@ else if (command === "orchestration") {
   if (!["orchestration-report.mjs", "orchestration-evidence.mjs", "orchestration-contract.mjs"].every((name) => existsSync(join(HERE, name)))) fail("Local agent reports need the complete WorkTrust npm/Python package or preservation kit. No file was read or sent.");
   const { reportFile } = await import("./orchestration-report.mjs"); reportFile(args.slice(1));
 }
-else help();
+// A word the CLI does not know (the owner typed `update,` on 2026-11-11 and got the help with no reason): say so, then the
+// help, and end with a failure code so a script notices.
+else { if (command !== "help") { say(`  Unknown command: ${command}. The commands are below.`); process.exitCode = 1; } help(); }
 
 }
 try { await main(); } catch (error) { if (!(error instanceof CliFailure)) throw error; process.exitCode = 1; }

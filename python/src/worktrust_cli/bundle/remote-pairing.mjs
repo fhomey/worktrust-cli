@@ -6,11 +6,17 @@
  * them. The person approves in the Passport app, signed in, with their second factor; the browser comes back to
  * 127.0.0.1 with a one-time code that only this terminal, with its verifier, can exchange for the issuer's signed binding.
  * Without a browser (`--device`, SSH) a typed code instead. The binding is verified against the issuer keys pinned in this
- * release before anything is saved. A Passport app without the issuer answers 404, and this says so and changes nothing.
+ * release before anything is saved.
+ *
+ * TWO ROADS (owner, 2026-11-12): `remote web` opens the browser's approval page, as before; `remote app` opens nothing and
+ * shows the same approval link as a QR here, which the WorkTrust app scans and approves with the authenticator (ISSUER.md
+ * §2b). Nothing comes back to 127.0.0.1 from a phone, so on both roads this terminal also polls the token door with its
+ * device code and verifier: a phone's approval is collected that way, a browser's still by its one-time code. A Passport app without the issuer answers 404, and this says so and changes nothing.
  * The measurement key is never read, sent or used here.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
 
 const PROOF = P.utf8Encode("worktrust-remote/v1/pair-request\n");
@@ -26,8 +32,20 @@ async function post(origin, path, body) {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 }
 
-/** Pair, and return the verified binding. `keys` holds the secret pair (never sent), `issuerKeys` the pinned keys. */
-export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, issuerKeys, say, openBrowser, now = Date.now }) {
+/** `remote enable`'s question: the app's QR here (Enter), or the browser. Not a terminal, or --yes: the browser, as before. */
+export async function chooseRoad({ interactive = Boolean(process.stdin.isTTY), yes = false, prompt = null } = {}) {
+  if (!interactive || yes) return "web";
+  const rl = prompt ? null : createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await (prompt ?? ((q) => rl.question(q)))("  Approve with the WorkTrust app (QR here) or in the browser? [A/w] ")).trim().toLowerCase();
+  rl?.close();
+  return ["w", "web", "b", "browser"].includes(answer) ? "web" : "app";
+}
+
+/**
+ * Pair, and return the verified binding. `keys` holds the secret pair (never sent), `issuerKeys` the pinned keys. `road`:
+ * "web" opens the approval page in the browser; "app" draws its link with `showQr` for the WorkTrust app and opens nothing.
+ */
+export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, road = "web", showQr = () => {}, issuerKeys, say, openBrowser, now = Date.now }) {
   const verifier = randomBytes(32).toString("base64url");
   const code_challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("base64url");
@@ -56,13 +74,30 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
     say("  Approve only if the WorkTrust page shows the same code and key.");
     let exchanged = null;
     if (!device) {
-      say(`  Approve in your browser (opening it). If it does not open: ${authorize_url}`);
-      openBrowser(authorize_url);
-      const timer = setTimeout(() => deliver(null), expires_in * 1000);
-      const code = await answer;
-      clearTimeout(timer);
-      if (!code) throw new PairingRefused("no approval arrived in time");
-      exchanged = await post(origin, "/api/remote/token", { device_code, code, code_verifier: verifier });
+      if (road === "app") {
+        say("  Scan this with the WorkTrust app (or the phone's camera) and approve with your authenticator code:");
+        showQr(authorize_url);
+        say(`  Link: ${authorize_url}`);
+      } else {
+        say(`  Approve in your browser (opening it). If it does not open: ${authorize_url}`);
+        openBrowser(authorize_url);
+      }
+      // The browser's one-time code arrives at 127.0.0.1; a phone's approval only by polling (device code and verifier).
+      let code = null;
+      void answer.then((c) => { code = c; });
+      const until = now() + expires_in * 1000;
+      let wait = Math.max(1, interval) * 1000;
+      while (!code && !exchanged && now() < until) {
+        await Promise.race([answer, new Promise((resolve) => setTimeout(resolve, wait))]);
+        if (code) break;
+        const reply = await post(origin, "/api/remote/token", { device_code, code_verifier: verifier }).catch(() => null);
+        if (reply?.status === 200) exchanged = reply;
+        else if (reply?.json?.error === "slow_down") wait += 2000;
+        else if (reply?.json?.error === "access_denied" || reply?.json?.error === "expired_token") throw new PairingRefused(`pairing ended (${reply.json.error})`);
+        // authorization_pending, or invalid_grant from an issuer before 2026-11-12 (no codeless loopback poll): wait on.
+      }
+      if (!exchanged && !code) throw new PairingRefused("no approval arrived in time");
+      if (!exchanged) exchanged = await post(origin, "/api/remote/token", { device_code, code, code_verifier: verifier });
     } else {
       say(`  On any device open ${verification_uri} and type the code.`);
       const until = now() + expires_in * 1000;

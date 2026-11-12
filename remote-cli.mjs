@@ -3,7 +3,9 @@
  * AI agent's shell is refused by worktrust.mjs, `status` excepted). docs/remote-agents/PROTOCOL.md is the contract.
  *
  *   remote enable [--gateway <wss://…>] [--device]   pair this computer's REMOTE keys (not the measurement key) in the
- *                                                     Passport app, start the service, show a pairing QR
+ *                                                     Passport app, start the service, show a pairing QR; asks which road
+ *   remote app | web                                  the same, approved in the WorkTrust app (a QR here, no browser) |
+ *                                                     in the browser's approval page (owner, 2026-11-12)
  *   remote pair                                       a new QR for a phone (five minutes, one phone, once)
  *   remote status [--json]                            what is on, paired, running, granted and installed
  *   remote pause | resume                             refuse every command for now | take them again
@@ -33,7 +35,7 @@ import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
 import { ensureRemoteDir, isLoopbackGateway, issuerKeys, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, projectIdOf, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
 import { canonicalProject } from "./remote-policy.mjs";
-import { IssuerMissing, PairingRefused, pairComputer } from "./remote-pairing.mjs";
+import { IssuerMissing, PairingRefused, chooseRoad, pairComputer } from "./remote-pairing.mjs";
 import { installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { qrMatrix, renderQr } from "./remote-qr.mjs";
 import { webSocketAvailable } from "./remote-transport.mjs";
@@ -62,7 +64,7 @@ function needPaired(io) {
   return { keys, identity };
 }
 
-async function enable(io) {
+async function enable(io, sub = "enable") {
   if (!webSocketAvailable()) io.fail(`remote needs Node 22.4 or later for its connection (this is ${process.versions.node}); the Python package bundles one`);
   const settings = loadSettings();
   const gateway = io.flag("gateway") ?? process.env.WORKTRUST_REMOTE_GATEWAY ?? settings.gateway;
@@ -80,8 +82,9 @@ async function enable(io) {
   if (!identity || io.has("repair")) {
     const keys = newKeys();
     const pub = P.publicKeysOf(P.importSecretKeys(keys));
+    const road = sub !== "enable" ? sub : io.has("device") ? "web" : await chooseRoad({ yes: io.has("yes") });
     try {
-      const paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser });
+      const paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), road, showQr: (link) => io.say(renderQr(qrMatrix(link).modules, { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR })), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser });
       saveKeys(keys);
       identity = { v: 1, device_id: paired.device_id, binding: paired.binding, sub: paired.sub, origin: io.origin, paired_at: Date.now() };
       saveIdentity(identity);
@@ -295,7 +298,7 @@ function status(io) {
 
 export async function remoteCommand(args, io) {
   const [sub = "help", ...rest] = args;
-  if (sub === "enable") return enable(io);
+  if (sub === "enable" || sub === "app" || sub === "web") return enable(io, sub);
   if (sub === "pair") return pair(io);
   if (sub === "status") return status(io);
   if (sub === "pause" || sub === "resume") { const s = loadSettings(); saveSettings({ ...s, paused: sub === "pause" ? "desk" : null }); io.say(sub === "pause" ? "  Paused: every command from a phone is refused until `npx worktrust remote resume`." : "  Resumed."); return; }
@@ -335,5 +338,5 @@ export async function remoteCommand(args, io) {
   if (sub === "releases") return releasesCommand(io, rest);
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
-  io.say("  npx worktrust remote enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote app | web | enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

@@ -1,5 +1,5 @@
 /**
- * THE DAEMON AS A SERVICE OF THIS USER (2026-11-07). Off until `worktrust remote enable`; removed by `disable`.
+ * THE DAEMON AS A SERVICE OF THIS USER (2026-11-07). Off until `worktrust remote app` (or `remote web`); removed by `disable`.
  *
  *   macOS   a launchd agent, ~/Library/LaunchAgents/io.worktrust.remote.plist: RunAtLoad, restarted after a crash
  *           (KeepAlive SuccessfulExit false), so `disable` (exit 0) stays off; logs in ~/.worktrust/remote/daemon.log
@@ -12,7 +12,7 @@
  * (so the agents are found) and nothing else from their environment. Every command is execFile with fixed arguments.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 
@@ -98,4 +98,38 @@ export function serviceState({ platform = process.platform, home = homedir() } =
   if (kind === "launchd") return { kind, installed: existsSync(plistPath(home)), running: run("launchctl", ["print", `gui/${userInfo().uid}/${LABEL}`]) };
   if (kind === "systemd") return { kind, installed: existsSync(unitPath(home)), running: run("systemctl", ["--user", "is-active", "--quiet", UNIT]) };
   return { kind, installed: false, running: false };
+}
+
+/**
+ * MACOS ASKS ONCE, NOW, NOT MID-SESSION (CLI 0.11.7, owner 2026-11-12). macOS guards Desktop, Documents, Downloads and
+ * iCloud Drive per program: a program launchd starts is asked on its first read there, so an agent the service starts in
+ * such a folder would stop mid-session at a prompt nobody sees, or fail with "Operation not permitted". When the person
+ * adds such a folder at the keyboard, the CLI runs the SAME program the service runs (its node or Python launcher, the
+ * release entry, `remote folder-check`) once, as a one-shot launchd job with the service's PATH and HOME, so the prompt
+ * comes up at once for the program that later starts the agents. `remote folder-check` only reads whether each guarded
+ * root or project can be listed and writes yes or no per folder to ~/.worktrust/remote/folder-check.json; nothing leaves
+ * the computer. → that file's contents, or null (not macOS, or no answer in time).
+ */
+export const CHECK_LABEL = "io.worktrust.remote.folder-check";
+export const folderCheckPlist = ({ program, path, home = homedir() }) => launchdPlist({ program, path, home })
+  .replace(`<string>${LABEL}</string>`, `<string>${CHECK_LABEL}</string>`)
+  .replace("  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n  <key>ThrottleInterval</key><integer>10</integer>\n", "  <key>LaunchOnlyOnce</key><true/>\n");
+export async function probeFolders({ program, path, home = homedir(), platform = process.platform, waitMs = 120_000 }) {
+  if (servicePlatform(platform) !== "launchd") return null;
+  const out = join(home, ".worktrust", "remote", "folder-check.json"), file = join(home, "Library", "LaunchAgents", `${CHECK_LABEL}.plist`);
+  const domain = `gui/${userInfo().uid}`;
+  rmSync(out, { force: true });
+  mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+  writeFileSync(file, folderCheckPlist({ program, path, home }), { mode: 0o644 });
+  run("launchctl", ["bootout", `${domain}/${CHECK_LABEL}`]);
+  let result = null;
+  if (run("launchctl", ["bootstrap", domain, file])) {
+    for (const end = Date.now() + waitMs; Date.now() < end && result === null;) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      try { result = JSON.parse(readFileSync(out, "utf8")); } catch { result = null; }
+    }
+  }
+  run("launchctl", ["bootout", `${domain}/${CHECK_LABEL}`]);
+  rmSync(file, { force: true });
+  return result;
 }

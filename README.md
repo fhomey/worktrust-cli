@@ -1,11 +1,40 @@
 # worktrust
 
+## 0.11.7: a menu, folders without typing, and agent modes you allow here
+
+**A menu.** `npx worktrust` in your own terminal now opens a menu: move with the arrow keys, Enter opens, Esc or the left
+arrow goes back, q quits, 1 to 9 jump. The first item, Check this computer, does what the bare command did before
+(connect, or show what is connected). Every item shows the short command it runs, so you can type it next time. Without a
+terminal (a script, a hook, the MCP door) nothing changes and nothing waits for a key; every command works as before.
+
+**Remote Agent: approve with `remote app` or `remote web`.** `npx worktrust remote app` approves this computer with the
+WorkTrust app (a QR code here), `npx worktrust remote web` in the browser. Each makes the computer's remote keys, asks you
+first, sets up the service and shows the phone's QR code, with `--gateway` and `--device` as before. `remote enable` is
+gone: it now says which two commands to use. While you approve, a bar under the QR code or link counts the request's
+time down; when it runs out, Enter draws a new one. `npx worktrust remote connections` lists every phone and browser
+linked to this computer, and `remote disconnect` closes one (or `--all`), each after a typed confirmation.
+
+**Folders without typing.** In the menu, Remote Agent, Roots: tick the folders your projects live in (Desktop, Documents,
+Developer, Projects, code, src, each with the number of projects found), make a new folder for projects, or choose any
+folder with your system's folder picker. A phone can now open the projects that are already inside a root, not only make
+new ones. The rules stay: never your home folder or above it, never a folder of secrets. On a Mac, a folder in Desktop,
+Documents, Downloads or iCloud Drive makes macOS ask once, right away, whether the Remote Agent service may read it.
+
+**Agent modes, with a ceiling you set here.** A phone may start Manual (asks for every change) and Plan, as before.
+`npx worktrust remote modes allow edit` lets it start Edit automatically (Claude Code's acceptEdits), and
+`remote modes allow auto` Claude Code's auto mode (which includes edit); `remote modes deny edit` takes both back. The
+computer refuses any mode above what you allowed, whatever a phone sends. No push, no install, no deploy and no secret, in
+every mode; in Edit and Auto the agent also cannot edit its own rules or the files that say what a test runs. Claude Code's
+effort level and extra projects in one session (`--add-dir`) come along where your Claude Code offers them.
+
+No measure change: the measure rules stay 4.
+
 ## 0.11.6: approve a computer with your phone
 
 **Two roads to approve this computer for Remote Agent.** `npx worktrust remote app` shows the approval as a QR code in
 the terminal, without opening a browser: scan it with the WorkTrust app, check the code and key, accept Remote Agent's
 terms and approve with your authenticator code. `npx worktrust remote web` opens the approval page in your browser, as
-before. `npx worktrust remote enable` asks which one you want. A request lives ten minutes; the page and the app count
+before. (Until 0.11.7, `npx worktrust remote enable` asked which one you want.) A request lives ten minutes; the page and the app count
 it down and tell you when to run the command again.
 
 **A command the CLI does not know** now says so ("Unknown command: …") before the help, and ends with a failure code.
@@ -785,20 +814,35 @@ Then revoke the key in WorkTrust: Sources → Devices → this computer → Revo
 
 ## Remote Agent: steer this computer's agents from your phone or browser (`npx worktrust remote`)
 
-Off until you run `npx worktrust remote enable` at this keyboard; an AI agent's shell is refused every `remote` command
-except `status`.
+Off until you run `npx worktrust remote app` (or `remote web`) at this keyboard; an AI agent's shell is refused every
+`remote` command except `status`.
 
-- `enable` makes a REMOTE key pair for this computer (Ed25519 and X25519, files of mode 0600 in `~/.worktrust/remote/`),
+- `app` and `web` make a REMOTE key pair for this computer (Ed25519 and X25519, files of mode 0600 in `~/.worktrust/remote/`),
   never the measurement key, and has it approved in WorkTrust with your second factor; then it starts a service while you
   are logged in (launchd on macOS, a systemd user unit on Linux, linger off; on Windows `npx worktrust remote run` in a
   terminal) and draws a QR code for the WorkTrust app. `pair` draws a new one: five minutes, one phone, once. A phone
   that scanned it is confirmed; one that typed the code instead waits for `npx worktrust remote phones confirm`.
 - Two roads to approve the computer's key: `npx worktrust remote app` shows the approval as a QR code here (no browser);
   the WorkTrust app scans it and you approve with your authenticator code. `npx worktrust remote web` opens the approval
-  page in your browser. `enable` asks which (Enter is the app); without a terminal, or with `--yes`, it opens the browser.
+  page in your browser. Both take `--gateway` and `--device`; `remote enable` (0.11.6 and before) is gone since 0.11.7.
 - `projects add <folder>` grants a folder (its real path; never your home folder, the disk's root or a folder holding
   keys, keychains, browser profiles or wallets). A phone starts agents only in granted folders, several at once (four by
   default).
+- `connections` lists every phone and browser linked to this computer (name, kind, fingerprint, since, last seen) and
+  this computer's own link. `disconnect <number|name|fingerprint>` closes one after two confirmations (y, then the start
+  of its fingerprint or its name typed); `disconnect --all` closes every one after you type `close all`. Without a
+  terminal both refuse. `phones remove` does the same removal. End a key for your whole account in WorkTrust, Settings,
+  Remote Agent.
+- `roots add <folder> [--git-init]` adds a folder your projects live in (the same rules). A phone may open the git
+  projects already directly inside it (the most recently changed first, thirty in all with the granted ones) and create
+  one new, empty project folder in it. A phone names a project by the id this computer gave it, never by a path. In the
+  menu (Remote Agent, Roots) you tick suggested folders or use your system's folder picker instead of typing.
+- `modes allow|deny edit|auto` and `modes status`: the agent modes a phone may start here. Manual and Plan always; Edit
+  automatically and Auto only once allowed here (Auto includes Edit). The computer refuses a mode above what you allowed.
+  `admin on|off`: whether a change made in the WorkTrust app or on the web (allowed modes, folders, roots, connections)
+  is taken here. On by default; each such change asks your authenticator there, carries WorkTrust's signature on that
+  exact change for this computer (five minutes, one use), is checked here against the keys built into this CLI, and is
+  said in the `remote run` terminal. `admin off` keeps every change at this keyboard. The switch itself changes only here.
 - From a phone you may approve: a file edit inside the project, a test, build or lint command from a short reviewed list,
   and a message an agent sends through a connector, shown whole (channel, every recipient, subject, text, attachment
   names). Everything else is decided at this keyboard or not at all: installs from the network, `git push`, deploys,

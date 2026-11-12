@@ -367,6 +367,7 @@ export const ID_PREFIXES = {
   stp: "a step of an agent run",
   pli: "an item of an agent's own plan (its to-do list), stable across the plan's versions",
   sag: "a subagent an agent started, for the agent map",
+  fld: "a folder a computer suggests for projects (one it detected itself; a phone names it by this id, never by a path)",
   rot: "a root folder on a computer where a phone may create new project folders (worktrust remote roots add)",
   att: "a file sent from the phone into a session's project inbox (transfer.ts)",
   pvw: "one local preview render (transfer.ts)",
@@ -556,6 +557,39 @@ export const ADAPTER_MODES = ["structured", "terminal"]         ;
 export const PERMISSION_MODES = ["ask", "plan"]         ;
 
 export const MAX_MODELS_PER_ADAPTER = 200;
+
+/**
+ * AGENT MODES WITH A CEILING SET AT THE COMPUTER (owner, 2026-11-12; CLI 0.11.7). `permission_modes` above stays the
+ * closed pair every phone and computer before 0.11.7 knows; the finer choice travels BESIDE it, in optional fields an
+ * older peer never receives (the inventory's `agent_options` only reaches a phone that asked with `inventory.get`
+ * `extended`, and only a phone that read them sends `agent.start` `agent_mode`). Each agent mode stands on one of the two
+ * permission modes (AGENT_MODE_BASE), which `agent.start` still carries: `manual` asks for everything the person's own
+ * rules do not decide (the old `ask`), `edit` lets the agent edit files inside the session's projects without asking
+ * (Claude Code's acceptEdits), `plan` is read-only planning, `auto` is the agent's own automatic mode where it offers one
+ * (Claude Code's auto). The computer offers only what its agent's own help names, and allows only what the person allowed
+ * at its keyboard (`worktrust remote modes allow edit|auto`; default manual and plan). The deny rules (no push, no
+ * install, no deploy, no secret) hold in every mode.
+ */
+export const AGENT_MODES = ["manual", "edit", "plan", "auto"]         ;
+
+export const AGENT_MODE_BASE                                              = Object.freeze({ manual: "ask", edit: "ask", plan: "plan", auto: "ask" });
+/** The modes a computer allows before its person allowed more at the keyboard: today's behaviour. */
+export const DEFAULT_ALLOWED_MODES                       = Object.freeze(["manual", "plan"]);
+/** How hard the agent thinks, where its own help names the levels (Claude Code's --effort). */
+export const AGENT_EFFORTS = ["low", "medium", "high", "xhigh", "max"]         ;
+
+/** Extra projects one session may reach besides its main one (Claude Code's --add-dir), each from the inventory. */
+export const MAX_EXTRA_PROJECTS = 4;
+
+/** What one reported adapter offers beyond `permission_modes` (sealed, in an extended device.inventory). */
+export const AGENT_OPTIONS_SPEC = object({
+  adapter: oneOf(ADAPTER_IDS),
+  mode: oneOf(ADAPTER_MODES),
+  agent_modes: list(oneOf(AGENT_MODES), AGENT_MODES.length, 1),
+  efforts: list(oneOf(AGENT_EFFORTS), AGENT_EFFORTS.length),
+  /** How many extra projects a session of this adapter may reach; 0: single-project. */
+  extra_projects: int(0, MAX_EXTRA_PROJECTS),
+});
 
 export const CAPABILITIES_SPEC = object({
   start: bool(),
@@ -1900,16 +1934,17 @@ export function deviceFingerprint(keys                  )         {
 // ---- packages/remote-protocol/src/crypto/jws.ts
 /**
  * COMPACT SIGNED TOKENS: JWS (RFC 7515) with EdDSA over Ed25519 (RFC 8037), so the gateway can verify an assertion
- * with any standard library, and so can the phone and the computer with this package. Three token types, told apart
+ * with any standard library, and so can the phone and the computer with this package. Four token types, told apart
  * by `typ` and never interchangeable:
  *   wt-remote-binding+jwt   the Passport app binds a device's remote keys to an account
  *   wt-remote-auth+jwt      the Passport app authorizes one device at the gateway for five minutes
  *   wt-remote-approval+jwt  a phone decides one pending approval
+ *   wt-remote-admin+jwt     the Passport app vouches for one settings change of one computer (crypto/admin.ts)
  * The verifier fixes alg, typ and the key set before it looks at the token: a token cannot choose how it is checked.
  * Header and payload are canonical JSON, so one claim set has one signing input.
  */
 
-export const TOKEN_TYPES = ["wt-remote-binding+jwt", "wt-remote-auth+jwt", "wt-remote-approval+jwt"]         ;
+export const TOKEN_TYPES = ["wt-remote-binding+jwt", "wt-remote-auth+jwt", "wt-remote-approval+jwt", "wt-remote-admin+jwt"]         ;
 
 export const MAX_TOKEN_CHARS = 4096;
 
@@ -2085,6 +2120,141 @@ export function checkEndorsement(input         , o                              
   return accept({ device_id: bound.value.device_id, fingerprint: deviceFingerprint(keys), keys, binding: bound.value, nonce: e.nonce, expires_at: e.expires_at });
 }
 
+// ---- packages/remote-protocol/src/crypto/admin.ts
+/**
+ * A COMPUTER'S SETTINGS CHANGED FROM THE APP OR THE WEB (part B of CLI 0.11.7, owner 2026-11-12; docs/remote-agents/
+ * PROTOCOL.md §Managing a computer from the app, ISSUER.md §2d). The person changes one remote setting of a paired computer
+ * on the phone or in the browser; the CHANGE travels sealed to the computer like any command, and beside it a short-lived
+ * ADMIN PROOF the Passport app signed with the issuer's key after the person's authenticator answered for THIS change:
+ *
+ *   wt-remote-admin+jwt  { iss: app.worktrust.io, aud: remote.worktrust.io, sub, device_id, change_hash, setting, via,
+ *                          iat, exp ≤ iat + 300, jti }
+ *
+ * `sub` is the account's opaque reference (the same as every binding of that account), `device_id` the COMPUTER the
+ * change is for, `change_hash` the SHA-256 of the exact change (adminChangeHash: domain-separated, canonical JSON), and
+ * `setting` which of the four kinds it is, for the audit row and the e-mail. The server sees the hash and the kind,
+ * never the change itself (a folder's name stays sealed between the phone and the computer).
+ *
+ * THE COMPUTER VERIFIES (verifyAdminProof) against the issuer keys pinned in its own build: the type, the issuer and
+ * audience, the lifetime (five minutes at most, the protocol's skew), the device id is its own, the account is its own
+ * binding's, the hash is of the change it received, the kind matches, and the jti was never spent here (one use). Then
+ * the change goes through the same rules a typed one does (remote-settings.mjs applySettingsChange), and only while the
+ * person left `worktrust remote admin on` at the keyboard.
+ *
+ * NO PATH TRAVELS. A folder is named by the id the computer offered (`fld_`, its own HMAC of a folder IT detected), a new
+ * folder by one folder NAME (one segment, made in the home folder by the computer), a root by its `rot_` id, a connection
+ * by its device id. The computer resolves every id from its own lists at the moment it applies the change.
+ */
+
+/** An admin proof lives five minutes at most: long enough to reach a sleeping laptop's relay queue, short enough to be one act. */
+export const MAX_ADMIN_PROOF_LIFETIME_S = 300;
+/** The kinds of setting, for the audit row and the e-mail ("allowed modes", "folders", "roots", "connections"). */
+export const ADMIN_SETTINGS = ["modes", "folders", "roots", "connections"]         ;
+
+/** Where the person approved it: the native app, or a browser. */
+export const ADMIN_VIA = ["phone", "browser"]         ;
+
+/** A new folder's name: one segment of letters, digits, space, `.`, `_` or `-`, never starting with a dot, never ending in a space or dot. */
+export const ADMIN_FOLDER_NAME = /^[A-Za-z0-9_-](?:[A-Za-z0-9 ._-]{0,98}[A-Za-z0-9_-])?$/;
+export const adminFolderNameOk = (name         )          => typeof name === "string" && ADMIN_FOLDER_NAME.test(name) && !name.includes("..");
+
+/**
+ * THE CHANGES A PHONE OR A BROWSER MAY ASK, AND NOTHING ELSE (a closed union on `what`; exact keys, so no `path` can ride
+ * along). Raising a mode above manual and plan, adding a suggested folder as a root, making one new folder for projects,
+ * a root's git-init switch or its removal, and closing one connection. The admin switch itself is not here: it is turned
+ * on and off at the keyboard only (`worktrust remote admin on|off`).
+ */
+export const ADMIN_CHANGE_SPEC = union("what", {
+  modes: object({ what: oneOf(["modes"]), mode: oneOf(["edit", "auto"]), allowed: bool() }),
+  folder: object({ what: oneOf(["folder"]), folder_id: id("fld") }),
+  new_folder: object({ what: oneOf(["new_folder"]), name: text(100, 1) }),
+  root: object({ what: oneOf(["root"]), root_id: id("rot"), act: oneOf(["remove", "git_init_on", "git_init_off"]) }),
+  connection: object({ what: oneOf(["connection"]), device_id: id("dev") }),
+});
+
+/** What rides in `device.configure`: the change and its proof, sealed together. */
+export const SETTINGS_CHANGE_SPEC = object({ change: ADMIN_CHANGE_SPEC, proof: token(4096) });
+
+/** The kind a change is, as the proof and the audit name it. */
+export function settingOf(change             )               {
+  if (change.what === "modes") return "modes";
+  if (change.what === "folder" || change.what === "new_folder") return "folders";
+  if (change.what === "root") return "roots";
+  return "connections";
+}
+
+/** The rule between fields the schema cannot say; null when the change is well formed. */
+export function adminChangeRule(change             )                {
+  if (change.what === "new_folder" && !adminFolderNameOk(change.name)) return "name: one folder name of [A-Za-z0-9 ._-], not starting with a dot";
+  return null;
+}
+
+const D_CHANGE = utf8Encode("worktrust-remote/v1/admin-change\n");
+/** The change's hash as the proof names it: SHA-256 over a domain label and the change's canonical JSON. */
+export const adminChangeHash = (change             )         => toBase64Url(sha256(concatBytes(D_CHANGE, canonicalBytes(change))));
+
+export const ADMIN_PROOF_CLAIMS_SPEC = object({
+  iss: oneOf([PASSPORT_ISSUER]),
+  aud: oneOf([GATEWAY_AUDIENCE]),
+  sub: id("usr"),
+  device_id: id("dev"),
+  change_hash: b64({ exact: 32 }),
+  setting: oneOf(ADMIN_SETTINGS),
+  via: oneOf(ADMIN_VIA),
+  iat: int(0),
+  exp: int(0),
+  jti: id("jti"),
+});
+
+/** For the Passport app only: validate, then sign with the issuer's current key. */
+export function issueAdminProof(claims                  , issuerSecret            , kid        )         {
+  const shaped = validate(ADMIN_PROOF_CLAIMS_SPEC, claims, "$admin");
+  if (!shaped.ok) throw new TypeError(shaped.detail);
+  if (claims.exp <= claims.iat || claims.exp - claims.iat > MAX_ADMIN_PROOF_LIFETIME_S) throw new RangeError("admin proof lifetime");
+  return signToken("wt-remote-admin+jwt", kid, claims, issuerSecret);
+}
+
+/** The computer's one check of an admin proof. Every refusal leaves the settings untouched. */
+export function verifyAdminProof(token        , expect                       )                            {
+  const verified = verifyToken(token, "wt-remote-admin+jwt", expect.issuerKeys);
+  if (!verified.ok) return verified;
+  const claims = verified.value.claims;
+  if (claims.iss !== PASSPORT_ISSUER) return refuse("issuer", "$admin.iss");
+  if (claims.aud !== GATEWAY_AUDIENCE) return refuse("audience", "$admin.aud");
+  const shaped = validate(ADMIN_PROOF_CLAIMS_SPEC, claims, "$admin");
+  if (!shaped.ok) return shaped;
+  const a = shaped.value;
+  const times = checkTimes(a.iat, a.exp, expect.now, MAX_ADMIN_PROOF_LIFETIME_S, CLOCK_SKEW_MS);
+  if (!times.ok) return times;
+  if (a.device_id !== expect.deviceId) return refuse("wrong_device", "$admin.device_id: another computer");
+  if (a.sub !== expect.sub) return refuse("account_mismatch", "$admin.sub: another account");
+  if (a.change_hash !== adminChangeHash(expect.change) || a.setting !== settingOf(expect.change)) return refuse("action_mismatch", "$admin.change_hash: another change");
+  if (expect.spendJti(a.jti, a.exp) === "seen") return refuse("replay", "$admin.jti: already used");
+  return accept(a);
+}
+
+/**
+ * THE INVENTORY'S PART-B FIELDS (events.ts device.inventory spreads them), sealed only for a phone that asked `extended`:
+ * what the computer's settings page draws. `admin`: whether the person left `worktrust remote admin on` (a change from the
+ * app is honoured only then). `folders`: the folders the computer itself suggests for projects (its own detected folders,
+ * with how many git projects each holds, and the root it already is, if any), each by an id the computer derived: a phone
+ * adds one by that id, never by a path. `connections`: the phones and browsers linked to it, by the name each told it
+ * (inventory.get `device_name`) or its kind and fingerprint.
+ */
+export const ADMIN_INVENTORY_FIELDS = {
+  admin: optional(bool()),
+  folders: optional(list(object({ folder_id: id("fld"), label: text(256, 1), projects: int(0, 2000), root_id: nullable(id("rot")) }), 12)),
+  connections: optional(list(object({
+    device_id: id("dev"),
+    name: text(64, 1),
+    kind: oneOf(["phone", "browser"]),
+    fingerprint: text(19, 1),
+    state: oneOf(["confirmed", "pending"]),
+    since: nullable(int(0)),
+    last_seen: nullable(int(0)),
+  }), 40)),
+}         ;
+
 // ---- packages/remote-protocol/src/commands.ts
 /**
  * THE COMMANDS A PHONE MAY SEND, AND NOTHING ELSE. A fixed list, each with a sealed payload schema. A computer refuses
@@ -2108,6 +2278,8 @@ export const MAX_PROMPT_CHARS = 65_536;
 export const PROJECT_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/;
 export const projectNameOk = (name         )          => typeof name === "string" && PROJECT_NAME.test(name);
 export const MAX_SESSION_NAME = 100;
+/** A phone's or a browser's own name, as it tells a computer (inventory.get `device_name`). */
+export const MAX_DEVICE_NAME = 64;
 
 export const COMMAND_PAYLOAD_SPECS = {
   /**
@@ -2129,6 +2301,16 @@ export const COMMAND_PAYLOAD_SPECS = {
      * person can also attach at the desk. Absent means structured, as before.
      */
     mode: optional(oneOf(ADAPTER_MODES)),
+    /**
+     * CLI 0.11.7 (owner, 2026-11-12), each optional and sent only to a computer whose extended inventory offered it: the
+     * agent mode (adapters.ts AGENT_MODES; it must stand on `permission_mode`, AGENT_MODE_BASE), the effort level, and the
+     * extra projects the session may reach, by the ids the inventory gave (never a path). The computer checks each again
+     * against its own options and the ceiling its person set at the keyboard (checkAgentOptions); an older computer
+     * refuses the unknown field and starts nothing.
+     */
+    agent_mode: optional(oneOf(AGENT_MODES)),
+    effort: optional(oneOf(AGENT_EFFORTS)),
+    extra_project_ids: optional(list(id("prj"), MAX_EXTRA_PROJECTS)),
   }),
   /**
    * A new turn for an agent that waits for input. Sent while a turn runs, it waits (command.queued) and runs when the turn
@@ -2177,13 +2359,35 @@ export const COMMAND_PAYLOAD_SPECS = {
    */
   "screen.read": object({ lines: int(1, 2000), follow: optional(bool()) }),
   /** Ask for a device.inventory; `refresh_models` runs the agents' own model listers first. */
-  "inventory.get": object({ refresh_models: bool() }),
+  /**
+   * `extended` (CLI 0.11.7): this phone reads the inventory's optional 0.11.7 fields (`agent_options`, `modes_allowed`);
+   * the computer then sends them on every inventory sealed for this phone, and to no other. An older computer refuses
+   * the unknown field (command.rejected), which tells the phone to ask again without it.
+   */
+  "inventory.get": object({
+    refresh_models: bool(),
+    extended: optional(bool()),
+    /**
+     * Part B (owner, 2026-11-12): this phone's or browser's own name ("iPhone 16 Pro", "Browser on macOS"), sent only with
+     * `extended`, sealed, so `remote connections` on the computer says which device it is instead of "Phone 9M8N". The
+     * hello itself is relay-visible and carries no text, so the name rides in the first sealed command after it. An older
+     * computer refuses the field with `extended` and the phone asks again without both.
+     */
+    device_name: optional(text(MAX_DEVICE_NAME, 1)),
+  }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
   "device.configure": object({
     remote_enabled: optional(bool()),
     default_adapter: optional(nullable(oneOf(ADAPTER_IDS))),
     default_model: optional(nullable(text(128, 1))),
+    /**
+     * Part B (owner, 2026-11-12; crypto/admin.ts): one change of this computer's remote settings, approved in the app or on
+     * the web with the person's authenticator, with the issuer-signed proof bound to this computer and this exact change.
+     * Travels alone (no other field beside it). The computer verifies the proof against its pinned issuer keys and applies
+     * the change through its own rules, only while `worktrust remote admin on`; an older computer refuses the field.
+     */
+    settings_change: optional(SETTINGS_CHANGE_SPEC),
   }),
   /** This phone disconnects itself from this computer (owner, 2026-11-07): the computer drops the phone from its
    * confirmed list and its channels, as `worktrust remote phones remove` does at the keyboard. Sent sealed and signed
@@ -2298,6 +2502,9 @@ export const COMMAND_TTL_MS                                        = {
   "pipeline.cancel": 2 * MINUTE,
 };
 
+/** A device's own name: printable, no control or format character, not only spaces. */
+export const deviceNameOk = (name         )          => typeof name === "string" && name.trim().length > 0 && name.length <= MAX_DEVICE_NAME && !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/.test(name);
+
 export const isCommandType = (value         )                       =>
   typeof value === "string" && Object.hasOwn(COMMAND_PAYLOAD_SPECS, value);
 
@@ -2316,6 +2523,16 @@ export function validateCommandPayload                       (type   , value    
     } else if ((a.text === null) === (a.option === null)) return refuse("payload", "$payload: exactly one of text and option");
   }
   if (type === "device.configure" && Object.keys(payload).length === 0) return refuse("payload", "$payload: names no setting");
+  if (type === "device.configure") {
+    const c = payload                                      ;
+    if (c.settings_change !== undefined && Object.keys(c).length !== 1) return refuse("payload", "$payload.settings_change: travels alone");
+    const bad = c.settings_change ? adminChangeRule(c.settings_change.change) : null;
+    if (bad) return refuse("payload", `$payload.settings_change.change.${bad}`);
+  }
+  if (type === "inventory.get") {
+    const i = payload                                   ;
+    if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
+  }
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.live_start") { const bad = liveStartRule(payload             ); if (bad) return refuse("payload", `$payload: ${bad}`); }
@@ -2573,6 +2790,15 @@ export const EVENT_BODY_SPECS = {
     projects: list(object({ project_id: id("prj"), label: label(256), path: label(4096), last_used_at: nullable(int(0)), root_id: optional(nullable(id("rot"))), main: optional(label(4096)) }), 30),
     /** Where a phone may create a new project (project.create), each added at the keyboard (2026-11-07). */
     roots: optional(list(object({ root_id: id("rot"), label: label(256), git_init: bool() }), 20)),
+    /**
+     * CLI 0.11.7, only in an inventory sealed for a phone that asked `extended` (an older phone refuses unknown keys and
+     * never receives them): what each adapter offers beyond `permission_modes`, and the modes this computer's person
+     * allowed at the keyboard. A mode offered but not allowed is shown greyed out; neither is ever trusted from a phone.
+     */
+    agent_options: optional(list(AGENT_OPTIONS_SPEC, 16)),
+    modes_allowed: optional(list(oneOf(AGENT_MODES), AGENT_MODES.length)),
+    /** Part B (owner, 2026-11-12), only for an `extended` phone: the settings page's admin switch, folders, connections (crypto/admin.ts). */
+    ...ADMIN_INVENTORY_FIELDS,
     sessions: list(
       object({
         session_id: id("ses"),
@@ -3050,6 +3276,29 @@ export function checkStart(payload                               , report       
   return null;
 }
 
+/**
+ * THE 0.11.7 START OPTIONS, CHECKED AT THE COMPUTER (owner, 2026-11-12): the agent mode, the effort and the extra
+ * projects of an agent.start, against the options the computer itself offers for that adapter (`options`, from its own
+ * agents' help), the modes its person allowed at the keyboard (`allowed`, the ceiling), and the project ids its own
+ * inventory lists (`known`). Never trusted from the phone. → the mode the session runs in, or a reject reason:
+ * `unsupported` for what the agent does not offer (or a mode that does not stand on `permission_mode`), `not_allowed`
+ * for a mode above the ceiling, `not_found` for an extra project the inventory does not list.
+ */
+
+export function checkAgentOptions(payload                               , projectId               , options                     , allowed                      , known                     )                             {
+  const agentMode            = payload.agent_mode ?? (payload.permission_mode === "plan" ? "plan" : "manual");
+  if (AGENT_MODE_BASE[agentMode] !== payload.permission_mode) return "unsupported";
+  if (payload.agent_mode !== undefined && !(options?.agent_modes ?? []).includes(agentMode)) return "unsupported";
+  if (!allowed.includes(agentMode)) return "not_allowed";
+  const effort = payload.effort ?? null;
+  if (effort !== null && !(options?.efforts ?? []).includes(effort)) return "unsupported";
+  const extras = payload.extra_project_ids ?? [];
+  if (extras.length > (options?.extra_projects ?? 0)) return "unsupported";
+  if (new Set(extras).size !== extras.length || extras.includes(projectId ?? "")) return "unsupported";
+  if (extras.some((id) => !known.has(id))) return "not_found";
+  return { agentMode, effort, extraProjectIds: extras };
+}
+
 // ---- packages/remote-protocol/src/steered.ts
 /**
  * REMOTE-STEERED SESSIONS ARE MARKED, NEVER COUNTED AS A PERSON'S AI HOURS BY THEMSELVES. The agents the daemon runs
@@ -3519,7 +3768,7 @@ export function importChannel(stored               )                      {
 
 // ---- packages/remote-protocol/src/crypto/pairing.ts
 /**
- * PAIRING BY SCANNING THE COMPUTER'S SCREEN (owner, 2026-11-07). `worktrust remote enable` and `worktrust remote pair` draw
+ * PAIRING BY SCANNING THE COMPUTER'S SCREEN (owner, 2026-11-07). `worktrust remote app` (or `remote web`) and `worktrust remote pair` draw
  * a QR code in the terminal; the WorkTrust app scans it. The QR holds one link:
  *
  *   https://app.worktrust.io/remote/pair#v=1&g=<gateway origin>&d=<computer device id>&k=<Ed25519 pub>&x=<X25519 pub>

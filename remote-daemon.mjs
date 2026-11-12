@@ -14,7 +14,10 @@ import { basename } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { confirmedFingerprints, controllerKeys, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
 import { acceptEndorsement } from "./remote-endorse.mjs";
-import { createProject, rootLabel, worktreeMain } from "./remote-projects.mjs";
+import { createProject, rootLabel, sessionProjects, worktreeMain } from "./remote-projects.mjs";
+import { agentOptionsOf } from "./remote-inventory.mjs";
+import { allowedModes, applySettingsChange } from "./remote-settings.mjs";
+import { adminInventory } from "./remote-admin.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
 const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
@@ -30,11 +33,21 @@ export function createDaemonCore(o) {
   const persist = () => saveChannels([...channels.values()]);
   let sessions = null, approvals = o.approvals ?? null, releases = null;
 
+  /**
+   * THE 0.11.7 INVENTORY FIELDS REACH ONLY A PHONE THAT ASKED FOR THEM (inventory.get `extended`): an older phone refuses
+   * unknown keys, so every other channel gets the inventory without them. Kept per phone for the daemon's life; a phone
+   * asks again on every inventory.get.
+   */
+  const extendedPeers = new Set();
+  const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections"];
+  const bodyFor = (channel, record) => (record.type !== "device.inventory" || extendedPeers.has(channel.peer_device_id) ? record.body
+    : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key))));
+
   function sealAll(record) {
     for (const [id, channel] of channels) {
       if (!confirmed().has(channel.peer_fingerprint)) { channels.delete(id); continue; } // a revoked phone hears nothing
       const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify, ...(record.lane ? { lane: record.lane } : {}) };
-      const sealed = P.sealEvent(channel, draft, record.body, o.random);
+      const sealed = P.sealEvent(channel, draft, bodyFor(channel, record), o.random);
       if (!sealed.ok) { o.log("seal_refused", { type: record.type, code: sealed.code }); continue; }
       channels.set(id, sealed.value.channel);
       o.send({ frame: "event", envelope: sealed.value.envelope });
@@ -72,17 +85,24 @@ export function createDaemonCore(o) {
 
   function inventoryBody(refresh) {
     const settings = loadSettings();
+    const inv = o.inventory(refresh);
     return {
       remote_enabled: settings.enabled && settings.paused === null,
       default_adapter: settings.default_adapter ?? null,
       default_model: settings.default_model ?? null,
-      adapters: o.inventory(refresh).reports,
+      adapters: inv.reports,
       // A worktree names its main repository (`main`), only when it is one: a phone groups its sessions under that project.
-      projects: loadProjects().slice(0, 30).map((p) => {
+      // 0.11.7: the existing git projects inside each root follow the granted ones (root_id set), 30 in all.
+      projects: (o.projectSecret ? sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: o.projectSecret }) : loadProjects().slice(0, 30)).map((p) => {
         const main = worktreeMain(p.path);
         return { project_id: p.project_id, label: (basename(p.path) || p.path).slice(0, 256), path: p.path.slice(0, 4096), last_used_at: null, root_id: p.root_id ?? null, ...(main ? { main: main.slice(0, 4096) } : {}) };
       }),
       roots: loadRoots().slice(0, 20).map((r) => ({ root_id: r.root_id, label: rootLabel(r.path), git_init: r.git_init === true })),
+      // Sealed only for a phone that asked `extended` (bodyFor above): what each agent offers, and the keyboard's ceiling.
+      ...(inv.features ? { agent_options: agentOptionsOf(inv), modes_allowed: allowedModes(settings) } : {}),
+      // Part B, also only for an `extended` phone: the admin switch, the folders this computer suggests (by its own ids),
+      // and the phones and browsers linked to it (remote-admin.mjs).
+      ...adminInventory({ projectSecret: o.projectSecret, settings }),
       // Every session this computer knows, live or in the journal, newest activity first, with its name and its release task.
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };
@@ -100,7 +120,29 @@ export function createDaemonCore(o) {
     emit(env.session_id, "command.rejected", { reason }, env.command_id);
   }
 
-  async function configure(payload) {
+  /**
+   * PART B: one settings change from the app or the web (device.configure `settings_change`). applySettingsChange checks
+   * `remote admin on`, then the issuer-signed proof against THIS computer's pinned keys, device id and account (o.local,
+   * never the payload), then resolves the change from this computer's own lists by id. The run terminal says it in words.
+   */
+  function settingsChange(env, sent) {
+    const done = applySettingsChange(sent.change, { kind: "admin", proof: sent.proof, issuerKeys: o.issuerKeys, claims: o.local.claims, now: o.now() });
+    if (!done.ok) { o.log("settings_refused", { code: done.code ?? "not_allowed" }); return done.code ?? "not_allowed"; }
+    const by = loadPhones().confirmed.find((p) => p.device_id === env.sender_device_id);
+    o.log("settings_changed", { setting: done.setting, by: by?.name ?? by?.fingerprint ?? env.sender_device_id });
+    emit(null, "device.inventory", inventoryBody(false));
+    return "taken";
+  }
+
+  /** A phone's or browser's own name (inventory.get `device_name`, validated by the protocol), kept with its record here. */
+  function rememberName(deviceId, name) {
+    const phones = loadPhones();
+    if (!phones.confirmed.some((p) => p.device_id === deviceId && p.name !== name)) return;
+    savePhones({ ...phones, confirmed: phones.confirmed.map((p) => (p.device_id === deviceId ? { ...p, name: name.slice(0, 64) } : p)) });
+  }
+
+  async function configure(payload, env) {
+    if (payload.settings_change) return settingsChange(env, payload.settings_change);
     const settings = loadSettings();
     if (payload.remote_enabled === true && settings.paused === "desk") return "remote_paused"; // the desk's pause is the person's, at the keyboard
     const next = { ...settings };
@@ -137,8 +179,13 @@ export function createDaemonCore(o) {
     const settings = loadSettings();
     if (!settings.enabled) return "remote_paused";
     if (settings.paused !== null && !DEVICE_COMMANDS.has(env.type)) return "remote_paused";
-    if (env.type === "inventory.get") { emit(null, "device.inventory", inventoryBody(payload.refresh_models)); return "taken"; }
-    if (env.type === "device.configure") return configure(payload);
+    if (env.type === "inventory.get") {
+      if (payload.extended === true && env.sender_device_id) extendedPeers.add(env.sender_device_id);
+      if (payload.device_name && env.sender_device_id) rememberName(env.sender_device_id, payload.device_name);
+      emit(null, "device.inventory", inventoryBody(payload.refresh_models));
+      return "taken";
+    }
+    if (env.type === "device.configure") return configure(payload, env);
     if (env.type === "status.get" && payload.scope === "device") { emit(null, "device.inventory", inventoryBody(false)); return "taken"; }
     if (env.type === "pairing.revoke") return "taken";
     if (env.type === "project.create") {
@@ -210,6 +257,8 @@ export function createDaemonCore(o) {
       writeJson("invite.json", { ...live, used: true, used_at: o.now(), used_by: phone.fingerprint });
       savePhones({ ...phones, removed: phones.removed.filter((p) => p.device_id !== phone.device_id), pending: phones.pending.filter((p) => p.fingerprint !== phone.fingerprint), confirmed: [...phones.confirmed.filter((p) => p.fingerprint !== phone.fingerprint), { ...phone, how: "qr", confirmed_at: o.now() }] });
     }
+    // Last seen (0.11.7, `remote connections`): the moment this phone last opened a channel, kept with it on this computer only.
+    { const now = loadPhones(); savePhones({ ...now, confirmed: now.confirmed.map((p) => (p.fingerprint === phone.fingerprint ? { ...p, seen_at: o.now() } : p)) }); }
     for (const [id, c] of channels) if (c.peer_device_id === phone.device_id) channels.delete(id);
     channels.set(accepted.value.channel.channel_id, accepted.value.channel);
     persist();

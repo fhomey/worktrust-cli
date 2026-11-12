@@ -20,7 +20,7 @@ import { createServer } from "node:net";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as P from "./remote-protocol.mjs";
-import { classifyAction, phoneMayDecide } from "./remote-policy.mjs";
+import { classifyAction, phoneMayDecide, projectForAction } from "./remote-policy.mjs";
 
 export const APPROVAL_LIFETIME_MS = 5 * 60_000;
 
@@ -42,7 +42,7 @@ export function createApprovals(ctx) {
   /** One permission request from the bridge → the answer the bridge gives Claude Code. */
   async function request(session, toolName, input, preset = null) {
     if (ctx.paused()) return deny("WorkTrust remote is paused on this computer; denied");
-    const { action, reason } = preset ?? classifyAction(session.adapter, toolName, input, session.projectPath);
+    const { action, reason } = preset ?? classifyAction(session.adapter, toolName, input, projectForAction(session, input));
     if (!phoneMayDecide(action)) {
       ctx.emit(session.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: `Denied on the computer (${action.tool}): ${reason}` }, session.command_id);
       return deny(`WorkTrust remote: ${reason}`);

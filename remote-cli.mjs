@@ -2,22 +2,30 @@
  * `npx worktrust remote ...`: STEER THIS COMPUTER'S AGENTS FROM YOUR PHONE (2026-11-07). Opt-in, at this keyboard only (an
  * AI agent's shell is refused by worktrust.mjs, `status` excepted). docs/remote-agents/PROTOCOL.md is the contract.
  *
- *   remote enable [--gateway <wss://…>] [--device]   pair this computer's REMOTE keys (not the measurement key) in the
- *                                                     Passport app, start the service, show a pairing QR; asks which road
- *   remote app | web                                  the same, approved in the WorkTrust app (a QR here, no browser) |
- *                                                     in the browser's approval page (owner, 2026-11-12)
+ *   remote app | web [--gateway <wss://…>] [--device]   make this computer's REMOTE keys (not the measurement key), have
+ *                                                     them approved in the WorkTrust app (a QR here, no browser) | in the
+ *                                                     browser's approval page, start the service, show a pairing QR.
+ *                                                     `remote enable`, which asked which of the two, is gone (owner,
+ *                                                     2026-11-12, CLI 0.11.7): an unknown subcommand that names them
  *   remote pair                                       a new QR for a phone (five minutes, one phone, once)
  *   remote status [--json]                            what is on, paired, running, granted and installed
  *   remote pause | resume                             refuse every command for now | take them again
  *   remote disable [--forget]                         the hard off: the service removed; --forget also deletes the keys
+ *   remote connections                                every phone and browser linked here, and this computer's own link
+ *   remote disconnect <n|name|fingerprint> | --all    close one (y, then its short fingerprint or name typed) | every one
+ *                                                     (`close all` typed); remote-connections.mjs
  *   remote phones [confirm <id> | remove <id>|--all]  phones: pending ones are confirmed here; --all cuts every one at once
  *   remote phones allow-endorse on|off                may a confirmed phone add a browser it scanned (default off)
  *   remote projects add <folder> | remove <id> | list the folders a phone may steer an agent in
  *   remote run                                        the daemon in the foreground (Windows runs only this way)
  *   remote pipeline review <folder> | status          read a granted folder's .worktrust/pipeline.json, show every stage
  *                                                     and command, and on a typed yes let a phone start it (pins a hash)
- *   remote roots add <dir> [--git-init] | remove <id|dir> | list   parent folders where a phone may create ONE new, empty
- *                                                     project folder (project.create); --git-init runs `git init` in it
+ *   remote roots add <dir> [--git-init] | remove <id|dir> | list   parent folders where a phone may open the git projects
+ *                                                     already in them (0.11.7) and create ONE new, empty project folder
+ *                                                     (project.create); --git-init runs `git init` in it
+ *   remote modes allow|deny edit|auto | status        the ceiling of agent modes a phone may start (0.11.7; default manual
+ *                                                     and plan), remote-settings.mjs
+ *   remote admin on|off                               RESERVED: managing this computer from the app or the web (part B)
  *   remote preview allow|deny <port|file> <folder> | list   what a phone may preview: a dev-server port on 127.0.0.1 or a
  *                                                     built HTML file, per granted folder (rendered with your Chrome)
  *   remote codex on | off                             offer Codex to a phone (off by default): Codex runs the reads it
@@ -33,9 +41,11 @@ import { basename } from "node:path";
 import { hostname } from "node:os";
 import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
-import { ensureRemoteDir, isLoopbackGateway, issuerKeys, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, projectIdOf, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
+import { ensureRemoteDir, isLoopbackGateway, issuerKeys, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveSettings, writeJson } from "./remote-store.mjs";
 import { canonicalProject } from "./remote-policy.mjs";
-import { IssuerMissing, PairingRefused, chooseRoad, pairComputer } from "./remote-pairing.mjs";
+import { IssuerMissing, PairingDenied, PairingExpired, PairingRefused, pairComputer } from "./remote-pairing.mjs";
+import { startCountdown, waitKey } from "./remote-countdown.mjs";
+import { askLine, connectionsCommand, disconnectCommand, removePhones } from "./remote-connections.mjs";
 import { installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { qrMatrix, renderQr } from "./remote-qr.mjs";
 import { webSocketAvailable } from "./remote-transport.mjs";
@@ -44,8 +54,9 @@ import { allowCommand, parsePipelineConfig, PIPELINE_FILE } from "./remote-pipel
 import { pipelineState, projectReviewHash, readProjectFile } from "./remote-pipeline.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { loadPreviewGrants, savePreviewGrants } from "./remote-store.mjs";
-import { loadDeskMarks, loadPipelineReviews, loadRoots, remotePath, saveDeskMarks, savePipelineReviews, saveRoots } from "./remote-store.mjs";
-import { checkRoot, MAX_ROOTS, rootIdOf, rootLabel } from "./remote-projects.mjs";
+import { loadDeskMarks, loadPipelineReviews, loadRoots, remotePath, saveDeskMarks, savePipelineReviews } from "./remote-store.mjs";
+import { rootLabel } from "./remote-projects.mjs";
+import { adminCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
 
 const fingerprintOf = (keys) => P.deviceFingerprint(keys.public);
 const pretty = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
@@ -60,11 +71,12 @@ export async function askTyped(question) {
 
 function needPaired(io) {
   const keys = loadKeys(), identity = loadIdentity();
-  if (!keys || !identity) io.fail("this computer is not paired for remote yet: run `npx worktrust remote enable`");
+  if (!keys || !identity) io.fail("this computer is not paired for remote yet: run `npx worktrust remote app` (or `remote web`)");
   return { keys, identity };
 }
 
-async function enable(io, sub = "enable") {
+/** `remote app` | `remote web`: the two roads to approve this computer; each does all of what `remote enable` did. */
+async function approve(io, road) {
   if (!webSocketAvailable()) io.fail(`remote needs Node 22.4 or later for its connection (this is ${process.versions.node}); the Python package bundles one`);
   const settings = loadSettings();
   const gateway = io.flag("gateway") ?? process.env.WORKTRUST_REMOTE_GATEWAY ?? settings.gateway;
@@ -82,9 +94,19 @@ async function enable(io, sub = "enable") {
   if (!identity || io.has("repair")) {
     const keys = newKeys();
     const pub = P.publicKeysOf(P.importSecretKeys(keys));
-    const road = sub !== "enable" ? sub : io.has("device") ? "web" : await chooseRoad({ yes: io.has("yes") });
     try {
-      const paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), road, showQr: (link) => io.say(renderQr(qrMatrix(link).modules, { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR })), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser });
+      // The request's own clock under the QR or link (remote-countdown.mjs); after an expiry, Enter asks again with a new one.
+      let paired = null;
+      while (!paired) {
+        try {
+          paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), road, showQr: (link) => io.say(renderQr(qrMatrix(link).modules, { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR })), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser, countdown: (w) => startCountdown(w) });
+        } catch (error) {
+          if (error instanceof PairingDenied) return;
+          if (!(error instanceof PairingExpired) || !process.stdin.isTTY) throw error;
+          io.say(`  Press Enter for a new ${road === "app" ? "QR code" : "approval page"}, or q to quit.`);
+          if ((await waitKey()) !== "enter") return;
+        }
+      }
       saveKeys(keys);
       identity = { v: 1, device_id: paired.device_id, binding: paired.binding, sub: paired.sub, origin: io.origin, paired_at: Date.now() };
       saveIdentity(identity);
@@ -95,19 +117,20 @@ async function enable(io, sub = "enable") {
     }
   } else io.say(`  Already paired (${identity.device_id}); --repair pairs again with new keys.`);
   saveSettings({ ...settings, enabled: true, paused: null, gateway: gateway ?? null, agent_path: process.env.PATH ?? null });
-  if (loadProjects().length === 0) io.say("  No folder is granted yet: npx worktrust remote projects add <folder>");
+  if (loadProjects().length === 0 && loadRoots().length === 0) io.say("  No folder is granted yet: npx worktrust remote roots add <folder> (or the menu: npx worktrust › Remote Agent › Roots)");
   if (!gateway) { io.say("  No gateway is set: the production gateway is not live yet. Nothing runs until one is (--gateway)."); return; }
-  if (servicePlatform() === "foreground") { io.say("  Windows: there is no service; run `npx worktrust remote run` and keep that terminal open."); return; }
+  if (servicePlatform() === "foreground") { io.say("  ✓ This computer is connected to Remote Agent."); io.say("  Windows: there is no service; run `npx worktrust remote run` and keep that terminal open."); return; }
   const runtime = await io.prepare();
   const service = installService({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "run"], path: process.env.PATH ?? "" });
   io.say(service.started ? `  ✓ The service runs (${service.kind}, while you are logged in; linger stays off).` : `  ! The service file was written (${service.file}) but did not start; run \`npx worktrust remote run\` to see why.`);
+  if (service.started) io.say("  ✓ This computer is connected to Remote Agent.");
   if (!io.has("no-pair")) await pair(io);
 }
 
 async function pair(io) {
   const { keys, identity } = needPaired(io);
   const settings = loadSettings();
-  if (!settings.enabled || !settings.gateway) io.fail("remote is off or has no gateway: run `npx worktrust remote enable`");
+  if (!settings.enabled || !settings.gateway) io.fail("remote is off or has no gateway: run `npx worktrust remote app` (or `remote web`)");
   const started = Date.now();
   const invite = P.createPairingInvite({ gateway: settings.gateway, deviceId: identity.device_id, ed25519_pub: keys.public.ed25519_pub, x25519_pub: keys.public.x25519_pub, nowMs: started, random });
   const code = P.generatePairingCode(random);
@@ -160,14 +183,13 @@ async function phones(io, rest) {
   if (rest[0] === "remove" && (rest[1] === "--all" || io.has("all"))) { // EVERY DEVICE OFF, FROM THE SOURCE (owner, 2026-11-09): the daemon reads this list per message
     const all = [...list.confirmed, ...list.pending], at = Date.now(); if (all.length === 0) return io.say("  No phone or browser is connected to this computer.");
     if (process.stdin.isTTY && !(await askTyped(`  Disconnect all ${all.length} phones and browsers from this computer now?`))) return io.say("  Nothing changed.");
-    savePhones({ ...list, pending: [], confirmed: [], removed: [...list.removed.filter((p) => !all.some((x) => x.device_id === p.device_id)), ...all.map((p) => ({ device_id: p.device_id, fingerprint: p.fingerprint, how: "keyboard", removed_at: at }))].slice(-20) });
+    removePhones(all.map((p) => p.fingerprint), at);
     return io.say(`  ✓ Disconnected ${all.length}: none of them can steer this computer any more. Live sessions they started keep running here; stop them with npx worktrust remote disable, or pause everything with npx worktrust remote pause.\n  End their keys for your whole account too: app.worktrust.io › Settings › Remote Agent, or Remote Agent settings on your phone.`);
   }
   if (rest[0] === "remove") {
     const phone = find(rest[1]);
     if (!phone) io.fail("no phone by that fingerprint or id");
-    savePhones({ ...list, pending: list.pending.filter((p) => p.fingerprint !== phone.fingerprint), confirmed: list.confirmed.filter((p) => p.fingerprint !== phone.fingerprint),
-      removed: [...list.removed.filter((p) => p.device_id !== phone.device_id), { device_id: phone.device_id, fingerprint: phone.fingerprint, how: "keyboard", removed_at: Date.now() }].slice(-20) });
+    removePhones([phone.fingerprint]);
     io.say(`  ✓ Removed ${phone.fingerprint}: it can no longer steer this computer. Revoke it in WorkTrust too.`);
     return;
   }
@@ -185,25 +207,18 @@ async function phones(io, rest) {
   }
 }
 
+/** A change at this keyboard, through the one door (remote-settings.mjs); macOS is asked at once for a guarded folder. */
+async function settingsChange(io, change) {
+  if (change.add !== undefined) needPaired(io);
+  const done = applySettingsChange(change, { kind: "keyboard" });
+  if (!done.ok) io.fail(done.reason);
+  io.say(`  ✓ ${done.message}`);
+  if (done.paths && !io.has("no-folder-check")) await askMacFolderAccess(io, done.paths);
+}
+
 function projects(io, rest) {
   const list = loadProjects();
-  if (rest[0] === "add") {
-    const { keys } = needPaired(io);
-    const canonical = canonicalProject(rest[1]);
-    if (!canonical.ok) io.fail(`not granted: ${canonical.reason}`);
-    const project_id = projectIdOf(keys.projectSecret, canonical.path);
-    if (!list.some((p) => p.project_id === project_id)) saveProjects([...list, { project_id, path: canonical.path, added_at: Date.now() }]);
-    io.say(`  ✓ Granted: ${canonical.path}`);
-    return;
-  }
-  if (rest[0] === "remove") {
-    const canonical = canonicalProject(rest[1] ?? "");
-    const kept = list.filter((p) => p.project_id !== rest[1] && p.path !== rest[1] && !(canonical.ok && p.path === canonical.path));
-    if (kept.length === list.length) io.fail("no granted folder by that path or id");
-    saveProjects(kept);
-    io.say("  ✓ Removed.");
-    return;
-  }
+  if (rest[0] === "add" || rest[0] === "remove") return settingsChange(io, { what: "projects", [rest[0]]: rest[1] ?? "" });
   io.say(`  Granted folders (${list.length}):`);
   for (const p of list) io.say(`    ${p.path}  (${basename(p.path)})`);
 }
@@ -211,23 +226,8 @@ function projects(io, rest) {
 /** `remote roots …`: where a phone may create a new project folder, added here at the keyboard only. */
 function roots(io, rest) {
   const list = loadRoots();
-  if (rest[0] === "add") {
-    const { keys } = needPaired(io);
-    const root = checkRoot(rest[1] ?? "");
-    if (!root.ok) io.fail(`not added: ${root.reason}`);
-    if (list.length >= MAX_ROOTS && !list.some((r) => r.path === root.path)) io.fail(`at most ${MAX_ROOTS} roots`);
-    const root_id = rootIdOf(keys.projectSecret, root.path);
-    saveRoots([...list.filter((r) => r.root_id !== root_id), { root_id, path: root.path, git_init: io.has("git-init"), added_at: Date.now() }]);
-    io.say(`  ✓ Root: ${root.path} (${rootLabel(root.path)}). A phone may create one new, empty folder in it per request${io.has("git-init") ? ", with git init" : ""}.`);
-    return;
-  }
-  if (rest[0] === "remove") {
-    const kept = list.filter((r) => r.root_id !== rest[1] && r.path !== rest[1] && r.path !== checkRoot(rest[1] ?? "").path);
-    if (kept.length === list.length) io.fail("no root by that path or id");
-    saveRoots(kept);
-    io.say("  ✓ Removed. Projects made in it stay granted: npx worktrust remote projects remove <folder>.");
-    return;
-  }
+  if (rest[0] === "add") return settingsChange(io, { what: "roots", add: rest[1] ?? "", git_init: io.has("git-init") });
+  if (rest[0] === "remove") return settingsChange(io, { what: "roots", remove: rest[1] ?? "" });
   io.say(`  Roots (${list.length}):`);
   for (const r of list) io.say(`    ${r.path}  (${rootLabel(r.path)}${r.git_init ? ", git init" : ""})`);
 }
@@ -284,7 +284,7 @@ function status(io) {
   const settings = loadSettings(), identity = loadIdentity(), keys = identity ? loadKeys() : null, phonesList = loadPhones(), service = serviceState();
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
-    gateway: settings.gateway, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length,
+    gateway: settings.gateway, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false,
     agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false) };
   if (io.has("json")) { io.say(JSON.stringify(summary, null, 2)); return; }
   io.say(`  Remote: ${settings.enabled ? (settings.paused ? `paused (${settings.paused === "desk" ? "here" : "from a phone"})` : "on") : "off"}`);
@@ -293,12 +293,13 @@ function status(io) {
   io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);
   io.say(`  Phones: ${summary.phones.confirmed} confirmed (${summary.phones.browsers_added} browsers added by a phone), ${summary.phones.pending} pending · Folders granted: ${summary.projects}`);
   io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`);
+  io.say(`  Agent modes a phone may start: ${allowedModes(settings).join(", ")} (npx worktrust remote modes)`);
   for (const a of summary.agents) io.say(`  Agent: ${a.adapter} ${a.version ?? ""} · ${a.switched_off ? `installed, switched off: npx worktrust remote ${a.adapter} on` : a.adapter_ready ? "remote adapter ready" : "installed, no adapter yet"} · models: ${a.models}`);
 }
 
 export async function remoteCommand(args, io) {
   const [sub = "help", ...rest] = args;
-  if (sub === "enable" || sub === "app" || sub === "web") return enable(io, sub);
+  if (sub === "app" || sub === "web") return approve(io, sub);
   if (sub === "pair") return pair(io);
   if (sub === "status") return status(io);
   if (sub === "pause" || sub === "resume") { const s = loadSettings(); saveSettings({ ...s, paused: sub === "pause" ? "desk" : null }); io.say(sub === "pause" ? "  Paused: every command from a phone is refused until `npx worktrust remote resume`." : "  Resumed."); return; }
@@ -310,10 +311,15 @@ export async function remoteCommand(args, io) {
     return;
   }
   if (sub === "phones") return phones(io, rest);
+  if (sub === "connections") return connectionsCommand(io);
+  if (sub === "disconnect") return disconnectCommand(io, rest, askLine);
   if (sub === "projects") return projects(io, rest);
   if (sub === "run") return (await import("./remote-run.mjs")).runDaemon({ say: io.say });
   if (sub === "pipeline") return pipeline(io, rest);
   if (sub === "roots") return roots(io, rest);
+  if (sub === "modes") return modesCommand(io, rest);
+  if (sub === "admin") return adminCommand(io, rest);
+  if (sub === "folder-check") return folderCheck(); // internal: the one-shot launchd job of askMacFolderAccess
   if (sub === "preview") {
     const grants = loadPreviewGrants();
     if (rest[0] === "allow" || rest[0] === "deny") {
@@ -338,5 +344,6 @@ export async function remoteCommand(args, io) {
   if (sub === "releases") return releasesCommand(io, rest);
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
-  io.say("  npx worktrust remote app | web | enable | pair | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  if (sub !== "help") { io.say(sub === "enable" ? "  Unknown command: remote enable. Use `npx worktrust remote app` (approve with your phone) or `npx worktrust remote web` (approve in the browser)." : `  Unknown command: remote ${sub}. The remote commands are below.`); process.exitCode = 1; }
+  io.say("  npx worktrust remote app | web | pair | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | modes allow|deny edit|auto|status | admin on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

@@ -106,6 +106,9 @@ try {
     if (args[0] === "update") check(result.status !== 0, "agent guard remains");
     else check(result.status === 0, result.stdout + result.stderr);
   }
+  // THE MENU NEVER OPENS WITHOUT A TERMINAL (0.11.7): bare, with pipes and not relayed, the old default runs and ends by itself.
+  const bare = await run(first.node, first.entry, [], { ...first.additions, WORKTRUST_RELAYED: "0", WORKTRUST_REGISTRY_URL: "http://127.0.0.1:9/" });
+  check(!/↑\/↓|Check this computer|Remote Agent ›/.test(bare.stdout + bare.stderr) && /not a terminal: nothing was changed/.test(bare.stderr), `bare without a terminal: no menu, the old default (${bare.stderr.trim().slice(-120)})`);
   check(requests === 0, "non-mutating paths make no pairing requests");
   const unrelated = join(scratch, "unrelated directory"); mkdirSync(unrelated, { mode: 0o755 }); writeFileSync(join(unrelated, "keep"), "unrelated");
   const mode = statSync(unrelated).mode;

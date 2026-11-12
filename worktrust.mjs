@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
  * WorkTrust on a computer, in one command — like `gh auth login` (2026-10-03).
- *   npx worktrust                       show the plan, ask, approve this computer in the app, couple (0.10.7: a person's
+ *   npx worktrust                       in a person's own terminal (0.11.7): the menu (cli-menu.mjs), whose first item is
+ *                                       what the bare command did until then; without a terminal, exactly that:
+ *                                       show the plan, ask, approve this computer in the app, couple (0.10.7: a person's
  *                                       command always runs the newest version, whatever npx had cached);
  *                                       on a computer already coupled: what is coupled here
  *   npx worktrust --dry-run             show the plan only; nothing is written, nothing is sent
@@ -26,7 +28,7 @@
  *                                              command on a coupled computer offers an export lying in ~/Downloads once.
  *   npx worktrust disconnect                   show what comes out, ask, take it out again
  *   npx worktrust status                       what is coupled here
- *   npx worktrust remote app|web|enable|pair|status|pause|resume|disable|phones|projects|run   steer this computer's agents
+ *   npx worktrust remote app|web|pair|status|pause|resume|disable|phones|projects|roots|modes|run   steer this computer's agents
  *                                       from your phone (remote-cli.mjs; opt-in, its own key, never the measurement key)
  *   npx worktrust@latest preserve              how long each AI app here keeps its sessions (--apply keeps them,
  *                                       --archive [dir] a local metadata-only record, --verify [dir] checks it,
@@ -78,7 +80,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.6";
+const CLI_VERSION = "0.11.7";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -114,7 +116,7 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
+const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-admin.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["project-modes.mjs", "transcript-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -1638,8 +1640,9 @@ async function doorCommand(sub) {
 function help() {
   say("WorkTrust: couple this computer to your record. Metadata only.");
   say();
-  say("  worktrust              couple this computer: show the plan, ask, approve in your browser");
-  say("                         (already coupled: shows what is coupled here)");
+  say("  worktrust              in your terminal: the menu (every command below, with the short form it runs)");
+  say("                         without a terminal, or with any option: couple this computer: show the plan, ask,");
+  say("                         approve in your browser (already coupled: shows what is coupled here)");
   say("    --dry-run            the plan only: nothing is written, nothing is sent");
   say("    --yes                no question (the computer is still approved in the browser)");
   say("    --device             no browser here (SSH): type a code on another device");
@@ -1672,8 +1675,12 @@ function help() {
   say("  worktrust status       what is coupled here");
   say("  worktrust project      a folder's mode: exclude (nothing read), confidential (hours and tokens count, no name,");
   say("                         branch, path or commit sent) or normal; `project list` shows them (default folder: here)");
-  say("  worktrust remote       steer this computer's agents from your phone: enable, pair (a QR), status, pause, resume,");
-  say("                         disable, phones, projects, run. Opt-in, its own key, never counted as your AI Hours");
+  say("  worktrust remote       steer this computer's agents from your phone (opt-in, its own key, never your AI Hours):");
+  say("    app | web            approve this computer: with the WorkTrust app (a QR here) | in the browser");
+  say("    pair                 link a phone (a QR)          status · pause · resume · disable · phones");
+  say("    connections          every phone and browser linked here; disconnect <n|name|fingerprint> | --all closes them");
+  say("    projects · roots     the folders a phone may steer an agent in; roots open the git projects inside them");
+  say("    modes allow|deny edit|auto   the agent modes a phone may start (default: manual and plan)");
   say("  worktrust mcp off      hours only: the WorkTrust door out of every AI app here, nothing of it in your sessions;");
   say("                         the session hook keeps measuring your hours, and update leaves the door out");
   say("  worktrust mcp on       the door back in, so your AI can log finished work (about 40 tokens per session)");
@@ -1739,6 +1746,25 @@ async function relayToNewest() {
   if (!latest || !semverNewer(latest, CLI_VERSION)) return;
   say(`  WorkTrust ${latest} is available. Automatic execution is paused until signed release verification is configured.`);
   say("  Update explicitly using the package manager you installed with. This invocation keeps its current version.");
+}
+// THE MENU (0.11.7, owner 2026-11-12): bare `npx worktrust` in a person's own terminal, nowhere else (cli-menu.mjs menuWanted:
+// both ends a terminal, no argument, not relayed, not a hook or the MCP door, not an agent's shell, WORKTRUST_MENU not off).
+// Each item runs one direct command as a child of this CLI, the terminal handed over and the menu kept out of it.
+if (command === "default" && BUNDLED && (await import("./cli-menu.mjs")).menuWanted({ args, env: process.env, stdinTTY: Boolean(process.stdin.isTTY), stdoutTTY: Boolean(process.stdout.isTTY), agentShell })) {
+  try { keyStore.load(); }
+  catch { fail("The local WorkTrust key file is unsafe or damaged, or the OS vault is locked or unavailable. Unlock your OS vault and retry. Do not delete the key file or reset the keychain."); }
+  let latest;
+  const runCli = (cliArgs) => new Promise((resolve) => {
+    const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", cliArgs)], { stdio: "inherit", env: { ...process.env, WORKTRUST_MENU: "off", WORKTRUST_RELAYED: "1" } });
+    child.on("error", () => resolve(1));
+    child.on("exit", (code) => resolve(code ?? 1));
+  });
+  const state = async () => {
+    if (latest === undefined) { const v = await newestVersion(); latest = v && semverNewer(v, CLI_VERSION) ? v : null; }
+    let key = null; try { key = keyStore.load(); } catch { key = null; }
+    return { version: CLI_VERSION, latest, connected: Boolean(key), account: key?.account ?? null, door: doorOff() ? "off" : "on" };
+  };
+  return (await import("./cli-menu.mjs")).runMenu({ runCli, state });
 }
 if (await relayToNewest()) return;
 

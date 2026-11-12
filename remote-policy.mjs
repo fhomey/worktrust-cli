@@ -193,6 +193,21 @@ export const REASONS = Object.freeze({
   other: "only edits inside the project, reviewed test, build and lint commands, and messages shown whole are approved from a phone",
 });
 
+/**
+ * THE PROJECT AN ACTION IS JUDGED AGAINST (CLI 0.11.7, several projects in one session): the session's main project,
+ * unless the file the agent names lies inside one of the session's extra projects (`extraPaths`, resolved at the start
+ * from the computer's own inventory, never a phone's path); then that one. The action's files are absolute paths, so the
+ * phone shows which project an edit is in.
+ */
+export function projectForAction(session, input) {
+  const extras = Array.isArray(session?.extraPaths) ? session.extraPaths : [];
+  const named = input && typeof input === "object" ? input.file_path ?? input.notebook_path ?? input.path : null;
+  if (extras.length === 0 || typeof named !== "string") return session.projectPath;
+  const target = canonicalTarget(named, session.projectPath);
+  if (!target || isInside(session.projectPath, target)) return session.projectPath;
+  return extras.find((p) => isInside(p, target)) ?? session.projectPath;
+}
+
 /** The one gate between a classified action and the phone. Nothing else in the daemon may decide this. */
 export const phoneMayDecide = (action) => P.APPROVAL_CLASSES.includes(action?.class) && P.isRemoteApprovable(action.class);
 

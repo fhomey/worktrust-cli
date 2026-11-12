@@ -64,7 +64,35 @@ export function claudeFeatures(help) {
     // The agent's planning tools run without a prompt (they only write a plan), and one line says to use them (2026-11-08).
     allowed: /--allowedTools/.test(h),
     appendPrompt: /--append-system-prompt/.test(h),
+    // CLI 0.11.7 (owner, 2026-11-12): the finer modes, the effort levels and the extra directories, each only as its help names it.
+    editMode: choices.includes("acceptEdits") ? "acceptEdits" : null,
+    autoMode: choices.includes("auto") ? "auto" : null,
+    efforts: claudeEfforts(h),
+    addDir: /--add-dir <directories?\.\.\.>/.test(h),
   };
+}
+
+/** The effort levels Claude Code's own --effort help lists, in the protocol's order; none when the help names none. */
+export function claudeEfforts(help) {
+  const block = /--effort <level>([\s\S]*?)(?=\n\s{2}-|\n\s*\n|$)/.exec(help ?? "")?.[1] ?? "";
+  const named = /\(([^)]*)\)/.exec(block.replace(/\s+/g, " "))?.[1]?.split(",").map((w) => w.trim()) ?? [];
+  return P.AGENT_EFFORTS.filter((e) => named.includes(e));
+}
+
+/**
+ * WHAT EACH OFFERED ADAPTER CAN DO BEYOND `permission_modes` (CLI 0.11.7), for an extended inventory: Claude Code
+ * structured from its own help (acceptEdits is `edit`, auto is `auto`, --effort, --add-dir); every other report, and Claude
+ * Code in a terminal, offers manual and plan as its permission modes say, no effort and one project (Codex's app-server
+ * sandbox keeps writable roots empty on purpose; owner decision open, PROTOCOL.md "Agent modes").
+ */
+export function agentOptionsOf(inv) {
+  const f = inv.features?.["claude-code"] ?? {};
+  return inv.reports.filter((r) => r.installed && r.capabilities.start).map((r) => {
+    const base = r.capabilities.permission_modes.map((m) => (m === "plan" ? "plan" : "manual"));
+    if (r.adapter !== "claude-code" || r.mode !== "structured") return { adapter: r.adapter, mode: r.mode, agent_modes: P.AGENT_MODES.filter((m) => base.includes(m)), efforts: [], extra_projects: 0 };
+    const modes = new Set([...base, ...(f.editMode ? ["edit"] : []), ...(f.autoMode ? ["auto"] : [])]);
+    return { adapter: r.adapter, mode: r.mode, agent_modes: P.AGENT_MODES.filter((m) => modes.has(m)), efforts: [...(f.efforts ?? [])], extra_projects: f.addDir ? P.MAX_EXTRA_PROJECTS : 0 };
+  });
 }
 
 /** The model aliases Claude Code's own --model help names, in its order; none when the help names none. */

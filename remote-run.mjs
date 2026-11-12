@@ -13,7 +13,8 @@ import { closeSync, openSync, readFileSync, rmSync, writeSync, constants } from 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as P from "./remote-protocol.mjs";
-import { loadPreviewGrants } from "./remote-store.mjs";
+import { loadPreviewGrants, loadRoots } from "./remote-store.mjs";
+import { sessionProjects } from "./remote-projects.mjs";
 import { ensureRemoteDir, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { inventory as listAgents, offered } from "./remote-inventory.mjs";
@@ -30,6 +31,7 @@ import { createPipelines } from "./remote-pipeline.mjs";
 import { createAttachments } from "./remote-attachments.mjs";
 import { createPreview } from "./remote-preview.mjs";
 import { createLivePreview } from "./remote-live-preview.mjs";
+import { SETTING_WORDS } from "./remote-admin.mjs";
 import { appendPipelineMark } from "./remote-steered.mjs";
 import { createDaemonCore } from "./remote-daemon.mjs";
 import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
@@ -37,7 +39,11 @@ import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), kind, ...fields })}\n`);
 // A browser a phone added (2026-11-09, remote-endorse.mjs) is said in words too, so it is never news only in a JSON line.
-const notice = (kind, fields) => { if (kind === "browser_endorsed") process.stderr.write(`  ! A browser was added by your phone ${fields.by}: ${fields.fingerprint}. See or remove it: npx worktrust remote phones\n`); };
+const notice = (kind, fields) => {
+  if (kind === "browser_endorsed") process.stderr.write(`  ! A browser was added by your phone ${fields.by}: ${fields.fingerprint}. See or remove it: npx worktrust remote phones\n`);
+  // Part B: a change approved in the app or on the web with the authenticator, signed by WorkTrust and verified here.
+  if (kind === "settings_changed") process.stderr.write(`  ! ${SETTING_WORDS[fields.setting] ?? "a remote setting"} changed from ${fields.by}, approved there with your authenticator. To keep every change at this keyboard: npx worktrust remote admin off\n`);
+};
 const logged = (kind, fields = {}) => { log(kind, fields); notice(kind, fields); };
 
 export function agentEnv(settings, base = process.env) {
@@ -97,13 +103,13 @@ function lock() {
 export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } = {}) {
   ensureRemoteDir();
   const settings = loadSettings(), identity = loadIdentity(), keys = loadKeys();
-  if (!settings.enabled) throw new Error("remote is off on this computer: run `worktrust remote enable`");
-  if (!identity || !keys) throw new Error("this computer is not paired for remote: run `worktrust remote enable`");
-  if (!settings.gateway) throw new Error("no gateway is set: the production gateway is not live yet; for local tests pass --gateway ws://127.0.0.1:<port> to `worktrust remote enable`");
+  if (!settings.enabled) throw new Error("remote is off on this computer: run `worktrust remote app` (or `remote web`)");
+  if (!identity || !keys) throw new Error("this computer is not paired for remote: run `worktrust remote app` (or `remote web`)");
+  if (!settings.gateway) throw new Error("no gateway is set: the production gateway is not live yet; for local tests pass --gateway ws://127.0.0.1:<port> to `worktrust remote app` (or `remote web`)");
   if (!webSocketAvailable()) throw new Error(`remote needs Node 22.4 or later (this is ${process.versions.node})`);
   const keysOf = issuerKeys(settings.gateway);
   const claims = P.verifyBinding(identity.binding, { issuerKeys: keysOf, now: Date.now(), kind: "computer", deviceId: identity.device_id });
-  if (!claims.ok) throw new Error(`this computer's binding does not verify (${claims.code}): run \`worktrust remote enable\` again`);
+  if (!claims.ok) throw new Error(`this computer's binding does not verify (${claims.code}): run \`worktrust remote app\` (or \`remote web\`) again`);
   if (claims.value.exp * 1000 - Date.now() < 7 * 86400_000 && identity.origin) {
     // A binding lives thirty days: renewed in its last week while the device is still approved (docs/remote-agents/ISSUER.md §4).
     const { renewBinding } = await import("./remote-pairing.mjs");
@@ -133,7 +139,8 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   const socket = await approvals.listen(runDir);
   let releases = null; // set below; the hooks run only once events flow
   const sessions = createSessions({ ...ctx, approvals, runDir, node: process.execPath, bridgePath: join(HERE, "remote-approval-bridge.mjs"), socket: () => socket,
-    settings: loadSettings, projects: loadProjects, inventory: () => inventory({ env: agentEnv(loadSettings()) }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
+    // A session runs in a granted project or in an existing project inside a root (0.11.7), each by the inventory's id.
+    settings: loadSettings, projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), inventory: () => inventory({ env: agentEnv(loadSettings()) }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
     onTaskEnded: (id, outcome) => releases.taskEnded(id, outcome), onActivity: () => releases?.activity(),
     onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)), attachments });
   ctx.onApprovalOpened = sessions.onApprovalOpened; ctx.onApprovalSettled = sessions.onApprovalSettled;

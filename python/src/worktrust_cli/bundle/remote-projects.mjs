@@ -8,10 +8,16 @@
  * name of [A-Za-z0-9._-] that does not start with a dot and does not exist yet. The computer makes that folder and nothing
  * else (no parents, no files), checks after making it that it sits directly inside the root, grants it as a project, and
  * runs `git init` in it only when the person enabled that for the root. Nothing a phone sends names a path.
+ *
+ * BROAD ROOTS OPEN EXISTING PROJECTS (owner, 2026-11-12: "broad roots, not full access"; CLI 0.11.7). The inventory also
+ * lists the git projects that already lie DIRECTLY inside each root (rootProjects), most recently changed first, within
+ * the inventory's 30; a phone may start a session in one by the id the inventory gave, never by a path. Each is held to
+ * the granted-project rule (canonicalProject: never the home folder or above it, never a folder of secrets) and must
+ * still sit directly inside its root once every link is resolved, so a link in a root that points elsewhere opens nothing.
  */
 import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import * as P from "./remote-protocol.mjs";
@@ -85,3 +91,35 @@ export function createProject(o) {
   return { ok: true, git, project: { project_id, label: o.name.slice(0, 256), path: made.slice(0, 4096), root_id: o.root.root_id } };
 }
 
+
+/** A git project's folder: it holds `.git` (a folder, or a worktree's file). */
+const isGitProject = (path) => { try { lstatSync(join(path, ".git")); return true; } catch { return false; } };
+
+/**
+ * The existing git projects directly inside the roots, as session projects { project_id, path, root_id, from_root: true },
+ * newest change first, leaving out what `granted` already lists; at most `limit`. Read at the computer, every time.
+ */
+export function rootProjects(roots, projectSecret, granted = [], limit = MAX_PROJECTS) {
+  const taken = new Set(granted.map((p) => p.path)), found = [];
+  for (const r of roots) {
+    const root = checkRoot(r.path);
+    if (!root.ok || root.path !== r.path) continue; // moved, gone, or now a link elsewhere
+    let names = [];
+    try { names = readdirSync(root.path, { withFileTypes: true }).filter((d) => (d.isDirectory() || d.isSymbolicLink()) && !d.name.startsWith(".")).map((d) => d.name); } catch { continue; }
+    for (const name of names.slice(0, 2000)) {
+      const canonical = canonicalProject(join(root.path, name));
+      if (!canonical.ok || dirname(canonical.path) !== root.path || taken.has(canonical.path) || !isGitProject(canonical.path)) continue;
+      let changed = 0;
+      try { changed = statSync(canonical.path).mtimeMs; } catch { continue; }
+      taken.add(canonical.path);
+      found.push({ project_id: projectIdOf(projectSecret, canonical.path), path: canonical.path, root_id: r.root_id, from_root: true, changed });
+    }
+  }
+  return found.sort((a, b) => b.changed - a.changed).slice(0, Math.max(0, limit)).map(({ changed, ...p }) => p);
+}
+
+/** What a session may run in: the granted projects, then the existing projects inside the roots, 30 in all (the inventory's). */
+export function sessionProjects({ projects, roots, projectSecret }) {
+  const granted = projects().slice(0, MAX_PROJECTS);
+  return [...granted, ...rootProjects(roots(), projectSecret, granted, MAX_PROJECTS - granted.length)];
+}

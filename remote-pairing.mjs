@@ -26,13 +26,17 @@ export const renewBytes = (body) => P.concatBytes(RENEW, P.canonicalBytes(body))
 
 export class IssuerMissing extends Error {}
 export class PairingRefused extends Error {}
+/** The request's window ended with no approval (0.11.7: the terminal offers a new QR code). */
+export class PairingExpired extends PairingRefused {}
+/** The person denied it on the phone or in the browser (0.11.7). */
+export class PairingDenied extends PairingRefused {}
 
 async function post(origin, path, body) {
   const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
   return { status: response.status, json: await response.json().catch(() => ({})) };
 }
 
-/** `remote enable`'s question: the app's QR here (Enter), or the browser. Not a terminal, or --yes: the browser, as before. */
+/** Which road, the app's QR here (Enter) or the browser; not a terminal, or --yes: the browser. Since 0.11.7 the person names the road (`remote app` | `remote web`, or the menu); kept for a caller that asks. */
 export async function chooseRoad({ interactive = Boolean(process.stdin.isTTY), yes = false, prompt = null } = {}) {
   if (!interactive || yes) return "web";
   const rl = prompt ? null : createInterface({ input: process.stdin, output: process.stdout });
@@ -45,7 +49,7 @@ export async function chooseRoad({ interactive = Boolean(process.stdin.isTTY), y
  * Pair, and return the verified binding. `keys` holds the secret pair (never sent), `issuerKeys` the pinned keys. `road`:
  * "web" opens the approval page in the browser; "app" draws its link with `showQr` for the WorkTrust app and opens nothing.
  */
-export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, road = "web", showQr = () => {}, issuerKeys, say, openBrowser, now = Date.now }) {
+export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, road = "web", showQr = () => {}, issuerKeys, say, openBrowser, now = Date.now, countdown = null }) {
   const verifier = randomBytes(32).toString("base64url");
   const code_challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("base64url");
@@ -62,12 +66,16 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   }
+  let bar = null;
+  const settle = (line) => { bar?.stop(line); bar = null; };
   try {
     const pairing = await post(origin, "/api/remote/pair", { flow: device ? "device" : "loopback", host, os, ...claim, code_challenge_method: "S256", proof, ...(device ? {} : { port: server.address().port, state }) }).catch(() => null);
     if (!pairing) throw new PairingRefused(`cannot reach ${origin}`);
     if (pairing.status === 404) throw new IssuerMissing(`${origin} has no remote-key issuer yet (POST /api/remote/pair answered 404). Nothing was changed; remote control needs a Passport app with the issuer (docs/remote-agents/ISSUER.md).`);
     if (pairing.status !== 200) throw new PairingRefused(`pairing refused (${pairing.json.error ?? pairing.status})`);
     const { device_code, user_code, expires_in = 600, interval = 3, authorize_url, verification_uri, features = [] } = pairing.json;
+    // THE WINDOW IS THE ISSUER'S (0.11.7): its expires_at when it says one, else its expires_in from now; the bar drains over it.
+    const asked = now(), until = Number.isFinite(pairing.json.expires_at) ? pairing.json.expires_at : asked + expires_in * 1000;
     if (!features.includes("remote-binding-v1")) throw new PairingRefused(`${origin} does not offer remote bindings (remote-binding-v1)`);
     const fingerprint = P.deviceFingerprint(publicKeys);
     say(`  Your code: ${user_code}   This computer's remote key: ${fingerprint}`);
@@ -85,7 +93,7 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
       // The browser's one-time code arrives at 127.0.0.1; a phone's approval only by polling (device code and verifier).
       let code = null;
       void answer.then((c) => { code = c; });
-      const until = now() + expires_in * 1000;
+      bar = countdown?.({ expiresAt: until, windowMs: until - asked }) ?? null;
       let wait = Math.max(1, interval) * 1000;
       while (!code && !exchanged && now() < until) {
         await Promise.race([answer, new Promise((resolve) => setTimeout(resolve, wait))]);
@@ -93,22 +101,27 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
         const reply = await post(origin, "/api/remote/token", { device_code, code_verifier: verifier }).catch(() => null);
         if (reply?.status === 200) exchanged = reply;
         else if (reply?.json?.error === "slow_down") wait += 2000;
-        else if (reply?.json?.error === "access_denied" || reply?.json?.error === "expired_token") throw new PairingRefused(`pairing ended (${reply.json.error})`);
+        else if (reply?.json?.error === "access_denied") { settle(`Denied ${road === "app" ? "on your phone" : "in the browser"}. Nothing was changed.`); throw new PairingDenied("pairing ended (access_denied)"); }
+        else if (reply?.json?.error === "expired_token") { settle("This request expired."); throw new PairingExpired("pairing ended (expired_token)"); }
         // authorization_pending, or invalid_grant from an issuer before 2026-11-12 (no codeless loopback poll): wait on.
       }
-      if (!exchanged && !code) throw new PairingRefused("no approval arrived in time");
+      if (!exchanged && !code) { settle("This request expired."); throw new PairingExpired("no approval arrived in time"); }
+      settle(code || road !== "app" ? "✓ Approved in the browser" : "✓ Approved on your phone");
       if (!exchanged) exchanged = await post(origin, "/api/remote/token", { device_code, code, code_verifier: verifier });
     } else {
       say(`  On any device open ${verification_uri} and type the code.`);
-      const until = now() + expires_in * 1000;
+      bar = countdown?.({ expiresAt: until, windowMs: until - asked }) ?? null;
       let wait = interval * 1000;
       while (now() < until) {
         await new Promise((resolve) => setTimeout(resolve, wait));
         const reply = await post(origin, "/api/remote/token", { device_code, code_verifier: verifier }).catch(() => null);
-        if (reply?.status === 200) { exchanged = reply; break; }
+        if (reply?.status === 200) { exchanged = reply; settle("✓ Approved"); break; }
         if (reply?.json?.error === "slow_down") wait += 2000;
-        else if (reply?.json?.error && reply.json.error !== "authorization_pending") throw new PairingRefused(`pairing ended (${reply.json.error})`);
+        else if (reply?.json?.error === "access_denied") { settle("Denied. Nothing was changed."); throw new PairingDenied("pairing ended (access_denied)"); }
+        else if (reply?.json?.error === "expired_token") { settle("This request expired."); throw new PairingExpired("pairing ended (expired_token)"); }
+        else if (reply?.json?.error && reply.json.error !== "authorization_pending") { settle(); throw new PairingRefused(`pairing ended (${reply.json.error})`); }
       }
+      if (!exchanged) { settle("This request expired."); throw new PairingExpired("no approval arrived in time"); }
     }
     if (!exchanged || exchanged.status !== 200 || typeof exchanged.json.binding !== "string") throw new PairingRefused(`the approval could not be exchanged (${exchanged?.json?.error ?? "no answer"})`);
     if (Object.keys(issuerKeys).length === 0) throw new PairingRefused("this release pins no WorkTrust issuer key yet, so the binding cannot be verified; nothing was saved");
@@ -116,7 +129,7 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
     if (!verified.ok) throw new PairingRefused(`the binding does not verify (${verified.code}); nothing was saved`);
     if (verified.value.ed25519_pub !== publicKeys.ed25519_pub || verified.value.x25519_pub !== publicKeys.x25519_pub) throw new PairingRefused("the binding names other keys; nothing was saved");
     return { binding: exchanged.json.binding, device_id: verified.value.device_id, sub: verified.value.sub, exp: verified.value.exp, account: typeof exchanged.json.account === "string" ? exchanged.json.account.slice(0, 120) : null };
-  } finally { server?.close(); }
+  } finally { settle(); server?.close(); }
 }
 
 /** A fresh binding for the same keys before the old one ends (POST /api/remote/renew). Null when the issuer has none. */

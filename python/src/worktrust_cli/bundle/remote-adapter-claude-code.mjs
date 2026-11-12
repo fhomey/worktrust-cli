@@ -2,9 +2,10 @@
  * THE CLAUDE CODE ADAPTER, STRUCTURED (2026-11-07). One managed process per remote session:
  *
  *   claude -p --input-format stream-json --output-format stream-json --verbose
- *          --permission-mode <the mode its help lists for "ask", or plan>
+ *          --permission-mode <the mode its help lists for manual, edit (acceptEdits), plan or auto; 0.11.7>
  *          --permission-prompt-tool mcp__worktrust_remote__approve --mcp-config <this session's file>
- *          [--model <a model the computer listed>] (--session-id <uuid chosen here> | --resume <the agent's own id>)
+ *          [--model <a model the computer listed>] [--effort <a level its help lists>] [--add-dir <extra projects the
+ *          computer resolved from its own inventory>] (--session-id <uuid chosen here> | --resume <the agent's own id>)
  *
  * in the granted project folder, in a process group of its own. Every argument comes from this file and the closed start
  * options the computer checked again (checkStart); no text from the phone becomes an argument except a resume id that is
@@ -15,6 +16,7 @@
  */
 import { spawn } from "node:child_process";
 import { writeFileSync, rmSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { PLAN_HINT } from "./remote-approval-bridge.mjs";
 
 export const APPROVAL_TOOL = "mcp__worktrust_remote__approve";
@@ -43,19 +45,37 @@ export const PLAN_TOOLS = Object.freeze(["mcp__worktrust_remote__plan_release", 
 /** The one line the session's system prompt gains (owner, 2026-11-08: the agent arranges its own work); one text, the bridge's. */
 export { PLAN_HINT };
 
-export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfig }) {
-  if (mode !== "ask" && mode !== "plan") throw new Error("the protocol offers the ask and plan modes only");
-  const permission = mode === "plan" ? features.planMode : features.askMode;
+/**
+ * WHAT A SESSION THAT EDITS WITHOUT ASKING MAY STILL NEVER EDIT (CLI 0.11.7). In `edit` (acceptEdits) and `auto` Claude Code
+ * writes without the permission tool, so the files the computer's policy keeps at the keyboard (remote-policy.mjs RULE_FILE
+ * and SCRIPT_FILE: permission rules, hooks, the repository's own config, and the files that say what a reviewed command
+ * runs) are denied outright: an edited package.json would turn the phone's next reviewed `npm test` into anything.
+ */
+export const EDIT_MODE_DENY = Object.freeze(["**/.claude/**", "**/.mcp.json", "**/.claude.json", "**/.codex/**", "**/.cursor/**", "**/.git/**", "**/.husky/**", "**/.vscode/**", "**/.idea/**",
+  "**/.envrc", "**/.npmrc", "**/.yarnrc", "**/.yarnrc.yml", "**/.gitattributes", "**/.gitmodules", "**/package.json", "**/Makefile", "**/justfile", "**/pyproject.toml", "**/setup.py", "**/setup.cfg",
+  "**/tox.ini", "**/noxfile.py", "**/conftest.py", "**/pytest.ini", "**/Cargo.toml", "**/build.rs", "**/go.mod", "**/deno.json", "**/turbo.json", "**/nx.json", "**/*.config.js", "**/*.config.mjs", "**/*.config.cjs", "**/*.config.ts"]
+  .flatMap((glob) => [`Edit(${glob})`, `Write(${glob})`, `NotebookEdit(${glob})`]));
+
+/** The agent mode (protocol AGENT_MODES; the older `ask` is `manual`) → Claude Code's own permission mode, from its help. */
+const PERMISSION_OF = { ask: "askMode", manual: "askMode", plan: "planMode", edit: "editMode", auto: "autoMode" };
+
+export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfig, effort = null, addDirs = [] }) {
+  if (!Object.hasOwn(PERMISSION_OF, mode)) throw new Error("the protocol offers the manual, edit, plan and auto modes only");
+  const permission = features[PERMISSION_OF[mode]];
   if (!permission) throw new Error("this Claude Code offers no such permission mode");
+  if (effort !== null && !(features.efforts ?? []).includes(effort)) throw new Error("this Claude Code offers no such effort level");
+  if (!Array.isArray(addDirs) || addDirs.some((d) => typeof d !== "string" || !isAbsolute(d))) throw new Error("an extra project is an absolute path the computer resolved");
+  if (addDirs.length > 0 && !features.addDir) throw new Error("this Claude Code takes no extra directories");
+  const unasked = mode === "edit" || mode === "auto";
   if (resume !== null && !isClaudeSessionId(resume)) throw new Error("a resume id is Claude Code's own session uuid");
   if (resume === null && !isClaudeSessionId(sessionRef)) throw new Error("a new session needs its uuid");
   if (model !== null && (typeof model !== "string" || model.startsWith("-") || !/^[A-Za-z0-9._:@\[\]-]{1,128}$/.test(model))) throw new Error("not a model name");
   if (!features.disallowed || !features.settingSources) throw new Error("this Claude Code cannot take deny rules or limit its setting sources");
   // --replay-user-messages: Claude Code echoes each user message as it reads it (isReplay), which is how a live steer is
   // known to have entered the running turn (remote-steering.mjs; measured on 2.1.286: at the next tool boundary).
-  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...(features.replay ? ["--replay-user-messages"] : []), "--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY,
+  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...(features.replay ? ["--replay-user-messages"] : []), "--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY, ...(unasked ? EDIT_MODE_DENY : []),
     ...(features.allowed ? ["--allowedTools", ...PLAN_TOOLS] : []), ...(features.appendPrompt ? ["--append-system-prompt", PLAN_HINT] : []),
-    "--permission-prompt-tool", APPROVAL_TOOL, "--mcp-config", mcpConfig, ...(features.partial ? ["--include-partial-messages"] : []), ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionRef])];
+    "--permission-prompt-tool", APPROVAL_TOOL, "--mcp-config", mcpConfig, ...(features.partial ? ["--include-partial-messages"] : []), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...(addDirs.length ? ["--add-dir", ...addDirs] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionRef])];
 }
 
 /** The session's MCP config: our bridge only, its socket and its one-time token. Mode 0600, removed with the session. */

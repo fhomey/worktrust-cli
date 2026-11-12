@@ -13,6 +13,7 @@ import { basename, join } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { appendSteered } from "./remote-steered.mjs";
 import { adapterOf } from "./remote-inventory.mjs";
+import { allowedModes, startChoice } from "./remote-settings.mjs";
 import { claudeArgs, isClaudeSessionId, removeQuietly, startClaude, writeMcpConfig } from "./remote-adapter-claude-code.mjs";
 import { backgroundJobs, emptyClaudeState, endClaudeRun, mapClaudeLine } from "./remote-claude-events.mjs";
 import { collectChanges, snapshotChanges } from "./remote-changes.mjs";
@@ -198,7 +199,7 @@ export function createSessions(ctx) {
     const features = ctx.inventory().features["claude-code"];
     s.token = ctx.approvals.register(s);
     s.mcpFile = writeMcpConfig(join(ctx.runDir, `${s.session_id}.mcp.json`), { node: ctx.node, bridge: ctx.bridgePath, socket: ctx.socket(), token: s.token });
-    const args = claudeArgs({ features, mode: s.mode, model: s.model, resume, sessionRef: s.agent_ref, mcpConfig: s.mcpFile });
+    const args = claudeArgs({ features, mode: s.agentMode ?? s.mode, model: s.model, resume, sessionRef: s.agent_ref, mcpConfig: s.mcpFile, effort: s.effort ?? null, addDirs: s.extraPaths ?? [] });
     mark(s); // the ledger names the session before the agent writes a line
     s.run = startClaude({ file: ctx.inventory().files["claude-code"], cwd: s.projectPath, env: ctx.agentEnv(), args, onLine: (line) => onLine(s, line), onExit: (how) => onExit(s, how) });
     ctx.journal.recordSession({ session_id: s.session_id, pid: s.run.pid ?? null, agent_session_ref: s.agent_ref }); // a later daemon ends it if this one dies (P2-b)
@@ -209,17 +210,19 @@ export function createSessions(ctx) {
   function start(env, payload) {
     if (live.has(env.session_id) || ctx.journal.session(env.session_id)) return "conflict";
     if ([...live.values()].filter((s) => s.run).length >= (ctx.settings().max_sessions ?? DEFAULT_MAX_SESSIONS)) return "busy";
-    const project = ctx.projects().find((p) => p.project_id === env.project_id);
+    // Project and extras by the ids of the computer's own list, never a path; the 0.11.7 options against its own ceiling.
+    const known = ctx.projects(), project = known.find((p) => p.project_id === env.project_id);
     if (!project) return "not_found";
-    const refused = P.checkStart(payload, adapterOf(ctx.inventory(), payload.adapter));
-    if (refused) return refused;
+    const refused = P.checkStart(payload, adapterOf(ctx.inventory(), payload.adapter)); if (refused) return refused;
+    const choice = startChoice(payload, project.project_id, ctx.inventory(), ctx.settings(), known); if (typeof choice === "string") return choice;
     if (!AGENT_ID[payload.adapter]) return "unsupported";
     if (payload.resume !== null && !AGENT_ID[payload.adapter](payload.resume)) return "unsupported";
     const s = { session_id: env.session_id, project_id: project.project_id, projectPath: project.path, adapter: payload.adapter, model: payload.model, mode: payload.permission_mode,
       agent_ref: payload.resume ?? (payload.adapter === "codex" ? null : payload.adapter === "opencode" ? mintOpenCodeSessionId(ctx.now(), ctx.random) : randomUUID()), how: "started", first: ctx.now(), queue: [], state: FRESH_STATE[payload.adapter](),
-      coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: env.task === true, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: payload.name ?? null, active: 0, countedTurn: null };
+      coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: env.task === true, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: payload.name ?? null, active: 0, countedTurn: null,
+      agentMode: payload.agent_mode ?? null, effort: choice.effort, extraIds: choice.extraProjectIds, extraPaths: choice.extras.map((p) => p.path) };
     live.set(s.session_id, s);
-    ctx.journal.recordSession({ session_id: s.session_id, adapter: s.adapter, project_id: s.project_id, agent_session_ref: s.agent_ref, model: s.model, mode: s.mode, at: ctx.now(), name: s.name, active_ms: 0 });
+    ctx.journal.recordSession({ session_id: s.session_id, adapter: s.adapter, project_id: s.project_id, agent_session_ref: s.agent_ref, model: s.model, mode: s.mode, at: ctx.now(), name: s.name, active_ms: 0, ...(s.agentMode ? { agent_mode: s.agentMode } : {}), ...(s.effort ? { effort: s.effort } : {}), ...(s.extraIds.length ? { extra_project_ids: s.extraIds } : {}) });
     ctx.emit(s.session_id, "session.created", { adapter: s.adapter, model: s.model, origin: "phone", title: null, project_label: basename(project.path).slice(0, 256) || null, name: s.name }, env.command_id);
     spawnAgent(s, payload.resume);
     if (payload.prompt) s.queue.push({ text: payload.prompt, command_id: env.command_id, received_at: ctx.now() });
@@ -234,12 +237,15 @@ export function createSessions(ctx) {
     if (s?.run) return s;
     const saved = s ?? ctx.journal.session(sessionId);
     if (!saved || saved.closed) return null;
-    const project = ctx.projects().find((p) => p.project_id === saved.project_id);
-    const ref = s?.agent_ref ?? saved.agent_session_ref;
+    const known = ctx.projects(), project = known.find((p) => p.project_id === saved.project_id), ref = s?.agent_ref ?? saved.agent_session_ref;
     if (!project || !AGENT_ID[saved.adapter]?.(ref)) return null;
+    const agentMode = s?.agentMode ?? saved.agent_mode ?? null; // within today's ceiling, or it stays down (0.11.7)
+    if (agentMode && !allowedModes(ctx.settings()).includes(agentMode)) return null;
+    const extras = (s?.extraIds ?? saved.extra_project_ids ?? []).map((id) => known.find((p) => p.project_id === id)).filter(Boolean);
     if ([...live.values()].filter((x) => x.run).length >= (ctx.settings().max_sessions ?? DEFAULT_MAX_SESSIONS)) return null;
     s = s ?? { session_id: sessionId, project_id: saved.project_id, projectPath: project.path, adapter: saved.adapter, model: saved.model ?? null, mode: saved.mode ?? "ask", agent_ref: ref, how: "started", first: ctx.now(), queue: [], state: FRESH_STATE[saved.adapter](),
-      coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: false, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: saved.name ?? null, active: saved.active_ms ?? null, countedTurn: null };
+      coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: false, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: saved.name ?? null, active: saved.active_ms ?? null, countedTurn: null,
+      agentMode, effort: saved.effort ?? null, extraIds: extras.map((p) => p.project_id), extraPaths: extras.map((p) => p.path) };
     live.set(sessionId, s);
     spawnAgent(s, s.agent_ref);
     return s;

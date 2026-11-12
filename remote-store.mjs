@@ -69,7 +69,10 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 
 // allow_endorse (2026-11-09): may a confirmed phone add a browser it scanned (remote-endorse.mjs)? Off until the person says so
 // here, at the keyboard (`worktrust remote phones allow-endorse on`).
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false });
+// modes_allowed (0.11.7, owner 2026-11-12): the CEILING of agent modes a phone may start, set here only (`worktrust remote
+// modes allow|deny edit|auto`); manual and plan always. admin (0.11.7): RESERVED for managing this computer from the app or
+// the web with a server-signed proof (part B); on by default, honoured by nothing yet (remote-settings.mjs).
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 

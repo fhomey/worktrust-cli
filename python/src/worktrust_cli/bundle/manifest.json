@@ -1,11 +1,11 @@
 {
-  "version": "0.11.8",
+  "version": "0.11.9",
   "files": {
     "chat-exports.mjs": "f026c5a063f62c22ba6f25474a9d9fdbb6074beebbfe1faff2a876c437a1a000",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
     "cli-colour.mjs": "fa16b61ad179999c5c5365255182acf69bcba1eb5f5ce7b0e1e18c11f56130ae",
-    "cli-menu-remote.mjs": "6477b3c6986290a9ac70f1f7310abcc0415dfbe9e08f412c48dd41b60c4b6c44",
-    "cli-menu.mjs": "566a8cb60a050a506101b2900358d31c05907d66565ff194cd8efe9039e04ca5",
+    "cli-menu-remote.mjs": "4f7284911d86e4463797e7dec976c4c10f46e6fdb3053c5ad211210e1efe25e5",
+    "cli-menu.mjs": "09eed126c220ffdfba8fedd7f2730ddcbc75471c31dcb5ce066c02592aa3b3b9",
     "commit-rules.mjs": "e94cc32a5415f6d9e978145ab9505ac4ae0bac9431e6e9104b9b37155260b51f",
     "config-edits.mjs": "527a7674f9d52b284bfda3b8089eb4b930a709bf14aedbec7f6eef1e59ef52ee",
     "count-behaviour.mjs": "06b0ecbc222087160dc64c0b302391631e8e799038364c317c6cd28449c5044d",
@@ -86,6 +86,6 @@
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
     "transcript-readers.mjs": "e9f20415c2b5d62a09f35a63075002ebd1da56edb32f242d52822d58ecbd8ac3",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "81a0b8f83b5c0bbbd8c4599071585520cb6ad1ebaa2e5824c51bb5f6dd0ab6e8"
+    "worktrust.mjs": "e2ac72ef0f14bb8b8f756f67c65b6adc88bc899e2794e8f0edcf305290ab7f33"
   }
 }

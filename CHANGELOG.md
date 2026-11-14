@@ -2,6 +2,40 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.9: a first menu, one row per item, and nothing you can do twice
+
+**A short menu until this computer is connected.** `npx -y worktrust` on a computer that is not connected yet opens
+Connect this computer, Preserve evidence, Help and Quit, and nothing that needs a connected computer. Connect is the
+same sign-in as `worktrust connect`: it shows the plan, asks before it writes, and your browser signs in. The moment it
+succeeds the full menu is there, without running anything again; if it stops, the short menu stays and says why in one
+line. Preserve needs no account and is whole in both menus.
+
+**An update that is not needed cannot be run again.** When this computer runs this version and npm has none newer, the
+Update row is still drawn, dimmed, reading `up to date (0.11.9)`, and cannot be chosen: the arrows pass it and its digit
+answers `Already up to date.` When npm could not be asked, the row says `newest not checked` and claims nothing.
+`npx worktrust update` on a computer that is already on this version, with nothing waiting (every AI app's door
+standing, nothing new to agree to), answers `Already up to date (0.11.9). Nothing changed.`; before, it took every door
+out and put it back and said `7 added`. `update --force` sets everything up again all the same.
+
+**One row per item.** Number, action, command and explanation stand on one line where the terminal is wide enough; on a
+narrower one (80 columns) the chosen row's explanation has one fixed line under the list. No row moves when you move,
+no sentence is cut, and every sentence was rewritten to 60 characters or fewer. Under 60 columns the command column goes.
+
+**Remote Agent asks for the approval first.** Until this computer is approved, Approve this computer is first, and what
+cannot work before it (Link a phone, Projects, Roots, Connections, Pause) is dimmed, marked `not yet`, and cannot be
+chosen. Approved from inside the menu, the list opens at once with the cursor on Link a phone.
+
+**A summary above the menu, Sharing, and the linked devices.** A connected computer's head says the account, this
+computer and since when, Remote Agent with its connections, and what this computer shares; all from its own files, never
+the key. Sharing › holds the switches that exist (`mcp off | on`, Remote Agent's pause) and says that the session hook has
+none in the CLI. Remote Agent › Connections is a table (name, kind, since, last activity); Disconnect runs
+`remote disconnect` with the confirmation you type, as before.
+
+**Esc quits at the top**, like q, and goes back one level below it.
+
+**`-y` where a first command is shown.** The README, the app and the site show `npx -y worktrust` and
+`npx -y worktrust@latest …`, so npm's own `Ok to proceed?` is answered in advance.
+
 ## 0.11.8: the menu says more, stays in one place, and uses colour with meaning
 
 **Update comes first, and says whether there is something to update.** The menu now opens on Update WorkTrust, then Check

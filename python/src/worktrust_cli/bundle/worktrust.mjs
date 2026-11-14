@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * WorkTrust on a computer, in one command — like `gh auth login` (2026-10-03).
- *   npx worktrust                       in a person's own terminal (0.11.7; 0.11.8: Update first): the menu (cli-menu.mjs), one item of which is
+ *   npx worktrust                       in a person's own terminal (0.11.7; 0.11.8: Update first; 0.11.9: not connected yet, a short
+ *                                       menu: Connect, Preserve, Help): the menu (cli-menu.mjs), one item of which is
  *                                       what the bare command did until then; without a terminal, exactly that:
  *                                       show the plan, ask, approve this computer in the app, couple (0.10.7: a person's
  *                                       command always runs the newest version, whatever npx had cached);
@@ -11,7 +12,9 @@
  *   npx worktrust --device              a computer without a browser (SSH): type a code on another device
  *   npx worktrust connect                      couple again, also on a computer already coupled
  *   npx worktrust update                       this computer onto the newest CLI, same key, no new pairing (0.10.30: what
- *                                              was agreed before is refreshed unasked; --rebuild agrees to the re-measure)
+ *                                              was agreed before is refreshed unasked; --rebuild agrees to the re-measure;
+ *                                              0.11.9: already on this version with nothing waiting, it says so and
+ *                                              changes nothing; --force sets everything up again all the same)
  *   npx worktrust history                      send this computer's earlier sessions as history (asks first)
  *   npx worktrust history --rebuild            the same as history (0.10.5: history always re-measures); WorkTrust replaces this computer's
  *                                              earlier lines day by day, never counting a day twice (shows the plan, asks first)
@@ -80,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.8";
+const CLI_VERSION = "0.11.9";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -701,9 +704,18 @@ async function sessionEnd() {
 async function update() {
   const key = await freshKey();
   if (!key) fail("this computer has no WorkTrust key file yet. Run npx worktrust connect.");
-  say();
-  say(`  WorkTrust · update ${hostname().replace(/\.local$/i, "")} to ${CLI_VERSION}`);
-  say();
+  const title = () => { say(); say(`  WorkTrust · update ${hostname().replace(/\.local$/i, "")} to ${CLI_VERSION}`); say(); };
+  // ALREADY ON THIS VERSION (0.11.9, owner 2026-11-14: "when the latest version is already there it is useless to run the
+  // update again"): the second run took every door out and put it back, and said "7 added". Now it says so and changes
+  // nothing, but only when NOTHING waits: this version's stable copy, the door chosen, every AI app's door standing by the
+  // writer's own reading, nothing new to agree to, no Codex or Antigravity question open. `--force` is the repair road.
+  const same = !has("force") && !has("codex") && !has("antigravity") && stableVersion() === CLI_VERSION && existsSync(STABLE) && Boolean(doorState());
+  if (!same) title();
+  // The plan below asks the writer whether each door names THIS release's bridge, so the bridge's place must be the installed
+  // one first; the same release already in ~/.worktrust is only verified here, never written again.
+  // The old install is read BEFORE anything is prepared (check-core-logic history-rebuild: the rebuild offer compares it).
+  const previous = stableInstall();
+  if (same) await prepareBundledRuntime();
   const paths = await scripts();
   if (!doorState() && !has("dry-run")) saveDoorState({ mode: await chooseDoor(), asked: new Date().toISOString() }); // once, for a computer coupled before 0.10.37
   const doorIsOff = doorOff();
@@ -711,10 +723,22 @@ async function update() {
   // AGREED BEFORE, REFRESHED WITHOUT A QUESTION (0.10.30): an app or hook the person said yes to is brought onto this
   // version's launcher; only what is NEW here is shown in full and asked about, and --yes leaves the new ones as they are.
   const agreed = await consent();
-  say("  Every AI app found here gets the WorkTrust door, the local command that reads the key:");
   const found = doorIsOff ? [] : planLines(plan.out, true).filter((line) => !line.includes("not on this machine"));
-  if (doorIsOff) say(`    the door stays off here (hours only, ${DOOR_SWITCH})`);
   const apps = [...new Set(found.map(labelOf).filter(Boolean))], fresh = apps.filter((app) => !agreed.has(`door:${app}`));
+  if (same) {
+    const standing = doorIsOff || planLines(plan.out).filter((line) => !line.includes("not on this machine")).every((line) => /^\s+✓ /.test(line));
+    const asked = (existsSync(join(homedir(), ".codex")) && !codexNotify().text) || (antigravityHere() && agyHooks() !== null && !agyHooks()?.worktrust);
+    if (plan.code === 0 && standing && fresh.length === 0 && agreed.has("session-hook") && !asked) {
+      say();
+      say(`  Already up to date (${CLI_VERSION}). Nothing changed.`);
+      if (doorIsOff) say(`    the door stays off here (hours only, ${DOOR_SWITCH})`); // a choice the update keeps is still said
+      say("  To set this computer up again all the same: npx worktrust update --force");
+      return;
+    }
+    title();
+  }
+  say("  Every AI app found here gets the WorkTrust door, the local command that reads the key:");
+  if (doorIsOff) say(`    the door stays off here (hours only, ${DOOR_SWITCH})`);
   for (const app of apps) if (!fresh.includes(app)) say(`    ✓ ${app}: refreshed (${agreed.said(`door:${app}`)})`);
   for (const line of found) if (fresh.includes(labelOf(line))) say(`${line} · new`);
   if (found.length === 0 && !doorIsOff) say("    (no AI app found here)");
@@ -730,7 +754,6 @@ async function update() {
   else if (newOnes.length > 0) takeNew = await ask(`Couple the new ${newOnes.length === 1 ? "one" : "ones"} marked "new" (${newOnes.join(", ")})?`, false);
   if (newOnes.length > 0 && !takeNew && !has("yes")) say("  The new ones stay as they are. npx worktrust update asks again.");
   const skip = takeNew ? [] : fresh, hookOn = !hookFresh || takeNew;
-  const previous = stableInstall();
   await prepareBundledRuntime();
   ensureHome();
   saveStableEntry();
@@ -1384,7 +1407,7 @@ async function status() {
   if (measurePaused()) say(`  Measuring: paused by you in Sources since ${String(measureState()?.since ?? "").slice(0, 10)}; nothing is measured or sent until you turn it on there`);
   // THE LAST UPDATE ON TURN-ON (0.10.37): what happened, in words; the details are in ~/.worktrust/update.log, on this computer only.
   { const state = updateState(); if (state) { const code = (await selfUpdateModule()).updateResult(state);
-    const words = { installed: `updated itself to ${state.version}`, current: `already on ${state.version} or newer`, python: "installed with Python: update it with the package manager you installed WorkTrust with", unsupported: "this installation cannot update itself: run npx worktrust@latest update", unverified: `${state.version} could not be verified, so nothing was installed`, failed: `the update to ${state.version} did not finish; the CLI stays as it was` };
+    const words = { installed: `updated itself to ${state.version}`, current: `already on ${state.version} or newer`, python: "installed with Python: update it with the package manager you installed WorkTrust with", unsupported: "this installation cannot update itself: run npx -y worktrust@latest update", unverified: `${state.version} could not be verified, so nothing was installed`, failed: `the update to ${state.version} did not finish; the CLI stays as it was` };
     say(`  Update when turned on: ${words[code] ?? `to ${state.version}, under way`}${["unverified", "failed"].includes(code) ? " (~/.worktrust/update.log)" : ""}`); } }
   // A TRANSCRIPT THE HOOK COULD NOT READ (0.10.32): the count of its last run that had any, never which file; WorkTrust has the count too.
   { let unread = null; try { unread = JSON.parse(readFileSync(join(HOME_DIR, "sessions.json"), "utf8")).__unreadable ?? null; } catch { /* no state yet */ }
@@ -1660,6 +1683,8 @@ function help() {
   say("    --replace            yes in advance to coupling a computer that is already coupled");
   say("  worktrust update       this computer onto the newest CLI: same key, no new pairing; what you agreed to before is");
   say("                         refreshed without a question, a new AI app or hook is asked about (--yes: skipped)");
+  say("                         already on this version with nothing waiting: says so and changes nothing");
+  say("    --force              set everything up again all the same (the repair road)");
   say("    --rebuild            yes in advance to the re-measure update offers after a new version (the plan is still shown)");
   say("    --codex              yes in advance to letting Codex wake the session hook (also for connect)");
   say("    --antigravity        yes in advance to letting Antigravity wake the session hook (also for connect)");
@@ -1761,17 +1786,21 @@ async function relayToNewest() {
 if (command === "default" && BUNDLED && (await import("./cli-menu.mjs")).menuWanted({ args, env: process.env, stdinTTY: Boolean(process.stdin.isTTY), stdoutTTY: Boolean(process.stdout.isTTY), agentShell })) {
   try { keyStore.load(); }
   catch { fail("The local WorkTrust key file is unsafe or damaged, or the OS vault is locked or unavailable. Unlock your OS vault and retry. Do not delete the key file or reset the keychain."); }
-  let latest;
+  let latest, latestKnown = false; // 0.11.9: whether the registry answered at all (no answer is not "up to date")
   const runCli = (cliArgs) => new Promise((resolve) => {
     const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", cliArgs)], { stdio: "inherit", env: { ...process.env, WORKTRUST_MENU: "off", WORKTRUST_RELAYED: "1", ...(has("no-color") || has("no-colour") ? { NO_COLOR: "1" } : {}) } });
     child.on("error", () => resolve(1));
-    child.on("exit", (code) => resolve(code ?? 1));
+    child.on("exit", (code, signal) => resolve(code ?? (signal ? 130 : 1))); // stopped by Ctrl+C: 130, which the first menu reads as cancelled
   });
   const state = async () => {
-    if (latest === undefined) { const v = await newestVersion(); latest = v && semverNewer(v, CLI_VERSION) ? v : null; }
+    if (latest === undefined) { const v = await newestVersion(); latestKnown = v !== null; latest = v && semverNewer(v, CLI_VERSION) ? v : null; }
     let key = null; try { key = keyStore.load(); } catch { key = null; }
     // `installed` is read again at every ask (0.11.8): the menu's Update item says "up to date" the moment an update ends.
-    return { version: CLI_VERSION, installed: stableVersion(), latest, connected: Boolean(key), account: key?.account ?? null, door: doorOff() ? "off" : "on" };
+    // THE SUMMARY'S FACTS (0.11.9): what this computer's own files say, never the key: its name, the day it was coupled, whether
+    // the session hook stands in Claude Code's settings, and how many AI apps' doors the person agreed to (the consent record).
+    let apps = null; try { apps = Object.keys(JSON.parse(readPrivateFile(CONSENT_FILE) ?? "null")?.entries ?? {}).filter((name) => name.startsWith("door:")).length; } catch { apps = null; }
+    return { version: CLI_VERSION, installed: stableVersion(), latest, latestKnown, connected: Boolean(key), account: key?.account ?? null, door: doorOff() ? "off" : "on",
+      host: hostname().replace(/\.local$/i, ""), since: key?.coupledAt ?? null, hook: sessionHookHere(), apps };
   };
   return (await import("./cli-menu.mjs")).runMenu({ runCli, state });
 }

@@ -21,12 +21,13 @@ hiring instrument.
 ## Install and first run
 
 ```sh
-npx worktrust
+npx -y worktrust
 ```
 
-In your own terminal this opens the menu. On a computer that is not connected yet, Check this computer shows the plan,
-asks, and you approve the computer in your browser with your own account and second factor. Before WorkTrust starts,
-npm itself may ask `Ok to proceed?`; `npx -y worktrust` answers that in advance.
+In your own terminal this opens the menu. On a computer that is not connected yet it is a short one: Connect this
+computer, Preserve evidence, Help. Connect shows the plan, asks, and you approve the computer in your browser with your
+own account and second factor; the moment that succeeds, the full menu is there. The `-y` answers npm's own question in
+advance: without it npm may ask `Ok to proceed?` before WorkTrust starts.
 
 **With Python instead.** The Python package runs the same CLI and brings its own Node, so it needs no Node on the computer:
 
@@ -53,41 +54,62 @@ and show the ways forward, each with its exact command:
 
 Without a terminal nothing is asked and nothing runs: the same text is printed and the command ends with a failure code.
 
-**Update.** `npx worktrust@latest update` brings this computer's hook and AI-app doors to the newest version. Your key and
-pairing stay.
+**Update.** `npx -y worktrust@latest update` brings this computer's hook and AI-app doors to the newest version. Your key and
+pairing stay. On a computer that is already on that version, with nothing waiting, it says so and changes nothing;
+`update --force` sets everything up again all the same.
 
 **Stop.** `npx worktrust disconnect` takes WorkTrust out of every AI app here and removes the key. Then revoke the
 computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 
 ## The menu
 
-```
-  WorkTrust CLI 0.11.8
-  Connected as you@example.com · Remote Agent on
+On a computer that is not connected yet:
 
->  1  Update WorkTrust · up to date (0.11.8)   npx worktrust update
-        Brings this computer's hook and AI-app doors to this version again; your key and pairing stay.
-   2  Check this computer                      npx worktrust
-        Shows what is coupled here and finishes what still waits; a change asks first.
+```
+  WorkTrust CLI 0.11.9
+  Not connected yet
+
+>  1  Connect this computer    npx worktrust connect
+   2  Preserve evidence ›      npx worktrust preserve …
+   3  Help · all commands      npx worktrust help
+   4  Quit                     q
+
+  Asks before it writes; your browser signs in to WorkTrust.
+
+  ↑/↓ move · Enter open · Esc quit · 1-9 jump
+```
+
+Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
+
+```
+  WorkTrust CLI 0.11.9
+  Account        you@example.com
+  This computer  imac · connected since 2026-11-03
+  Remote Agent   approved, 2 connections
+  Sharing        session hook on · AI apps on (7) · Remote Agent approved
+
+   1  Update WorkTrust · up to date (0.11.9)   npx worktrust update
+>  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
-        Opens the choices for steering this computer's agents from your phone. Nothing changes yet.
    4  Import earlier history ›                 npx worktrust history …
-        Opens the ways to send earlier sessions as history. Each one shows its plan and asks first.
    5  Preserve evidence ›                      npx worktrust preserve …
-        Opens the ways to keep your AI history on this computer. Nothing is sent.
-   6  WorkTrust in your AI apps: On            npx worktrust mcp off
-        Takes the WorkTrust door out of every AI app here; the session hook keeps measuring your hours.
+   6  Sharing ›                                npx worktrust mcp …
    7  Status                                   npx worktrust status
-        Shows the key, the hook, the door and what this computer measured. It only reads.
    8  Disconnect this computer                 npx worktrust disconnect
-        Takes WorkTrust out of every AI app here and ends this computer's key. It asks first.
    9  Help · all commands                      npx worktrust help
-        Lists every command and option. Tip: npx -y worktrust skips npm's own "Ok to proceed?" question.
       Quit                                     q
-        Leaves the menu. Nothing keeps running.
 
-  ↑/↓ move · Enter open · q quit · 1-9 jump
+  Shows what is coupled here and finishes what waits.
+
+  ↑/↓ move · Enter open · Esc quit · 1-9 jump
 ```
+
+One row per item, and no row moves when you move. A row that cannot be chosen is dimmed and says why in words: Update
+when there is nothing to update, and most of Remote Agent until this computer is approved for it. The summary above the
+menu comes from this computer's own files; it never shows the key. Sharing › says what this computer sends and holds the
+switches that exist: `mcp off | on` and Remote Agent's pause. Remote Agent › Connections lists every linked phone and
+browser, and disconnecting one runs `remote disconnect` with its typed confirmation. Esc quits at the top and goes back
+one level below it.
 
 Every item shows the command it runs, so you can type it next time. Without a terminal (a script, a hook, the MCP door)
 there is no menu and nothing waits for a key.
@@ -98,7 +120,7 @@ there is no menu and nothing waits for a key.
 |---|---|
 | `npx worktrust` | In your terminal: the menu. Without a terminal, or with any option: connects this computer (shows the plan, asks, you approve in your browser), or shows what is connected. |
 | `npx worktrust connect` | Connects this computer again, also when it is already connected. Asks first. |
-| `npx worktrust update` | Brings this computer onto the newest CLI: same key, no new pairing. Something new is asked about. |
+| `npx worktrust update` | Brings this computer onto the newest CLI: same key, no new pairing. Something new is asked about. Already there with nothing waiting: says so and changes nothing (`--force` sets it up again). |
 | `npx worktrust history` | Sends this computer's earlier sessions as history. `--rebuild` measures them again, `--export <path>` reads a ChatGPT or Claude export, `--from-archive` and `--from-folder <dir>` read your own copies. Always shows the plan and asks. |
 | `npx worktrust disconnect` | Takes WorkTrust out of every AI app here. Asks first. |
 | `npx worktrust status` | Shows what is connected here. It only reads. |
@@ -382,7 +404,7 @@ agent runs it makes no difference: `preserve` writes to your own user's places (
 `~/AI-Evidence`), so every terminal and agent on this computer under your user reaches the same archive, and lines
 from different versions sit side by side, each naming the version that measured it. Another user on the same computer
 gets an archive of their own. A coupled computer's session hook runs from its own copy in `~/.worktrust` and changes
-with `npx worktrust@latest update`, or (from 0.10.37, installed from npm) when you turn CLI active back on for that
+with `npx -y worktrust@latest update`, or (from 0.10.37, installed from npm) when you turn CLI active back on for that
 computer in WorkTrust › Sources: it then updates itself, verified, the next time WorkTrust runs there (SECURITY.md,
 "Updating itself when you turn it on"). The WorkTrust app says when a newer version is out.
 

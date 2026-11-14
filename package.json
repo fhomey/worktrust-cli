@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.11.7",
+  "version": "0.11.8",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -24,6 +24,7 @@
     "stack-rules.mjs",
     "runtime-install.mjs",
     "README.md",
+    "CHANGELOG.md",
     "SECURITY.md",
     "LICENSE",
     "AGENTS.md",
@@ -95,6 +96,8 @@
     "folder-picker.mjs",
     "cli-menu.mjs",
     "cli-menu-remote.mjs",
+    "cli-colour.mjs",
+    "node-guide.mjs",
     "remote-countdown.mjs",
     "remote-connections.mjs",
     "remote-admin.mjs"

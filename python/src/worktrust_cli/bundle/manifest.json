@@ -1,10 +1,11 @@
 {
-  "version": "0.11.7",
+  "version": "0.11.8",
   "files": {
     "chat-exports.mjs": "f026c5a063f62c22ba6f25474a9d9fdbb6074beebbfe1faff2a876c437a1a000",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
-    "cli-menu-remote.mjs": "b7dc18ced2b9cedec5e2263f42265973fcb96b16e34b88ac91e8b53c8be62c68",
-    "cli-menu.mjs": "6cf2b7b510bd4c81818885afddb5da0e9c60c4bcdf36280497f7ba3d4ebf30e6",
+    "cli-colour.mjs": "fa16b61ad179999c5c5365255182acf69bcba1eb5f5ce7b0e1e18c11f56130ae",
+    "cli-menu-remote.mjs": "6477b3c6986290a9ac70f1f7310abcc0415dfbe9e08f412c48dd41b60c4b6c44",
+    "cli-menu.mjs": "566a8cb60a050a506101b2900358d31c05907d66565ff194cd8efe9039e04ca5",
     "commit-rules.mjs": "e94cc32a5415f6d9e978145ab9505ac4ae0bac9431e6e9104b9b37155260b51f",
     "config-edits.mjs": "527a7674f9d52b284bfda3b8089eb4b930a709bf14aedbec7f6eef1e59ef52ee",
     "count-behaviour.mjs": "06b0ecbc222087160dc64c0b302391631e8e799038364c317c6cd28449c5044d",
@@ -17,6 +18,7 @@
     "history-outbox.mjs": "85c70389effc5b4ec9d9b33af9192314e67f47af2752515b42a7959344ce2354",
     "history-progress.mjs": "dcc25ee94b727f2605a763349a4d8764640335d6cf0043fb6108cebeed16dcb9",
     "log-session.mjs": "167fe3718415fe690c9e4f7a3a993520e8c652edcf61184cc14cfec2db67d7bc",
+    "node-guide.mjs": "5bf52c5028b07a80ec4d41be365eb025dfce74328f41f928a26ce6737b1f9cc4",
     "orchestration-contract.mjs": "ec08f303a166365b99e70b675de4cfe76c6156c2567e14b5569f6d992f0231b7",
     "orchestration-evidence.mjs": "d0d06cecf0eb08e5c6e653c62a4f45b1eddf2119c2acb8341056b34f488d214a",
     "orchestration-report.mjs": "d4e0a9ad8e4a01b462d22c6b1866aac291565c533ff476085d3367cb6d59bc1b",
@@ -38,7 +40,7 @@
     "remote-changes.mjs": "2141fece4961a5bc1bb1b046f78222812617457b1ba6452275eac6a897e62e19",
     "remote-claude-events.mjs": "58822471203c6a1b66cf81c115c4d713657c3dea5c7b98df959f894ee5b2e704",
     "remote-claude-progress.mjs": "2ca626d3dbc16d8d570abe1df6477b7e44ffb43c1d9145228ec5ea1928e415ca",
-    "remote-cli.mjs": "33a6194e0653b78cf075edd2aae083179af2ca9aeae190a225aeeabb03a43f67",
+    "remote-cli.mjs": "651a7f16e7475029985007ea97f4b838f8378ab620d3f3c2ab718da155fce94d",
     "remote-coalesce.mjs": "cb0967d9cfe81e3892bcade8349d6814db98be8c2adbdb54df0b8d1b142f65d1",
     "remote-codex-events.mjs": "58657d6070a50c837737cb85f5a1eaf9c2cbc4e1adfe3e970748ab3b2af94631",
     "remote-connections.mjs": "e24ff04ed61647e164b6f055d4f691366f3204fe445140afc5f34abbed5d4080",
@@ -84,6 +86,6 @@
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
     "transcript-readers.mjs": "e9f20415c2b5d62a09f35a63075002ebd1da56edb32f242d52822d58ecbd8ac3",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "a42bf1c5ad9b74bae6109eb6ac3259ded36c4fd26a4ee72fbf67076e0e849177"
+    "worktrust.mjs": "81a0b8f83b5c0bbbd8c4599071585520cb6ad1ebaa2e5824c51bb5f6dd0ab6e8"
   }
 }

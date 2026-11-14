@@ -49,6 +49,7 @@ import { askLine, connectionsCommand, disconnectCommand, removePhones } from "./
 import { installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { qrMatrix, renderQr } from "./remote-qr.mjs";
 import { webSocketAvailable } from "./remote-transport.mjs";
+import { guideToNode, remoteStopsHere } from "./node-guide.mjs";
 import { inventory } from "./remote-inventory.mjs";
 import { allowCommand, parsePipelineConfig, PIPELINE_FILE } from "./remote-pipeline-config.mjs";
 import { pipelineState, projectReviewHash, readProjectFile } from "./remote-pipeline.mjs";
@@ -77,7 +78,6 @@ function needPaired(io) {
 
 /** `remote app` | `remote web`: the two roads to approve this computer; each does all of what `remote enable` did. */
 async function approve(io, road) {
-  if (!webSocketAvailable()) io.fail(`remote needs Node 22.4 or later for its connection (this is ${process.versions.node}); the Python package bundles one`);
   const settings = loadSettings();
   const gateway = io.flag("gateway") ?? process.env.WORKTRUST_REMOTE_GATEWAY ?? settings.gateway;
   if (gateway && !P.isGatewayOrigin(gateway)) io.fail("--gateway is an origin: wss://host[:port], or ws://127.0.0.1:<port> for the dev relay");
@@ -299,6 +299,7 @@ function status(io) {
 
 export async function remoteCommand(args, io) {
   const [sub = "help", ...rest] = args;
+  if (remoteStopsHere(sub)) return guideToNode(io, ["remote", ...args], { connected: io.connected?.() }); // Node before 22.4: node-guide.mjs
   if (sub === "app" || sub === "web") return approve(io, sub);
   if (sub === "pair") return pair(io);
   if (sub === "status") return status(io);

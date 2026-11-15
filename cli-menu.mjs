@@ -51,8 +51,8 @@ export const muted = (text) => paint.dim(text);
  * key and each return from a command left one more copy. Now draw() remembers how many lines the menu took and the next
  * draw goes the cursor up that many, clears to the end of the screen and writes the new lines, in ONE write (no flicker).
  * erase() takes the menu's own lines away before anything else speaks (a command's output, a question), so what stays in
- * the scrollback is what happened, never a menu. A resize cannot trust the count (lines may have wrapped): reset() clears
- * the visible screen once and the menu is drawn once. No line ever wraps: draw() cuts each to the terminal's width.
+ * the scrollback is what happened, never a menu. A resize takes the menu's own counted lines away and draws it once more;
+ * nothing above the menu (a command's output, a QR still waiting to be scanned) is ever cleared or written over. No line ever wraps: draw() cuts each to the terminal's width.
  */
 export function createTerminal(input = process.stdin, output = process.stdout) {
   let raw = false, drawn = 0;
@@ -60,7 +60,11 @@ export function createTerminal(input = process.stdin, output = process.stdout) {
   const up = () => (drawn > 0 ? `\x1b[${drawn}A\r\x1b[J` : "");
   const draw = (lines) => { const { columns } = size(); output.write(`${up()}${lines.map((line) => clip(line, columns - 1)).join("\n")}\n`); drawn = lines.length; };
   const erase = () => { if (drawn > 0) output.write(up()); drawn = 0; };
-  const reset = () => { output.write("\x1b[H\x1b[J"); drawn = 0; };
+  // A RESIZE TAKES ONLY THE MENU'S OWN LINES (owner, 2026-11-14: a QR cut off halfway). It cleared the visible screen from its
+  // top (`ESC[H ESC[J`), and with it whatever a command had printed above the menu. Every line is clipped to the width, so a
+  // narrower terminal can only fold the menu into MORE rows than `drawn`: going up `drawn` rows lands inside the menu at worst
+  // (an old line may stay above the new menu), never in the output above it.
+  const reset = () => erase();
   /** Text that is not the menu (a reason, a result): the menu's lines go first, and the next draw starts below it. */
   const write = (text) => { erase(); output.write(text); };
   const enter = () => { emitKeypressEvents(input); if (input.isTTY && !raw) { input.setRawMode(true); raw = true; } input.resume(); output.write("\x1b[?25l"); };
@@ -169,15 +173,17 @@ let busy = false;
 /**
  * Run one direct command with the terminal handed over, then wait for a key before the menu comes back. The menu's own
  * lines are taken away first, so the scrollback reads: the command, its output, how it ended. The menu is then drawn once
- * below (the next draw starts fresh).
+ * below (the next draw starts fresh). `pause: false` (0.11.10, look): no key is waited for and the code comes back, so a
+ * list can follow the command's output at once.
  */
-export async function runShown(term, io, args, label = null) {
+export async function runShown(term, io, args, label = null, { pause = true } = {}) {
   term.restore();
   busy = true;
   term.write(`  ${muted(`› npx worktrust ${args.join(" ")}`.trimEnd())}${label ? `   ${label}` : ""}\n\n`);
   let code = 1;
   try { code = await io.runCli(args); } catch { code = 1; } finally { busy = false; }
   term.enter();
+  if (!pause) return code;
   term.write(`\n  ${code === 0 ? paint.green("✓ Done.") : paint.yellow("! It ended with a message above.")} ${muted("Press any key for the menu.")}\n`);
   const k = await term.anyKey();
   return !(k.ctrl && k.name === "c");
@@ -228,23 +234,30 @@ export function headerLines(state) {
   return [
     title,
     row("Account", state.account ?? "not recorded: run Check this computer"),
+    row("Account type", PLAN_WORDS[state.plan] ?? "not known"), // the server's answer (api/cli/door), never guessed here
     row("This computer", `${host.length > 28 ? `${host.slice(0, 27)}…` : host} · connected since ${/^\d{4}-\d{2}-\d{2}/.test(String(state.since ?? "")) ? String(state.since).slice(0, 10) : "-"}`),
-    row("Remote Agent", remote.links === null || ["not set up", "off"].includes(remote.word) ? remote.word : `${remote.word}, ${remote.links} connection${remote.links === 1 ? "" : "s"}`),
+    row("Remote Agent", `${remote.links === null || ["not set up", "off"].includes(remote.word) ? remote.word : `${remote.word}, ${remote.links} connection${remote.links === 1 ? "" : "s"}`}${state.remoteAccess === "premium_required" ? " · needs Premium" : ""}`),
     row("Sharing", `session hook ${known(state.hook, "on", "not installed")} · AI apps ${state.door === "off" ? "off" : state.door === "on" ? `on${Number.isInteger(state.apps) ? ` (${state.apps})` : ""}` : "not known"} · Remote Agent ${remote.word === "not set up" ? "off" : remote.word}`),
   ];
 }
 
+/** The account's plan in words (owner, 2026-11-14), as WorkTrust answered it; anything else, or no answer, is "not known". */
+const PLAN_WORDS = { free: "Free", premium: "Premium" };
 const HELP = (open) => ({ label: "Help · all commands", hint: "npx worktrust help", info: "Lists all commands. npx -y worktrust skips npm's question.", run: () => open(["help"]) });
 const QUIT = { label: "Quit", hint: "q", info: "Leaves the menu. Nothing keeps running.", quit: true };
 const PRESERVE = (sub, info) => ({ label: "Preserve evidence ›", hint: "npx worktrust preserve …", info, run: () => sub.preserve?.() });
+/** 0.11.10 (owner, 2026-11-14): the first row before sign-in; the table, then what to do with it (cli-look.mjs lookMenu). */
+const LOOK = (sub) => ({ label: "Look at this computer", hint: "npx worktrust look", info: "Reads what your AI apps recorded here. Nothing is sent.", run: () => sub.look?.() });
 
 /**
  * THE FIRST MENU (0.11.9, owner 2026-11-14): what a computer that is not connected can do, and nothing that needs a
  * connected one (no Update, Remote Agent, Import, AI apps switch, Status, Disconnect). Preserve needs no account, no key
- * and no network at any of its levels (preserve.mjs; worktrust.mjs loads no key for it), so all of it stays.
+ * and no network at any of its levels (preserve.mjs; worktrust.mjs loads no key for it), so all of it stays. 0.11.10: Look at this computer comes
+ * first, the table of what the AI apps recorded here (`look`, reads only), then Connect or Preserve with it.
  */
 export function firstItems(open = () => true, sub = {}) {
   return [
+    LOOK(sub),
     { label: "Connect this computer", hint: "npx worktrust connect", info: "Asks before it writes; your browser signs in to WorkTrust.", run: () => open(["connect"]) },
     PRESERVE(sub, "Keep your AI history here. No account; nothing is sent."),
     HELP(open), QUIT,
@@ -253,9 +266,9 @@ export function firstItems(open = () => true, sub = {}) {
 
 /** Why the first menu still stands after Connect ran, in one line, by how the command ended (0 without a key: a No or a dry run). */
 export function connectReason(code) {
-  if (code === 0) return "Connect stopped before the sign-in; nothing was written. 1 tries again.";
-  if (code === 130) return "Connect was cancelled; this computer is not connected. 1 tries again.";
-  return "Connect ended with the message above; not connected. 1 tries again.";
+  if (code === 0) return "Connect stopped before the sign-in; nothing was written. 2 tries again.";
+  if (code === 130) return "Connect was cancelled; this computer is not connected. 2 tries again.";
+  return "Connect ended with the message above; not connected. 2 tries again.";
 }
 
 /**
@@ -277,7 +290,8 @@ export function topItems(state, open = () => true, sub = {}) {
     // Node before 22.4 has no WebSocket (0.11.8): the item stays, says why, and Enter opens the ways forward, not the levels.
     state.remoteBlocked
       ? { label: "Remote Agent", note: { text: "needs Node 22.4+", tone: "yellow" }, hint: "npx worktrust remote …", info: REMOTE_NEEDS, run: () => open(["remote"]) }
-      : { label: "Remote Agent ›", hint: "npx worktrust remote …", info: "Steer this computer's agents from your phone.", run: () => sub.remote?.() },
+      // REMOTE AGENT IS PART OF PREMIUM (owner, 2026-11-14): only the server's own `premium_required` locks it; the row stays.
+      : { label: "Remote Agent ›", hint: "npx worktrust remote …", run: () => sub.remote?.(), ...(state.remoteAccess === "premium_required" ? { note: { text: "Premium", tone: "yellow" }, info: "Part of Premium. Enter shows how to upgrade." } : { info: "Steer this computer's agents from your phone." }) },
     { label: "Import earlier history ›", hint: "npx worktrust history …", info: "Send earlier sessions as history. Each way asks first.", run: () => sub.history?.() },
     PRESERVE(sub, "Keep your AI history on this computer. Nothing is sent."),
     { label: "Sharing ›", hint: "npx worktrust mcp …", info: "What this computer sends, and the switches for it.", run: () => sub.sharing?.() },
@@ -296,13 +310,13 @@ export async function menuLoop(term, io, levels) {
   let last = null, state = null; // the command the top level ran last and how it ended; this computer's state as last read
   const read = async () => (state = { ...(await busyWith("Reading this computer's state", () => io.state())), remoteBlocked: typeof globalThis.WebSocket !== "function" });
   // A deeper level reads the state again after each of its commands (inner.state), so the head above it is true at once.
-  const inner = { runCli: (args) => io.runCli(args), state: read };
+  const inner = { runCli: (args) => io.runCli(args), state: read, openUrl: (url) => io.openUrl?.(url) };
   for (;;) {
     await read();
     const why = !state.connected && last?.args[0] === "connect" ? connectReason(last.code) : null;
     const header = () => [...headerLines(state), ...(why ? [`  ${paint.yellow(`! ${why}`)}`] : [])];
     const open = (args) => { const ran = { args, code: 1 }; last = ran; return runShown(term, { runCli: async (given) => (ran.code = await io.runCli(given)) }, args); };
-    const items = topItems(state, open, Object.fromEntries(["remote", "history", "preserve", "sharing"].map((name) => [name, () => levels[`${name}Menu`](term, inner, header)])));
+    const items = topItems(state, open, { ...Object.fromEntries(["remote", "history", "preserve", "sharing"].map((name) => [name, () => levels[`${name}Menu`](term, inner, header)])), look: async () => (await import("./cli-look.mjs")).lookMenu(term, inner, levels) });
     const picked = await choose(term, { header, items, top: true });
     if (picked === "quit" || picked === "back" || picked.item.quit) break;
     last = null;
@@ -310,7 +324,7 @@ export async function menuLoop(term, io, levels) {
   }
 }
 
-/** The top of the menu. `io`: { runCli(args) → Promise<code>, state() → { version, installed, latest, latestKnown, account, connected, door, host, since, hook, apps } }. */
+/** The top of the menu. `io`: { runCli(args) → Promise<code>, state() → { version, installed, latest, latestKnown, account, connected, door, host, since, hook, apps, plan, remoteAccess, upgrade }, openUrl(url) }. */
 // (remoteBlocked is added here: whether this Node lacks the WebSocket Remote Agent needs.)
 export async function runMenu(io) {
   paint = coloursFor(process.stdout);

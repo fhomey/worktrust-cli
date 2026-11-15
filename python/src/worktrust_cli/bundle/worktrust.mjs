@@ -83,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.9";
+const CLI_VERSION = "0.11.10";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -119,9 +119,9 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-admin.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
+const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "cli-look.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-admin.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
-const IMPORTED = new Set(["project-modes.mjs", "transcript-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
+const IMPORTED = new Set(["project-modes.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
 const BUNDLED = SCRIPTS.every((name) => existsSync(join(HERE, name)));
 const PLACEHOLDER = `wt_${"0".repeat(43)}`;
@@ -1430,19 +1430,34 @@ async function measuredHere() {
   const read = await busyWith("Counting what this computer measured", () => run(hook, ["--evidence-summary"], "", true, { WORKTRUST_MCP_URL: "", WORKTRUST_HOOK_INPUT: "" }));
   let m = null;
   try { m = JSON.parse(read.out.trim().split("\n").filter((text) => text.startsWith("{")).pop()); } catch { return; }
-  if (!m || !m.stretches) { say("  Measured here, last 30 days: no finished work stretch yet."); return; }
-  const of = (part, whole, one, many) => `${part} of ${whole} ${whole === 1 ? one : many}`;
-  say();
-  say(`  Measured here, last 30 days: ${m.stretches} work stretch${m.stretches === 1 ? "" : "es"} (the hours are WorkTrust's: see the app)`);
-  if (m.delivered) say(`    verified before delivery   ${of(m.verified_first, m.delivered, "stretch that delivered", "stretches that delivered")}`);
-  if (m.failures) say(`    recovered failures         ${of(m.recovered, m.failures, "failed tool call", "failed tool calls")} (${m.blind_retries} retried unchanged)`);
-  if (m.steers) say(`    steering that worked       ${of(m.effective_steers, m.steers, "time you stepped in", "times you stepped in")}`);
-  if (m.refused || m.guard_denied) say(`    refused                    ${m.refused} by you · ${m.guard_denied} by a guard`);
-  if (m.planned) say(`    planned                    ${m.planned} stretch${m.planned === 1 ? "" : "es"} with a to-do list`);
-  if (m.files) say(`    tests among changed files  ${of(m.test_files, m.files, "file", "files")}`);
-  const tiers = Object.entries(m.complexity ?? {}).sort();
-  if (tiers.length) say(`    task complexity            ${tiers.map(([tier, n]) => `${tier} ${n}`).join(" · ")}`);
-  say("  Sent with each stretch as kinds and counts, never text. Keep your own copy: npx worktrust@latest preserve");
+  // 0.11.10: the lines are cli-look.mjs's measuredLines (pure; the changed files and the classes now say what they count).
+  const { measuredLines } = await import("./cli-look.mjs");
+  for (const line of measuredLines(m)) say(line);
+  if (m?.stretches) say("  Each AI app's sessions on this computer, counted: npx worktrust look");
+}
+
+/**
+ * LOOK AT THIS COMPUTER (`npx worktrust look`, 0.11.10; owner, 2026-11-14): per AI app the sessions its own files hold and
+ * their first and last day (cli-look.mjs). It reads no key, writes nothing and calls no network: not the registry either
+ * (look is not a RELAY_COMMAND). In a person's own terminal (menuWanted) a short list follows, each row a command as a child.
+ */
+async function look(agentShell) {
+  if (!existsSync(join(HERE, "cli-look.mjs"))) fail("worktrust look needs the complete WorkTrust package. Nothing was read.");
+  const { lookAt, lookLines, lookNext } = await import("./cli-look.mjs");
+  const live = Boolean(process.stderr.isTTY), tell = (words) => process.stderr.write(live ? `\r\x1b[K  ${words}` : `  ${words}\n`);
+  tell("Looking for AI apps…");
+  const found = lookAt({ progress: (name) => tell(`Reading ${name}…`) });
+  if (live) process.stderr.write("\r\x1b[K");
+  for (const line of lookLines(found, { columns: process.stdout.columns || 80 })) say(line);
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return;
+  const menu = await import("./cli-menu.mjs");
+  if (!menu.menuWanted({ args: [], env: process.env, stdinTTY: true, stdoutTTY: true, agentShell })) return;
+  const runCli = (cliArgs) => new Promise((resolve) => {
+    const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", cliArgs)], { stdio: "inherit", env: { ...process.env, WORKTRUST_MENU: "off", WORKTRUST_RELAYED: "1" } });
+    child.on("error", () => resolve(1));
+    child.on("exit", (code, signal) => resolve(code ?? (signal ? 130 : 1)));
+  });
+  process.exitCode = await lookNext({ runCli }, { connected: existsSync(KEY_FILE) });
 }
 
 /** Claude Code's `cleanupPeriodDays` (its default 30), or null without Claude Code here. Read only: preserve.mjs changes it, on a yes. */
@@ -1578,6 +1593,23 @@ async function followDoorWish(key) {
   await accepted(key.url, key.token, key.device, doorModeAgent());
 }
 /**
+ * THE ACCOUNT'S TYPE, FOR THE MENU (owner, 2026-11-14; 0.11.10): the same signed ask as followDoorWish, read-only here (no
+ * wish is acted on), three seconds at most. `account` is WorkTrust's own answer for this key's owner: `plan` (free | premium,
+ * else not known), `remote` (open | premium_required, else not known: only premium_required locks Remote Agent in the menu)
+ * and `upgrade`, kept only when it is an address on this key's own WorkTrust. Offline or refused: null, which claims nothing.
+ */
+async function askAccount(key) {
+  if (!key?.device) return null;
+  try {
+    const url = new URL("/api/cli/door", key.url).href, body = "{}";
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, "user-agent": `worktrust-cli/${CLI_VERSION}`, ...proof(key.device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(3000) });
+    const account = response.ok ? (await response.json())?.account : null;
+    if (!account || typeof account !== "object") return null;
+    let upgrade = null; try { const at = new URL(account.upgrade); upgrade = at.origin === new URL(key.url).origin && /^https?:$/.test(at.protocol) ? at.href : null; } catch { upgrade = null; }
+    return { plan: ["free", "premium"].includes(account.plan) ? account.plan : null, remoteAccess: ["open", "premium_required"].includes(account.remote) ? account.remote : null, upgrade };
+  } catch { return null; }
+}
+/**
  * CLI ACTIVE, PER COMPUTER (owner, 2026-11-05; 0.10.37). The owner may pause this computer's CLI from Sources: the same answer
  * from api/cli/door carries `measure` (active | paused) and its moment. A wish newer than the last change here is kept in
  * ~/.worktrust/measure.json (0600); while paused the hook measures nothing and sends nothing and the bridge forwards nothing.
@@ -1706,6 +1738,7 @@ function help() {
   say("                         days this computer's own sessions lack, reconstructed, never verified hours (asks first)");
   say("  worktrust disconnect   take WorkTrust out of every AI app here (asks first)");
   say("  worktrust status       what is coupled here");
+  say("  worktrust look         what your AI apps recorded here: sessions per app and their first and last day; reads only, sends nothing");
   say("  worktrust project      a folder's mode: exclude (nothing read), confidential (hours and tokens count, no name,");
   say("                         branch, path or commit sent) or normal; `project list` shows them (default folder: here)");
   say("  worktrust remote       steer this computer's agents from your phone (opt-in, its own key, never your AI Hours):");
@@ -1787,6 +1820,7 @@ if (command === "default" && BUNDLED && (await import("./cli-menu.mjs")).menuWan
   try { keyStore.load(); }
   catch { fail("The local WorkTrust key file is unsafe or damaged, or the OS vault is locked or unavailable. Unlock your OS vault and retry. Do not delete the key file or reset the keychain."); }
   let latest, latestKnown = false; // 0.11.9: whether the registry answered at all (no answer is not "up to date")
+  let account = null, accountAt = 0; // 0.11.10: the account's type and Remote Agent's access, asked again after a minute or an upgrade
   const runCli = (cliArgs) => new Promise((resolve) => {
     const child = spawn(moduleExecutable(HERE), [...moduleArgs(HERE, "worktrust.mjs", cliArgs)], { stdio: "inherit", env: { ...process.env, WORKTRUST_MENU: "off", WORKTRUST_RELAYED: "1", ...(has("no-color") || has("no-colour") ? { NO_COLOR: "1" } : {}) } });
     child.on("error", () => resolve(1));
@@ -1795,18 +1829,21 @@ if (command === "default" && BUNDLED && (await import("./cli-menu.mjs")).menuWan
   const state = async () => {
     if (latest === undefined) { const v = await newestVersion(); latestKnown = v !== null; latest = v && semverNewer(v, CLI_VERSION) ? v : null; }
     let key = null; try { key = keyStore.load(); } catch { key = null; }
+    if (key && Date.now() - accountAt > 60_000) { account = await askAccount(key); accountAt = Date.now(); }
     // `installed` is read again at every ask (0.11.8): the menu's Update item says "up to date" the moment an update ends.
     // THE SUMMARY'S FACTS (0.11.9): what this computer's own files say, never the key: its name, the day it was coupled, whether
     // the session hook stands in Claude Code's settings, and how many AI apps' doors the person agreed to (the consent record).
     let apps = null; try { apps = Object.keys(JSON.parse(readPrivateFile(CONSENT_FILE) ?? "null")?.entries ?? {}).filter((name) => name.startsWith("door:")).length; } catch { apps = null; }
     return { version: CLI_VERSION, installed: stableVersion(), latest, latestKnown, connected: Boolean(key), account: key?.account ?? null, door: doorOff() ? "off" : "on",
-      host: hostname().replace(/\.local$/i, ""), since: key?.coupledAt ?? null, hook: sessionHookHere(), apps };
+      host: hostname().replace(/\.local$/i, ""), since: key?.coupledAt ?? null, hook: sessionHookHere(), apps,
+      plan: key ? account?.plan ?? null : null, remoteAccess: key ? account?.remoteAccess ?? null : null, upgrade: key ? account?.upgrade ?? null : null };
   };
-  return (await import("./cli-menu.mjs")).runMenu({ runCli, state });
+  const openUrl = (url) => { openBrowser(url); accountAt = 0; }; // after an upgrade, the next read asks the account again
+  return (await import("./cli-menu.mjs")).runMenu({ runCli, state, openUrl });
 }
 if (await relayToNewest()) return;
 
-if (!["version", "help", "preserve", "project"].includes(command)) {
+if (!["version", "help", "preserve", "project", "look"].includes(command)) { // 0.11.10: look reads no key (it reads, prints and writes nothing)
   try { keyStore.load(); }
   catch { fail("The local WorkTrust key file is unsafe or damaged, or the OS vault is locked or unavailable. Upload stopped. Unlock your OS vault and retry. Do not delete the key file or reset the keychain."); }
 }
@@ -1831,6 +1868,7 @@ else if (command === "codex") await offerCodex();
 else if (command === "antigravity") await offerAntigravity();
 else if (command === "disconnect") await disconnect();
 else if (command === "status") await status();
+else if (command === "look") await look(agentShell);
 else if (command === "project") { if (!projectCommand) fail("worktrust project needs the complete WorkTrust package. Nothing was changed."); projectCommand(args.slice(args.indexOf("project") + 1).filter((arg) => !arg.startsWith("--")), { say, fail }); }
 else if (command === "remote") await (await import("./remote-cli.mjs")).remoteCommand(args.slice(args.indexOf("remote") + 1).filter((a, i, all) => !a.startsWith("--") && !(i > 0 && ["--gateway", "--origin"].includes(all[i - 1]))), { say, fail, ask, has, flag, connected: () => { try { return Boolean(keyStore.load()); } catch { return false; } }, origin: ORIGIN, os: OS, openBrowser, prepare: async () => { await prepareBundledRuntime(); return { node: NODE, nodeArgs: [...NODE_FLAGS, ...NODE_ARGS], entry: STABLE }; } });
 else if (command === "preserve") await preserve();

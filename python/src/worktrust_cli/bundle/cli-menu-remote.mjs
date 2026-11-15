@@ -9,7 +9,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { choose, remoteState, runShown, typed } from "./cli-menu.mjs";
+import { choose, muted, remoteState, runShown, typed } from "./cli-menu.mjs";
 import { makeProjectsFolder, pickFolder, pickerCommand, suggestedFolders } from "./folder-picker.mjs";
 import { connections } from "./remote-connections.mjs";
 import { loadIdentity, loadProjects, loadRoots, loadSettings } from "./remote-store.mjs";
@@ -164,8 +164,17 @@ export function approval() { try { return Boolean(loadIdentity()); } catch { ret
  * computer's remote keys (remote-cli.mjs needPaired, remote-settings.mjs applyRules), and no phone can be linked, so there
  * is no connection to list and nothing to pause. Allowed modes is a local setting and Status only reads: both stay.
  * APPROVED: Link a phone first, and approving again stays (new keys). NOT KNOWN: every row can be chosen and the title says so.
+ *
+ * PART OF PREMIUM (owner, 2026-11-14; docs/remote-agents/ISSUER.md §12): when WorkTrust itself answered `premium_required`
+ * (`access`, from api/cli/door: the switch on and the account Free), the first row is "Upgrade to Premium ›" and every other
+ * row stays visible and cannot be chosen (the one disabled-row mechanism). Any other answer, or none, is the list as above.
  */
-export function remoteItems(approved, paused, act = {}) {
+export function remoteItems(approved, paused, act = {}, access = null) {
+  if (access === "premium_required") return [
+    { label: "Upgrade to Premium ›", hint: act.upgradeHint ?? undefined, info: "Remote Agent is part of Premium. Opens the upgrade page.", run: act.upgrade },
+    ...remoteItems(approved, paused).filter((item) => !item.back).map((item) => ({ label: item.label, hint: item.hint, info: item.info, disabled: true, quiet: "Part of Premium: upgrade first.", note: { text: "Premium", tone: "dim" } })),
+    BACK,
+  ];
   const wait = approved === false ? { disabled: true, quiet: "Approve this computer first.", note: { text: "not yet", tone: "dim" } } : {};
   const approve = { label: approved ? "Approved ✓ · approve again ›" : "Approve this computer ›", hint: approved ? "npx worktrust remote app --repair" : "npx worktrust remote app | web", info: approved ? "Approve again: new keys, and linked phones link again." : "Needed once: your account allows steering this computer.", run: act.approve };
   const link = { label: "Link a phone (QR here)", hint: "npx worktrust remote pair", info: "Shows a QR that links a phone to this computer.", run: act.link, ...wait };
@@ -181,16 +190,30 @@ export function remoteItems(approved, paused, act = {}) {
   ];
 }
 
+/**
+ * "Upgrade to Premium ›" (owner, 2026-11-14): the address WorkTrust answered, opened in the browser AND printed, for a
+ * terminal without one (SSH). No address: where to find it in words. The account is asked again at the next read.
+ */
+export async function showUpgrade(term, io, url) {
+  term.write(url ? `\n  Upgrade to Premium: ${url}\n  It opens in your browser; on another device, open the address above.\n` : "\n  Upgrade to Premium in WorkTrust: Settings › Plan & billing.\n");
+  if (url) io.openUrl?.(url);
+  term.write(`  ${muted("Press any key for the menu.")}\n`);
+  const k = await term.anyKey();
+  return !(k.ctrl && k.name === "c");
+}
+
 /** Remote Agent ›. The rows are read again after every command, so an approval made here opens the other steps at once. */
-export function remoteMenu(term, io, header) {
-  const title = () => (approval() === null ? "Remote Agent · its state could not be read" : "Remote Agent");
+export async function remoteMenu(term, io, header) {
+  let state = (await io.state?.()) ?? null; // the account's answer (plan, remoteAccess, upgrade), read again after every command below
+  const reading = { ...io, state: async () => (state = (await io.state?.()) ?? null) };
+  const title = () => (state?.remoteAccess === "premium_required" ? "Remote Agent · part of Premium" : approval() === null ? "Remote Agent · its state could not be read" : "Remote Agent");
   return level(term, header, title, () => {
     const approved = approval(), paused = (() => { try { return loadSettings().paused !== null; } catch { return false; } })();
     // The two roads; one that leaves this computer approved returns to the list above, which now opens on Link a phone.
     const road = (which) => async () => ((await runShown(term, io, ["remote", which, ...(approved ? ["--repair"] : [])])) === false ? false : approved === false && approval() === true ? "back" : true);
     return remoteItems(approved, paused, {
       approve: () => level(term, header, approved ? "Approve this computer again (new keys)" : "Approve this computer", () => [
-        { label: "With the WorkTrust app", hint: `npx worktrust remote app${approved ? " --repair" : ""}`, info: "Shows a QR; scan it with the WorkTrust app and approve.", run: road("app") },
+        { label: "With the WorkTrust app", hint: `npx worktrust remote app${approved ? " --repair" : ""}`, info: "One QR: the app approves and links this phone.", run: road("app") },
         { label: "In the browser", hint: `npx worktrust remote web${approved ? " --repair" : ""}`, info: "Opens WorkTrust in your browser, where you approve.", run: road("web") },
         BACK,
       ], io),
@@ -198,8 +221,9 @@ export function remoteMenu(term, io, header) {
       projects: () => projectsMenu(term, io, header), roots: () => rootsMenu(term, io, header), modes: () => modesMenu(term, io, header), connections: () => connectionsMenu(term, io, header),
       pause: () => runShown(term, io, ["remote", paused ? "resume" : "pause"]),
       status: () => runShown(term, io, ["remote", "status"]),
-    });
-  }, io);
+      upgrade: () => showUpgrade(term, io, state?.upgrade ?? null), upgradeHint: state?.upgrade ? String(state.upgrade).replace(/^https?:\/\//, "") : undefined,
+    }, state?.remoteAccess ?? null);
+  }, reading);
 }
 
 export function historyMenu(term, io, header) {

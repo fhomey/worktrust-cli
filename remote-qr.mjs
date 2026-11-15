@@ -1,6 +1,6 @@
 /**
  * A QR CODE FOR THE TERMINAL, WITHOUT A DEPENDENCY (2026-11-07; owner: pairing by scanning the computer's screen with the
- * WorkTrust app). ISO/IEC 18004: byte mode, error correction level M, the smallest version 1 to 40 that holds the data,
+ * WorkTrust app). ISO/IEC 18004: byte mode, error correction level M (or L), the smallest version 1 to 40 that holds the data,
  * the mask with the lowest penalty, format and version information. `qrMatrix(text)` gives the modules (true = dark);
  * `renderQr(matrix)` draws them with half-block characters, two module rows per line, black on an explicitly white
  * background with a four-module white quiet zone, so it scans in a light or a dark terminal.
@@ -16,8 +16,20 @@ const EC_M = [null,
   [26, 17, 42], [28, 17, 46], [28, 4, 47, 14, 48], [28, 6, 45, 14, 46], [28, 8, 47, 13, 48], [28, 19, 46, 4, 47], [28, 22, 45, 3, 46], [28, 3, 45, 23, 46], [28, 21, 45, 7, 46], [28, 19, 47, 10, 48],
   [28, 2, 46, 29, 47], [28, 10, 46, 23, 47], [28, 14, 46, 21, 47], [28, 14, 46, 23, 47], [28, 12, 47, 26, 48], [28, 6, 47, 34, 48], [28, 29, 46, 14, 47], [28, 13, 46, 32, 47], [28, 40, 47, 7, 48], [28, 18, 47, 31, 48]];
 
-const blocksOf = (v) => { const [ec, n1, d1, n2 = 0, d2 = 0] = EC_M[v]; return { ec, groups: [[n1, d1], [n2, d2]].filter(([n]) => n > 0) }; };
-const dataCodewords = (v) => blocksOf(v).groups.reduce((s, [n, d]) => s + n * d, 0);
+// Level L, the same shape (ISO/IEC 18004 table 9). A code on a screen is not scuffed like a print: L (7% recovery, M is 15%)
+// holds the same link in fewer modules (owner, 2026-11-14: "make the QR more compact"). Every version's total of codewords
+// is the same as M's; scripts/test-remote-claude-events.mjs holds that for all forty.
+const EC_L = [null,
+  [7, 1, 19], [10, 1, 34], [15, 1, 55], [20, 1, 80], [26, 1, 108], [18, 2, 68], [20, 2, 78], [24, 2, 97], [30, 2, 116], [18, 2, 68, 2, 69],
+  [20, 4, 81], [24, 2, 92, 2, 93], [26, 4, 107], [30, 3, 115, 1, 116], [22, 5, 87, 1, 88], [24, 5, 98, 1, 99], [28, 1, 107, 5, 108], [30, 5, 120, 1, 121], [28, 3, 113, 4, 114], [28, 3, 107, 5, 108],
+  [28, 4, 116, 4, 117], [28, 2, 111, 7, 112], [30, 4, 121, 5, 122], [30, 6, 117, 4, 118], [26, 8, 106, 4, 107], [28, 10, 114, 2, 115], [30, 8, 122, 4, 123], [30, 3, 117, 10, 118], [30, 7, 116, 7, 117], [30, 5, 115, 10, 116],
+  [30, 13, 115, 3, 116], [30, 17, 115], [30, 17, 115, 1, 116], [30, 13, 115, 6, 116], [30, 12, 121, 7, 122], [30, 6, 121, 14, 122], [30, 17, 122, 4, 123], [30, 4, 122, 18, 123], [30, 20, 117, 4, 118], [30, 19, 118, 6, 119]];
+const TABLES = { L: EC_L, M: EC_M };
+/** The format information's two level bits (L 01, M 00). */
+const LEVEL_BITS = { L: 0b01, M: 0b00 };
+
+export const blocksOf = (v, level = "M") => { const [ec, n1, d1, n2 = 0, d2 = 0] = TABLES[level][v]; return { ec, groups: [[n1, d1], [n2, d2]].filter(([n]) => n > 0) }; };
+const dataCodewords = (v, level = "M") => blocksOf(v, level).groups.reduce((s, [n, d]) => s + n * d, 0);
 
 // GF(256) with the QR polynomial x^8 + x^4 + x^3 + x^2 + 1.
 const EXP = new Uint8Array(512), LOG = new Uint8Array(256);
@@ -44,12 +56,12 @@ export function reedSolomon(data, degree) {
   return rem;
 }
 
-function codewords(bytes) {
+function codewords(bytes, level = "M") {
   let version = 1;
   const need = (v) => 4 + (v < 10 ? 8 : 16) + bytes.length * 8;
-  while (version <= 40 && need(version) > dataCodewords(version) * 8) version += 1;
+  while (version <= 40 && need(version) > dataCodewords(version, level) * 8) version += 1;
   if (version > 40) throw new RangeError("too much data for one QR code");
-  const capacity = dataCodewords(version) * 8, bits = [];
+  const capacity = dataCodewords(version, level) * 8, bits = [];
   const put = (value, length) => { for (let i = length - 1; i >= 0; i -= 1) bits.push((value >>> i) & 1); };
   put(0b0100, 4);
   put(bytes.length, version < 10 ? 8 : 16);
@@ -59,7 +71,7 @@ function codewords(bytes) {
   for (let pad = 0; bits.length < capacity; pad += 1) put(pad % 2 ? 0x11 : 0xec, 8);
   const data = [];
   for (let i = 0; i < bits.length; i += 8) data.push(bits.slice(i, i + 8).reduce((a, b) => (a << 1) | b, 0));
-  const { ec, groups } = blocksOf(version), blocks = [];
+  const { ec, groups } = blocksOf(version, level), blocks = [];
   let at = 0;
   for (const [n, d] of groups) for (let i = 0; i < n; i += 1) { const block = data.slice(at, at + d); at += d; blocks.push({ data: block, ec: reedSolomon(block, ec) }); }
   const out = [], longest = Math.max(...blocks.map((b) => b.data.length));
@@ -79,7 +91,7 @@ export function alignmentCenters(version) {
 }
 
 const bch = (value, poly, bitsOfPoly) => { let v = value << (bitsOfPoly - 1); while (31 - Math.clz32(v) >= bitsOfPoly - 1) v ^= poly << (31 - Math.clz32(v) - (bitsOfPoly - 1)); return v; };
-export const formatBits = (mask) => { const data = (0b00 << 3) | mask; return ((data << 10) | bch(data, 0x537, 11)) ^ 0x5412; };
+export const formatBits = (mask, level = "M") => { const data = (LEVEL_BITS[level] << 3) | mask; return ((data << 10) | bch(data, 0x537, 11)) ^ 0x5412; };
 export const versionBits = (version) => (version << 12) | bch(version, 0x1f25, 13);
 
 export const MASKS = [(r, c) => (r + c) % 2 === 0, (r) => r % 2 === 0, (r, c) => c % 3 === 0, (r, c) => (r + c) % 3 === 0,
@@ -110,7 +122,7 @@ function base(version) {
   return { size, m, fixed };
 }
 
-function place(version, words, mask) {
+function place(version, words, mask, level = "M") {
   const { size, m, fixed } = base(version);
   let bit = 0;
   const total = words.length * 8, take = () => (bit < total ? (words[bit >> 3] >>> (7 - (bit++ & 7))) & 1 : 0);
@@ -121,7 +133,7 @@ function place(version, words, mask) {
       for (const c of [col, col - 1]) if (!fixed[r][c]) m[r][c] = (take() === 1) !== MASKS[mask](r, c);
     }
   }
-  const f = formatBits(mask);
+  const f = formatBits(mask, level);
   for (let i = 0; i < 15; i += 1) {
     const dark = ((f >> i) & 1) === 1;
     if (i < 6) m[i][8] = dark; else if (i < 8) m[i + 1][8] = dark; else m[size - 15 + i][8] = dark;
@@ -153,17 +165,19 @@ export function penalty(m) {
 }
 
 /** The modules of the QR code for `text` (UTF-8 bytes), `mask` chosen by penalty unless given. */
-export function qrMatrix(text, forcedMask = null) {
-  const { version, out } = codewords(new TextEncoder().encode(text));
-  if (forcedMask !== null) return { version, mask: forcedMask, modules: place(version, out, forcedMask) };
+export function qrMatrix(text, forcedMask = null, level = "M") {
+  const { version, out } = codewords(new TextEncoder().encode(text), level);
+  if (forcedMask !== null) return { version, mask: forcedMask, modules: place(version, out, forcedMask, level) };
   let best = null;
-  for (let mask = 0; mask < 8; mask += 1) { const modules = place(version, out, mask), score = penalty(modules); if (!best || score < best.score) best = { version, mask, modules, score }; }
+  for (let mask = 0; mask < 8; mask += 1) { const modules = place(version, out, mask, level), score = penalty(modules); if (!best || score < best.score) best = { version, mask, modules, score }; }
   return { version: best.version, mask: best.mask, modules: best.modules };
 }
 
+/** The quiet zone, in modules, around every code the CLI draws (the standard's four; its ground is drawn white). */
+export const QUIET = 4;
 /** Half blocks, black on white, a four-module quiet zone. `color` false gives the plain characters (dark = block). */
 export function renderQr(modules, { color = true } = {}) {
-  const quiet = 4, size = modules.length + quiet * 2;
+  const quiet = QUIET, size = modules.length + quiet * 2;
   const dark = (r, c) => { const rr = r - quiet, cc = c - quiet; return rr >= 0 && cc >= 0 && rr < modules.length && cc < modules.length && modules[rr][cc]; };
   const lines = [];
   for (let r = 0; r < size; r += 2) {
@@ -172,4 +186,15 @@ export function renderQr(modules, { color = true } = {}) {
     lines.push(color ? `\x1b[30;107m${line}\x1b[0m` : line);
   }
   return lines.join("\n");
+}
+
+/**
+ * EVERY QR THE CLI DRAWS GOES THROUGH HERE (owner, 2026-11-14: "make the QR more compact"): the approval, the pairing and the
+ * one-scan code alike, level L, half blocks (two module rows per terminal line), the white quiet zone, so a version-10 code
+ * is 33 lines by 65 columns and fits an 80-column terminal. `color` as renderQr: the ground drawn white on a terminal with
+ * colours, the plain characters otherwise (a pipe, NO_COLOR). check-remote-cli and cli-01110-cases hold that no other path
+ * draws one.
+ */
+export function terminalQr(text, { color = true } = {}) {
+  return renderQr(qrMatrix(text, null, "L").modules, { color });
 }

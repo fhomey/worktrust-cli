@@ -41,13 +41,13 @@ import { basename } from "node:path";
 import { hostname } from "node:os";
 import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
-import { ensureRemoteDir, isLoopbackGateway, issuerKeys, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveSettings, writeJson } from "./remote-store.mjs";
+import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, PRODUCTION_GATEWAY, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveSettings, writeJson } from "./remote-store.mjs";
 import { canonicalProject } from "./remote-policy.mjs";
-import { IssuerMissing, PairingDenied, PairingExpired, PairingRefused, pairComputer } from "./remote-pairing.mjs";
+import { IssuerMissing, PairingDenied, PairingExpired, PairingRefused, compactForQr, oneScan, oneScanInvite, pairComputer } from "./remote-pairing.mjs";
 import { startCountdown, waitKey } from "./remote-countdown.mjs";
-import { askLine, connectionsCommand, disconnectCommand, removePhones } from "./remote-connections.mjs";
+import { askLine, connectionsCommand, disconnectCommand, linkPhone, removePhones } from "./remote-connections.mjs";
 import { installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
-import { qrMatrix, renderQr } from "./remote-qr.mjs";
+import { terminalQr } from "./remote-qr.mjs";
 import { webSocketAvailable } from "./remote-transport.mjs";
 import { guideToNode, remoteStopsHere } from "./node-guide.mjs";
 import { inventory } from "./remote-inventory.mjs";
@@ -60,7 +60,6 @@ import { rootLabel } from "./remote-projects.mjs";
 import { adminCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
 
 const fingerprintOf = (keys) => P.deviceFingerprint(keys.public);
-const pretty = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
 /** A question only a person at this keyboard answers: a terminal, a typed "yes"; --yes and Enter are No. */
 export async function askTyped(question) {
   if (!process.stdin.isTTY) return false;
@@ -79,7 +78,10 @@ function needPaired(io) {
 /** `remote app` | `remote web`: the two roads to approve this computer; each does all of what `remote enable` did. */
 async function approve(io, road) {
   const settings = loadSettings();
-  const gateway = io.flag("gateway") ?? process.env.WORKTRUST_REMOTE_GATEWAY ?? settings.gateway;
+  // THE GATEWAY (owner, 2026-11-14: on by default): --gateway, then WORKTRUST_REMOTE_GATEWAY, then this computer's saved choice,
+  // then WorkTrust's (PRODUCTION_GATEWAY). Only a choice is saved; null keeps "the default" (remote-store.mjs gatewayOf).
+  const chosen = io.flag("gateway") ?? process.env.WORKTRUST_REMOTE_GATEWAY ?? settings.gateway ?? null;
+  const gateway = chosen ?? PRODUCTION_GATEWAY;
   if (gateway && !P.isGatewayOrigin(gateway)) io.fail("--gateway is an origin: wss://host[:port], or ws://127.0.0.1:<port> for the dev relay");
   io.say();
   io.say("  WorkTrust remote lets your phone steer the AI agents on this computer. It will:");
@@ -90,16 +92,19 @@ async function approve(io, road) {
   io.say("    - mark every session it steers, so remote work never counts as your AI Hours");
   if (!(await io.ask("Continue?"))) return;
   ensureRemoteDir();
-  let identity = loadIdentity();
+  let identity = loadIdentity(), ready = null;
   if (!identity || io.has("repair")) {
     const keys = newKeys();
     const pub = P.publicKeysOf(P.importSecretKeys(keys));
     try {
       // The request's own clock under the QR or link (remote-countdown.mjs); after an expiry, Enter asks again with a new one.
-      let paired = null;
+      let paired = null, once = null;
       while (!paired) {
+        // ONE SCAN (0.11.10, remote-pairing.mjs): the app's road carries the pairing secret in the QR's fragment; a new one per QR.
+        // --no-pair links no phone, so it carries no pairing secret and writes no invite (review 2026-11-14, P3-6).
+        once = road === "app" && !io.has("device") && !io.has("no-pair") ? oneScan({ gateway, publicKeys: pub, nowMs: Date.now(), random }) : null;
         try {
-          paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), road, showQr: (link) => io.say(renderQr(qrMatrix(link).modules, { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR })), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser, countdown: (w) => startCountdown(w) });
+          paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), road, once, showLink: io.has("show-link"), showQr: (link) => io.say(terminalQr(compactForQr(link), { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR })), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser, countdown: (w) => startCountdown(w) });
         } catch (error) {
           if (error instanceof PairingDenied) return;
           if (!(error instanceof PairingExpired) || !process.stdin.isTTY) throw error;
@@ -110,53 +115,26 @@ async function approve(io, road) {
       saveKeys(keys);
       identity = { v: 1, device_id: paired.device_id, binding: paired.binding, sub: paired.sub, origin: io.origin, paired_at: Date.now() };
       saveIdentity(identity);
+      // The daemon confirms the phone that proves this QR's secret; read per hello, so it is there before the service starts.
+      if (once && once.e * 1000 > Date.now()) writeJson("invite.json", (ready = oneScanInvite(once, paired.device_id, P.generatePairingCode(random), Date.now())));
       io.say(`  ✓ Paired${paired.account ? ` for ${paired.account}` : ""}. This computer's remote key: ${P.deviceFingerprint(pub)}`);
     } catch (error) {
       if (error instanceof IssuerMissing || error instanceof PairingRefused) io.fail(error.message);
       throw error;
     }
   } else io.say(`  Already paired (${identity.device_id}); --repair pairs again with new keys.`);
-  saveSettings({ ...settings, enabled: true, paused: null, gateway: gateway ?? null, agent_path: process.env.PATH ?? null });
+  saveSettings({ ...settings, enabled: true, paused: null, gateway: chosen, agent_path: process.env.PATH ?? null });
   if (loadProjects().length === 0 && loadRoots().length === 0) io.say("  No folder is granted yet: npx worktrust remote roots add <folder> (or the menu: npx worktrust › Remote Agent › Roots)");
-  if (!gateway) { io.say("  No gateway is set: the production gateway is not live yet. Nothing runs until one is (--gateway)."); return; }
   if (servicePlatform() === "foreground") { io.say("  ✓ This computer is connected to Remote Agent."); io.say("  Windows: there is no service; run `npx worktrust remote run` and keep that terminal open."); return; }
   const runtime = await io.prepare();
   const service = installService({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "run"], path: process.env.PATH ?? "" });
   io.say(service.started ? `  ✓ The service runs (${service.kind}, while you are logged in; linger stays off).` : `  ! The service file was written (${service.file}) but did not start; run \`npx worktrust remote run\` to see why.`);
   if (service.started) io.say("  ✓ This computer is connected to Remote Agent.");
-  if (!io.has("no-pair")) await pair(io);
+  if (!io.has("no-pair")) await linkPhone(io, ready);
 }
 
-async function pair(io) {
-  const { keys, identity } = needPaired(io);
-  const settings = loadSettings();
-  if (!settings.enabled || !settings.gateway) io.fail("remote is off or has no gateway: run `npx worktrust remote app` (or `remote web`)");
-  const started = Date.now();
-  const invite = P.createPairingInvite({ gateway: settings.gateway, deviceId: identity.device_id, ed25519_pub: keys.public.ed25519_pub, x25519_pub: keys.public.x25519_pub, nowMs: started, random });
-  const code = P.generatePairingCode(random);
-  writeJson("invite.json", { ...invite, code, used: false, created_at: started });
-  const link = P.encodePairingInvite(invite);
-  io.say();
-  io.say("  Scan this with the WorkTrust app (or the phone's camera):");
-  io.say(renderQr(qrMatrix(link).modules, { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR }));
-  io.say(`  Link: ${link}`);
-  io.say(`  No camera? Type this code in the app: ${pretty(code)} (then confirm the phone here with \`npx worktrust remote phones\`)`);
-  io.say("  The code and the QR work once, for five minutes. Ctrl+C cancels.");
-  const cancel = () => { removeFile("invite.json"); process.exit(130); };
-  process.once("SIGINT", cancel);
-  const before = new Set(loadPhones().pending.map((p) => p.fingerprint));
-  while (Date.now() < invite.e * 1000) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    const phones = loadPhones();
-    const paired = phones.confirmed.find((p) => p.how === "qr" && p.confirmed_at >= started);
-    if (paired) { process.off("SIGINT", cancel); io.say(`  ✓ Paired: phone · ${paired.fingerprint}`); return; }
-    const asked = phones.pending.find((p) => !before.has(p.fingerprint));
-    if (asked) { process.off("SIGINT", cancel); io.say(`  A phone asked by code (${asked.fingerprint}). Confirm it at this keyboard: npx worktrust remote phones confirm ${asked.fingerprint}`); return; }
-  }
-  process.off("SIGINT", cancel);
-  removeFile("invite.json");
-  io.say("  The pairing code expired. Run `npx worktrust remote pair` for a new one.");
-}
+/** `remote pair`: a new QR for a phone (remote-connections.mjs `linkPhone`, which also ends `remote app`). */
+const pair = (io) => linkPhone(io);
 
 async function phones(io, rest) {
   const list = loadPhones();
@@ -284,12 +262,12 @@ function status(io) {
   const settings = loadSettings(), identity = loadIdentity(), keys = identity ? loadKeys() : null, phonesList = loadPhones(), service = serviceState();
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
-    gateway: settings.gateway, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false,
+    gateway: gatewayOf(settings), gateway_default: settings.gateway === null || settings.gateway === undefined, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false,
     agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false) };
   if (io.has("json")) { io.say(JSON.stringify(summary, null, 2)); return; }
   io.say(`  Remote: ${settings.enabled ? (settings.paused ? `paused (${settings.paused === "desk" ? "here" : "from a phone"})` : "on") : "off"}`);
   io.say(`  Paired: ${identity ? `${identity.device_id} · key ${summary.fingerprint}` : "no"}`);
-  io.say(`  Gateway: ${settings.gateway ?? "none set"}${settings.gateway && isLoopbackGateway(settings.gateway) ? " (this computer: dev relay)" : ""}`);
+  io.say(`  Gateway: ${summary.gateway === PRODUCTION_GATEWAY ? `${new URL(PRODUCTION_GATEWAY).host} (WorkTrust's)` : `${summary.gateway}${isLoopbackGateway(summary.gateway) ? " (this computer: dev relay)" : " (chosen here)"}`}`);
   io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);
   io.say(`  Phones: ${summary.phones.confirmed} confirmed (${summary.phones.browsers_added} browsers added by a phone), ${summary.phones.pending} pending · Folders granted: ${summary.projects}`);
   io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`);

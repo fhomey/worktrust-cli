@@ -18,6 +18,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
+import { PRODUCTION_GATEWAY } from "./remote-store.mjs";
 
 const PROOF = P.utf8Encode("worktrust-remote/v1/pair-request\n");
 const RENEW = P.utf8Encode("worktrust-remote/v1/renew\n");
@@ -36,6 +37,40 @@ async function post(origin, path, body) {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 }
 
+/**
+ * ONE SCAN (CLI 0.11.10, owner 2026-11-14: "once you have done that, do you still have to pair? Otherwise you go through the
+ * same step twice"). `remote app` draws the approval link with the PAIRING material in its fragment, which no browser sends
+ * to a server: `<authorize_url>#v=1&g=<gateway>&k=<Ed25519 pub>&x=<X25519 pub>&s=<32-byte secret>&e=<expiry>`, the pairing
+ * invite of PROTOCOL.md §Pairing without `d` (the issuer names this computer's device id only when it approves). The
+ * WorkTrust app's own scanner approves with the authenticator, finds this computer in the account's device list by the
+ * fingerprint of `k` and `x`, and makes the invite whole with its device id; the daemon then confirms the phone by the
+ * secret's proof, exactly as a scanned `remote pair` QR. The camera app or a browser opens the approve link and ignores the
+ * fragment: pairing a phone is then the second step it always was (`linkPhone` shows the QR after its wait).
+ */
+export const ONE_SCAN_KEYS = Object.freeze(["v", "g", "k", "x", "s", "e"]);
+export function oneScan({ gateway, publicKeys, nowMs, random }) {
+  if (!gateway || !P.isGatewayOrigin(gateway)) return null;
+  const fields = { v: 1, g: gateway, k: publicKeys.ed25519_pub, x: publicKeys.x25519_pub, s: P.toBase64Url(random(32)), e: Math.floor(nowMs / 1000) + P.PAIRING_INVITE_LIFETIME_S };
+  return { ...fields, fragment: ONE_SCAN_KEYS.map((key) => `${key}=${encodeURIComponent(String(fields[key]))}`).join("&") };
+}
+/**
+ * THE QR'S OWN, SHORTER FORM OF A LINK (owner, 2026-11-14: "make the QR more compact"): `g` is left out when it names
+ * WorkTrust's production relay, the one the phone assumes when `g` is missing (CLI 0.11.10 with the app's 2026-11-14
+ * JavaScript, which reads both forms). `d`, `k`, `x`, `s` and `e` are never left out; another gateway (the dev relay) stays
+ * named. Only the drawn code is shortened: the printed link and invite.json keep `g`, for a browser it is pasted into and
+ * for the daemon. 36 characters fewer: the pairing QR goes from version 12 to 9 with level L.
+ */
+const DEFAULT_G = `&g=${encodeURIComponent(PRODUCTION_GATEWAY)}`;
+export const compactForQr = (link) => link.replace(DEFAULT_G, "");
+/** The approval link with the pairing material in its fragment, or the link as it was (no gateway, the browser's road). */
+export const withPairing = (url, once) => (once ? `${url}#${once.fragment}` : url);
+/** The invite the daemon reads (invite.json) once the issuer named this computer: the one-scan secret, now with its `d`; checked by the protocol's own encoder. */
+export function oneScanInvite(once, deviceId, code, nowMs) {
+  const invite = { v: once.v, g: once.g, d: deviceId, k: once.k, x: once.x, s: once.s, e: once.e };
+  P.encodePairingInvite(invite);
+  return { ...invite, code, used: false, created_at: nowMs };
+}
+
 /** Which road, the app's QR here (Enter) or the browser; not a terminal, or --yes: the browser. Since 0.11.7 the person names the road (`remote app` | `remote web`, or the menu); kept for a caller that asks. */
 export async function chooseRoad({ interactive = Boolean(process.stdin.isTTY), yes = false, prompt = null } = {}) {
   if (!interactive || yes) return "web";
@@ -49,7 +84,7 @@ export async function chooseRoad({ interactive = Boolean(process.stdin.isTTY), y
  * Pair, and return the verified binding. `keys` holds the secret pair (never sent), `issuerKeys` the pinned keys. `road`:
  * "web" opens the approval page in the browser; "app" draws its link with `showQr` for the WorkTrust app and opens nothing.
  */
-export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, road = "web", showQr = () => {}, issuerKeys, say, openBrowser, now = Date.now, countdown = null }) {
+export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, road = "web", showQr = () => {}, issuerKeys, say, openBrowser, now = Date.now, countdown = null, once = null, showLink = false }) {
   const verifier = randomBytes(32).toString("base64url");
   const code_challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("base64url");
@@ -83,9 +118,12 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
     let exchanged = null;
     if (!device) {
       if (road === "app") {
-        say("  Scan this with the WorkTrust app (or the phone's camera) and approve with your authenticator code:");
-        showQr(authorize_url);
-        say(`  Link: ${authorize_url}`);
+        // One scan (0.11.10): the app's scanner approves AND links this phone; the camera app only approves.
+        say(once ? "  Scan this in the WorkTrust app (Scan › Connect agent): approve with your authenticator code, and the phone links too." : "  Scan this with the WorkTrust app (or the phone's camera) and approve with your authenticator code:");
+        showQr(withPairing(authorize_url, once));
+        // The printed link leaves the pairing secret out (scrollback, a shared screen; review 2026-11-14, P3-7): the QR carries
+        // it, and --show-link prints it whole for a phone that cannot scan.
+        say(`  Link: ${showLink ? withPairing(authorize_url, once) : authorize_url}`);
       } else {
         say(`  Approve in your browser (opening it). If it does not open: ${authorize_url}`);
         openBrowser(authorize_url);

@@ -24,8 +24,9 @@ hiring instrument.
 npx -y worktrust
 ```
 
-In your own terminal this opens the menu. On a computer that is not connected yet it is a short one: Connect this
-computer, Preserve evidence, Help. Connect shows the plan, asks, and you approve the computer in your browser with your
+In your own terminal this opens the menu. On a computer that is not connected yet it is a short one: Look at this
+computer, Connect this computer, Preserve evidence, Help. Look lists, per AI app, the sessions its own files hold here and
+their first and last day; it reads only, and sends and keeps nothing. Connect shows the plan, asks, and you approve the computer in your browser with your
 own account and second factor; the moment that succeeds, the full menu is there. The `-y` answers npm's own question in
 advance: without it npm may ask `Ok to proceed?` before WorkTrust starts.
 
@@ -66,15 +67,16 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.9
+  WorkTrust CLI 0.11.10
   Not connected yet
 
->  1  Connect this computer    npx worktrust connect
-   2  Preserve evidence ›      npx worktrust preserve …
-   3  Help · all commands      npx worktrust help
-   4  Quit                     q
+>  1  Look at this computer   npx worktrust look
+   2  Connect this computer   npx worktrust connect
+   3  Preserve evidence ›     npx worktrust preserve …
+   4  Help · all commands     npx worktrust help
+   5  Quit                    q
 
-  Asks before it writes; your browser signs in to WorkTrust.
+  Reads what your AI apps recorded here. Nothing is sent.
 
   ↑/↓ move · Enter open · Esc quit · 1-9 jump
 ```
@@ -82,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.9
+  WorkTrust CLI 0.11.10
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.9)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.10)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -124,6 +126,7 @@ there is no menu and nothing waits for a key.
 | `npx worktrust history` | Sends this computer's earlier sessions as history. `--rebuild` measures them again, `--export <path>` reads a ChatGPT or Claude export, `--from-archive` and `--from-folder <dir>` read your own copies. Always shows the plan and asks. |
 | `npx worktrust disconnect` | Takes WorkTrust out of every AI app here. Asks first. |
 | `npx worktrust status` | Shows what is connected here. It only reads. |
+| `npx worktrust look` | Shows what your AI apps recorded here: per app the sessions and their first and last day. Reads only; nothing is sent or kept, and no account is needed. |
 | `npx worktrust project` | Sets a folder's mode: exclude (nothing read), confidential (hours and tokens count; no name, branch, path or commit is sent) or normal. `project list` shows them. |
 | `npx worktrust remote` | Remote Agent: `app` or `web` approve this computer, `pair` links a phone, then `status`, `pause`, `resume`, `disable`, `connections`, `disconnect`, `projects`, `roots` and `modes`. |
 | `npx worktrust mcp off` | Hours only: the WorkTrust door out of every AI app here. The session hook keeps measuring. |
@@ -730,7 +733,8 @@ Off until you run `npx worktrust remote app` (or `remote web`) at this keyboard;
   that scanned it is confirmed; one that typed the code instead waits for `npx worktrust remote phones confirm`.
 - Two roads to approve the computer's key: `npx worktrust remote app` shows the approval as a QR code here (no browser);
   the WorkTrust app scans it and you approve with your authenticator code. `npx worktrust remote web` opens the approval
-  page in your browser. Both take `--gateway` and `--device`; `remote enable` (0.11.6 and before) is gone since 0.11.7.
+  page in your browser. Both use WorkTrust's gateway unless `--gateway` chooses another, and take `--device`; `remote
+  enable` (0.11.6 and before) is gone since 0.11.7.
 - `projects add <folder>` grants a folder (its real path; never your home folder, the disk's root or a folder holding
   keys, keychains, browser profiles or wallets). A phone starts agents only in granted folders, several at once (four by
   default).
@@ -769,7 +773,7 @@ Off until you run `npx worktrust remote app` (or `remote web`) at this keyboard;
   instead (off by default). A PIN reset in WorkTrust removes every browser link; phones keep theirs.
 
 Remote needs Node 22.4 or later (the Python package bundles one). It connects to the WorkTrust gateway
-(`wss://remote.worktrust.io`, live since 2026-11-09).
+(`wss://remote.worktrust.io`, live since 2026-11-09), by default for everyone since 0.11.10.
 
 ## Requirements
 
@@ -791,6 +795,8 @@ with or without an account; every other feature is for WorkTrust account holders
 only be installed and evaluated. The archives and files the CLI makes from your own data are yours.
 Version 1.1 of the licence applies from 0.10.39; 0.10.18 to 0.10.38 were published under version 1.0; versions up to and
 including 0.10.17 were published under the MIT licence and stay under it.
+For any use the licence does not allow, including commercial use of the code itself, contact Oravita B.V. by email at
+hello@worktrust.io.
 
 ## Release signatures and the limits of verification
 

@@ -2,6 +2,30 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.10: one scan to connect, a look before you sign in, and no release from a phone
+
+**One QR connects a computer.** `npx -y worktrust remote app` draws one code. Scanned in the WorkTrust app (Scan ›
+Connect agent, or Add connection), it approves this computer with your authenticator code and links that phone in the
+same pass. The button says so ("Approve and link this phone"), and a computer you link while another is already linked is
+not chosen for you. A code opened with the phone's camera or in a browser only approves; the phone is linked by a second
+code a moment later. The printed link no longer carries the pairing secret (`--show-link` prints it whole), and
+`--no-pair` links nothing. Remote Agent uses WorkTrust's gateway by default, so `remote pair` and the service work on a
+computer approved without `--gateway`, where they said "no gateway" before. Every QR is drawn more compactly: about a
+sixth fewer lines for the pairing code.
+
+**Look at this computer.** `npx worktrust look`, the first row before you sign in, counts what your AI apps recorded
+here: sessions per app, the first and last day, or that a store could not be read. It sends nothing, writes nothing and
+makes no network call. Then you connect and send them, or preserve them here.
+
+**No release from a phone.** A session steered from your phone can no longer run a ship script, a deploy script, `psql`
+or a release through `gh`, whatever your own desk settings allow; this computer's keyboard keeps every one of them.
+
+**Clearer lines and a steady screen.** Check this computer says which files its test count reads (a file once per
+stretch) and how many stretches are not classed. A window resized while the menu is open no longer clears a command's
+output above it, such as a QR you still need. When Remote Agent is part of Premium for an account, the menu says so and
+offers the upgrade page; the summary names the account type. The licence names whom to contact for any use it does not
+allow. Nothing it measures changes: the measure rules stay 4.
+
 ## 0.11.9: a first menu, one row per item, and nothing you can do twice
 
 **A short menu until this computer is connected.** `npx -y worktrust` on a computer that is not connected yet opens

@@ -21,7 +21,7 @@
 import { execFile, spawn } from "node:child_process";
 import { writeFileSync, chmodSync, mkdirSync, existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { REMOTE_DENY } from "./remote-adapter-claude-code.mjs";
+import { REMOTE_DENY, userAllowDenies } from "./remote-adapter-claude-code.mjs";
 
 export const SOCKET = "worktrust-remote";
 /** Our socket, or a throwaway one a test names (`worktrust-remote-test-<pid>`); never "default", never a path. */
@@ -221,7 +221,7 @@ export const NO_TMUX = Object.freeze({ socket: SOCKET, config: null, env: {}, ve
  * No text from the phone is an argument: a model the computer listed, a mode from the closed set, a uuid.
  */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export function terminalClaudeArgs({ features, mode, model, resume, sessionRef }) {
+export function terminalClaudeArgs({ features, mode, model, resume, sessionRef, userDenies = userAllowDenies() }) {
   if (mode !== "ask" && mode !== "plan") throw new Error("the protocol offers the ask and plan modes only");
   const permission = mode === "plan" ? features?.planMode : features?.askMode;
   if (!permission) throw new Error("this Claude Code offers no such permission mode");
@@ -229,7 +229,8 @@ export function terminalClaudeArgs({ features, mode, model, resume, sessionRef }
   if (resume !== null && !UUID.test(resume ?? "")) throw new Error("a resume id is Claude Code's own session uuid");
   if (resume === null && !UUID.test(sessionRef ?? "")) throw new Error("a new session needs its uuid");
   if (model !== null && (typeof model !== "string" || model.startsWith("-") || !/^[A-Za-z0-9._:@[\]-]{1,128}$/.test(model))) throw new Error("not a model name");
-  return ["--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY, ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionRef])];
+  // The person's own Bash allow rules come back as denies here too (remote-adapter-claude-code.mjs userAllowDenies, S0).
+  return ["--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY, ...userDenies, ...(model ? ["--model", model] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionRef])];
 }
 
 /**

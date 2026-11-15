@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import * as P from "./remote-protocol.mjs";
 import { loadPreviewGrants, loadRoots } from "./remote-store.mjs";
 import { sessionProjects } from "./remote-projects.mjs";
-import { ensureRemoteDir, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
+import { ensureRemoteDir, gatewayOf, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { inventory as listAgents, offered } from "./remote-inventory.mjs";
 
@@ -105,9 +105,11 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   const settings = loadSettings(), identity = loadIdentity(), keys = loadKeys();
   if (!settings.enabled) throw new Error("remote is off on this computer: run `worktrust remote app` (or `remote web`)");
   if (!identity || !keys) throw new Error("this computer is not paired for remote: run `worktrust remote app` (or `remote web`)");
-  if (!settings.gateway) throw new Error("no gateway is set: the production gateway is not live yet; for local tests pass --gateway ws://127.0.0.1:<port> to `worktrust remote app` (or `remote web`)");
+  // A computer saved with `gateway: null` (0.11.8 and 0.11.9 saved that when none was given) uses WorkTrust's relay: no new
+  // approval is needed (owner, 2026-11-14: on by default).
+  const gateway = gatewayOf(settings);
   if (!webSocketAvailable()) throw new Error(`remote needs Node 22.4 or later (this is ${process.versions.node})`);
-  const keysOf = issuerKeys(settings.gateway);
+  const keysOf = issuerKeys(gateway);
   const claims = P.verifyBinding(identity.binding, { issuerKeys: keysOf, now: Date.now(), kind: "computer", deviceId: identity.device_id });
   if (!claims.ok) throw new Error(`this computer's binding does not verify (${claims.code}): run \`worktrust remote app\` (or \`remote web\`) again`);
   if (claims.value.exp * 1000 - Date.now() < 7 * 86400_000 && identity.origin) {
@@ -176,9 +178,9 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   // The production gateway admits a computer on a five-minute assertion from the issuer, asked fresh for every challenge.
   const { requestAssertion } = await import("./remote-pairing.mjs");
   const authorize = () => (identity.origin ? requestAssertion({ origin: identity.origin, deviceId: identity.device_id, secret: keys.secret }) : Promise.resolve(null));
-  transport = connectGateway({ url: settings.gateway, identity, signingSecret: keys.secret.ed25519, log, authorize, onFrame: (f) => { dispatchFrame(f).catch((e) => log("frame_failed", { name: e?.name ?? "Error" })); },
+  transport = connectGateway({ url: gateway, identity, signingSecret: keys.secret.ed25519, log, authorize, onFrame: (f) => { dispatchFrame(f).catch((e) => log("frame_failed", { name: e?.name ?? "Error" })); },
     onState: (state, info) => { log("gateway", { state, ...info }); if (state === "ready") registerCode(true); } });
-  say(`  WorkTrust remote is running for ${identity.device_id} (gateway ${new URL(settings.gateway).host}). Ctrl+C stops it.`);
+  say(`  WorkTrust remote is running for ${identity.device_id} (gateway ${new URL(gateway).host}). Ctrl+C stops it.`);
   let stopping = false;
   const stop = async (code = 0) => {
     if (stopping) return;

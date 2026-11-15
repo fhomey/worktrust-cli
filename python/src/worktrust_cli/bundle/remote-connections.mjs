@@ -11,8 +11,10 @@
  * never a model name it was not told.
  */
 import { createInterface } from "node:readline/promises";
-import { loadIdentity, loadKeys, loadPhones, savePhones } from "./remote-store.mjs";
+import { gatewayOf, loadIdentity, loadKeys, loadPhones, loadSettings, random, removeFile, savePhones, writeJson } from "./remote-store.mjs";
 import * as P from "./remote-protocol.mjs";
+import { terminalQr } from "./remote-qr.mjs";
+import { compactForQr } from "./remote-pairing.mjs";
 
 const KEEP_REMOVED = 20;
 const when = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "never");
@@ -88,4 +90,56 @@ export async function disconnectCommand(io, rest, ask, tty = Boolean(process.std
   if (typed.toUpperCase() !== shortPrint(c.fingerprint) && typed.toLowerCase() !== c.name.toLowerCase()) return io.say("  That does not match. Cancelled. Nothing was closed.");
   removePhones([c.fingerprint]);
   io.say(`  ✓ Disconnected ${c.name}: it can no longer steer this computer. End its key for your whole account too: app.worktrust.io › Settings › Remote Agent.`);
+}
+
+/** How long `remote app` waits for the phone that scanned its one QR before it shows the pairing QR (0.11.10). */
+export const ONE_SCAN_WAIT_MS = 30_000;
+const pretty = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
+
+/**
+ * LINK A PHONE (`remote pair`, and the end of `remote app`; moved here from remote-cli.mjs in 0.11.10). Without `ready`: a new
+ * invite (five minutes, one phone, once), its QR, its link and the typed code, as before. With `ready` (the one-scan invite
+ * `remote app` wrote once the issuer named this computer, remote-pairing.mjs `oneScanInvite`): no second QR while the phone
+ * that scanned the first one links by itself; after `waitMs`, or for a phone that opened the code with the camera or runs an
+ * older app, the SAME invite as the pairing QR, with one line why. A phone that proves the secret is confirmed by the daemon
+ * (PROTOCOL.md §Pairing); a phone that asked by the typed code waits for `remote phones confirm` at this keyboard.
+ */
+export async function linkPhone(io, ready = null, { waitMs = ONE_SCAN_WAIT_MS, now = Date.now, tick = 1000 } = {}) {
+  const keys = loadKeys(), identity = loadIdentity(), settings = loadSettings();
+  if (!keys || !identity) io.fail("this computer is not paired for remote yet: run `npx worktrust remote app` (or `remote web`)");
+  // Off is its own state (owner, 2026-11-14): a missing gateway no longer exists, WorkTrust's is the default (gatewayOf).
+  if (!settings.enabled) io.fail("remote is off on this computer: run `npx worktrust remote app` (or `remote web`)");
+  const started = now();
+  const invite = ready ?? { ...P.createPairingInvite({ gateway: gatewayOf(settings), deviceId: identity.device_id, ed25519_pub: keys.public.ed25519_pub, x25519_pub: keys.public.x25519_pub, nowMs: started, random }), code: P.generatePairingCode(random), used: false, created_at: started };
+  if (!ready) writeJson("invite.json", invite);
+  const { code, used: _used, created_at: since, ...bare } = invite;
+  const link = P.encodePairingInvite(bare);
+  let shown = false;
+  const show = (why) => {
+    shown = true;
+    io.say();
+    io.say(why ?? "  Scan this with the WorkTrust app (or the phone's camera):");
+    io.say(terminalQr(compactForQr(link), { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR }));
+    io.say(`  Link: ${link}`);
+    io.say(`  No camera? Type this code in the app: ${pretty(code)} (then confirm the phone here with \`npx worktrust remote phones\`)`);
+    io.say("  The code and the QR work once, for five minutes. Ctrl+C cancels.");
+  };
+  if (ready) io.say("  Linking the phone that scanned the code …"); else show();
+  const cancel = () => { removeFile("invite.json"); process.exit(130); };
+  process.once("SIGINT", cancel);
+  const before = new Set(loadPhones().pending.map((p) => p.fingerprint));
+  try {
+    while (now() < invite.e * 1000) {
+      await new Promise((resolve) => setTimeout(resolve, tick));
+      const phones = loadPhones();
+      const paired = phones.confirmed.find((p) => p.how === "qr" && p.confirmed_at >= since);
+      if (paired) { io.say(`  ✓ Paired: phone · ${paired.fingerprint}`); return paired; }
+      const asked = phones.pending.find((p) => !before.has(p.fingerprint));
+      if (asked) { io.say(`  A phone asked by code (${asked.fingerprint}). Confirm it at this keyboard: npx worktrust remote phones confirm ${asked.fingerprint}`); return null; }
+      if (!shown && now() - started >= waitMs) show("  No phone linked by itself (the code was opened with the camera, or the app is older): scan this in the WorkTrust app.");
+    }
+  } finally { process.off("SIGINT", cancel); }
+  removeFile("invite.json");
+  io.say("  The pairing code expired. Run `npx worktrust remote pair` for a new one.");
+  return null;
 }

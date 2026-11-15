@@ -15,9 +15,11 @@
  * The approval tool is remote-approval-bridge.mjs, started by Claude Code itself from the MCP config written here.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync, rmSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { PLAN_HINT } from "./remote-approval-bridge.mjs";
+import { REVIEWED_COMMANDS } from "./remote-policy.mjs";
 
 export const APPROVAL_TOOL = "mcp__worktrust_remote__approve";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -38,7 +40,31 @@ export const REMOTE_DENY = Object.freeze([
   "Bash(vercel:*)", "Bash(netlify:*)", "Bash(fly:*)", "Bash(flyctl:*)", "Bash(firebase:*)", "Bash(heroku:*)", "Bash(wrangler:*)", "Bash(kubectl:*)", "Bash(helm:*)", "Bash(terraform:*)", "Bash(pulumi:*)", "Bash(eas:*)",
   "Bash(rm -rf:*)", "Bash(sudo:*)", "Read(**/.env)", "Read(**/.env.*)", "Read(~/.ssh/**)", "Read(**/*.pem)", "Read(**/*.key)", "Read(~/.aws/**)", "Read(~/.worktrust/**)",
   "Edit(~/.worktrust/**)", "Write(~/.worktrust/**)", "Edit(**/.env)", "Edit(**/.env.*)",
+  // NO SHIP SCRIPT FROM A PHONE (review 2026-11-14, S0): a script run through a shell, a ship's yes, the release scripts, a
+  // GitHub release or workflow, the database. Deploy and publish are started at the desk, never from the phone.
+  "Bash(zsh:*)", "Bash(bash:*)", "Bash(sh:*)", "Bash(SHIP_YES=1:*)", "Bash(node scripts/deploy-production.mjs:*)", "Bash(node scripts/mobile-update.mjs:*)",
+  "Bash(gh release:*)", "Bash(gh workflow:*)", "Bash(psql:*)",
 ]);
+
+/**
+ * THE PERSON'S OWN BASH ALLOW RULES ARE DESK GRANTS (review 2026-11-14, S0). `--setting-sources user` still loads the user's
+ * settings (`$CLAUDE_CONFIG_DIR/settings.json`, else ~/.claude/settings.json), and their `permissions.allow` apply BEFORE the
+ * permission-prompt tool: `Bash(zsh ~/.config/…/ships/*)`, `Bash(node scripts/deploy-production.mjs*)` would run from a phone
+ * prompt, or a repository's hidden instruction, with no approval at all. So every Bash allow rule that is not a reviewed
+ * command (remote-policy.mjs REVIEWED_COMMANDS, with or without `:*`) comes back as a DENY for the remote session (deny beats
+ * allow). The file is only READ, at the session's start, never written. Missing: nothing to deny. Unreadable or not JSON:
+ * the allows are not known, so the session gets no shell at all (`Bash`).
+ */
+export function userAllowDenies({ env = process.env, home = homedir(), read = (file) => readFileSync(file, "utf8") } = {}) {
+  const file = join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"), "settings.json");
+  let text;
+  try { text = read(file); } catch (error) { return error?.code === "ENOENT" ? [] : ["Bash"]; }
+  let allow;
+  try { allow = JSON.parse(text)?.permissions?.allow ?? []; } catch { return ["Bash"]; }
+  if (!Array.isArray(allow)) return ["Bash"];
+  const reviewed = new Set(REVIEWED_COMMANDS.flatMap((line) => [`Bash(${line})`, `Bash(${line}:*)`]));
+  return [...new Set(allow.filter((rule) => typeof rule === "string" && /^Bash(\(|$)/.test(rule.trim()) && !reviewed.has(rule.trim())).map((rule) => rule.trim()))];
+}
 
 /** The planning tools of the session's own MCP server (remote-approval-bridge.mjs): they only write a plan, so no prompt. */
 export const PLAN_TOOLS = Object.freeze(["mcp__worktrust_remote__plan_release", "mcp__worktrust_remote__plan_task", "mcp__worktrust_remote__plan_list"]);
@@ -59,7 +85,7 @@ export const EDIT_MODE_DENY = Object.freeze(["**/.claude/**", "**/.mcp.json", "*
 /** The agent mode (protocol AGENT_MODES; the older `ask` is `manual`) → Claude Code's own permission mode, from its help. */
 const PERMISSION_OF = { ask: "askMode", manual: "askMode", plan: "planMode", edit: "editMode", auto: "autoMode" };
 
-export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfig, effort = null, addDirs = [] }) {
+export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfig, effort = null, addDirs = [], userDenies = userAllowDenies() }) {
   if (!Object.hasOwn(PERMISSION_OF, mode)) throw new Error("the protocol offers the manual, edit, plan and auto modes only");
   const permission = features[PERMISSION_OF[mode]];
   if (!permission) throw new Error("this Claude Code offers no such permission mode");
@@ -73,7 +99,7 @@ export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfi
   if (!features.disallowed || !features.settingSources) throw new Error("this Claude Code cannot take deny rules or limit its setting sources");
   // --replay-user-messages: Claude Code echoes each user message as it reads it (isReplay), which is how a live steer is
   // known to have entered the running turn (remote-steering.mjs; measured on 2.1.286: at the next tool boundary).
-  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...(features.replay ? ["--replay-user-messages"] : []), "--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY, ...(unasked ? EDIT_MODE_DENY : []),
+  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...(features.replay ? ["--replay-user-messages"] : []), "--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY, ...userDenies, ...(unasked ? EDIT_MODE_DENY : []),
     ...(features.allowed ? ["--allowedTools", ...PLAN_TOOLS] : []), ...(features.appendPrompt ? ["--append-system-prompt", PLAN_HINT] : []),
     "--permission-prompt-tool", APPROVAL_TOOL, "--mcp-config", mcpConfig, ...(features.partial ? ["--include-partial-messages"] : []), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...(addDirs.length ? ["--add-dir", ...addDirs] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionRef])];
 }

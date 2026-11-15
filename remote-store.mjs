@@ -72,6 +72,16 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 // modes_allowed (0.11.7, owner 2026-11-12): the CEILING of agent modes a phone may start, set here only (`worktrust remote
 // modes allow|deny edit|auto`); manual and plan always. admin (0.11.7): RESERVED for managing this computer from the app or
 // the web with a server-signed proof (part B); on by default, honoured by nothing yet (remote-settings.mjs).
+/**
+ * WORKTRUST'S PRODUCTION RELAY, ON BY DEFAULT FOR EVERYONE (owner, 2026-11-14: "it must be ON by default for everyone, also
+ * without Premium; the subscription comes later"; CLI 0.11.10). A computer's saved `gateway: null` means THIS default, read
+ * where it is used, so a later change of the default moves every computer that never chose one; `--gateway` and
+ * WORKTRUST_REMOTE_GATEWAY at `remote app` still choose another (the dev relay, tests), and that choice is saved.
+ * GATEWAY.md step 9 (a crypto review and a penetration test) is still open: the owner chose the default before it.
+ */
+export const PRODUCTION_GATEWAY = "wss://remote.worktrust.io";
+/** The relay this computer uses: its own saved choice, else WorkTrust's. */
+export const gatewayOf = (settings) => settings?.gateway ?? PRODUCTION_GATEWAY;
 export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });

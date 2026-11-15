@@ -3,9 +3,11 @@
  * or `remote web` waits for the approval, a bar under the QR or link drains over the request's own window (the issuer's
  * answer, never a fixed ten minutes), redrawn in place once a second: `[████████░░░░] 7:41 left`. Without a terminal the
  * expiry time is printed once. The bar reads no key and never touches raw mode; waitKey (the "new QR code?" question after
- * an expiry) does, and always gives it back.
+ * an expiry) does, and always gives it back. 0.11.12: in a command the MENU started, Esc while the bar runs stops the wait
+ * (cli-stop.mjs watchKeys, which owns raw mode for that time); elsewhere the bar is as it was.
  */
 import { emitKeypressEvents } from "node:readline";
+import { watchKeys } from "./cli-stop.mjs";
 
 export const BAR_WIDTH = 24;
 const clock = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
@@ -24,6 +26,7 @@ export function startCountdown({ expiresAt, windowMs, out = process.stdout, tty 
     return { stop: (line) => { if (line) out.write(`  ${line}\n`); } };
   }
   const draw = () => out.write(`\r\x1b[2K  ${barLine(expiresAt - now(), windowMs)}`);
+  const release = watchKeys();
   draw();
   const timer = setInterval(draw, 1000);
   timer.unref?.();
@@ -33,6 +36,7 @@ export function startCountdown({ expiresAt, windowMs, out = process.stdout, tty 
       if (stopped) return;
       stopped = true;
       clearInterval(timer);
+      release();
       out.write(`\r\x1b[2K${line ? `  ${line}` : ""}\n`);
     },
   };

@@ -3,7 +3,7 @@
  * WorkTrust app). ISO/IEC 18004: byte mode, error correction level M (or L), the smallest version 1 to 40 that holds the data,
  * the mask with the lowest penalty, format and version information. `qrMatrix(text)` gives the modules (true = dark);
  * `renderQr(matrix)` draws them with half-block characters, two module rows per line, black on an explicitly white
- * background with a four-module white quiet zone, so it scans in a light or a dark terminal.
+ * background with a white quiet zone (two modules since 0.11.12), so it scans in a light or a dark terminal.
  *
  * Held by scripts/test-remote-qr.mjs against reference matrices from an independent encoder (recorded fixtures) and an
  * independent structural decoder in the test itself.
@@ -56,16 +56,40 @@ export function reedSolomon(data, degree) {
   return rem;
 }
 
-function codewords(bytes, level = "M") {
+/**
+ * SEGMENTS (CLI 0.11.12): a code is one BYTE segment, as before, or a byte segment followed by an ALPHANUMERIC one (ISO/IEC
+ * 18004 7.4.4: 0-9, A-Z, space and $%*+-./:, two characters in 11 bits). `segmentsOf` splits only a link whose fragment is
+ * all alphanumeric (the compact pairing code, remote-protocol pairing.ts); every other text stays one byte segment, so
+ * every code drawn before is drawn the same.
+ */
+export const ALPHANUMERIC = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+export function segmentsOf(text) {
+  const hash = text.lastIndexOf("#"), tail = hash >= 0 ? text.slice(hash + 1) : "";
+  if (tail.length < 16 || [...tail].some((ch) => !ALPHANUMERIC.includes(ch))) return [{ mode: "byte", data: text }];
+  return [{ mode: "byte", data: text.slice(0, hash + 1) }, { mode: "alphanumeric", data: tail }];
+}
+const countBits = (mode, v) => (mode === "byte" ? (v < 10 ? 8 : 16) : v < 10 ? 9 : v < 27 ? 11 : 13);
+const segmentBits = (seg, v) => 4 + countBits(seg.mode, v) + (seg.mode === "byte" ? new TextEncoder().encode(seg.data).length * 8 : Math.floor(seg.data.length / 2) * 11 + (seg.data.length % 2) * 6);
+
+function codewords(segments, level = "M") {
   let version = 1;
-  const need = (v) => 4 + (v < 10 ? 8 : 16) + bytes.length * 8;
+  const need = (v) => segments.reduce((sum, seg) => sum + segmentBits(seg, v), 0);
   while (version <= 40 && need(version) > dataCodewords(version, level) * 8) version += 1;
   if (version > 40) throw new RangeError("too much data for one QR code");
   const capacity = dataCodewords(version, level) * 8, bits = [];
   const put = (value, length) => { for (let i = length - 1; i >= 0; i -= 1) bits.push((value >>> i) & 1); };
-  put(0b0100, 4);
-  put(bytes.length, version < 10 ? 8 : 16);
-  for (const b of bytes) put(b, 8);
+  for (const seg of segments) {
+    if (seg.mode === "byte") {
+      const bytes = new TextEncoder().encode(seg.data);
+      put(0b0100, 4); put(bytes.length, countBits("byte", version));
+      for (const b of bytes) put(b, 8);
+    } else {
+      put(0b0010, 4); put(seg.data.length, countBits("alphanumeric", version));
+      const at = (i) => ALPHANUMERIC.indexOf(seg.data[i]);
+      for (let i = 0; i + 1 < seg.data.length; i += 2) put(at(i) * 45 + at(i + 1), 11);
+      if (seg.data.length % 2) put(at(seg.data.length - 1), 6);
+    }
+  }
   put(0, Math.min(4, capacity - bits.length));
   while (bits.length % 8) bits.push(0);
   for (let pad = 0; bits.length < capacity; pad += 1) put(pad % 2 ? 0x11 : 0xec, 8);
@@ -164,18 +188,22 @@ export function penalty(m) {
   return points + Math.abs(Math.ceil((dark * 100) / (size * size) / 5) - 10) * 10;
 }
 
-/** The modules of the QR code for `text` (UTF-8 bytes), `mask` chosen by penalty unless given. */
-export function qrMatrix(text, forcedMask = null, level = "M") {
-  const { version, out } = codewords(new TextEncoder().encode(text), level);
+/** The modules of the QR code for `text` (UTF-8 bytes, one byte segment unless `segments` says otherwise), `mask` chosen by penalty unless given. */
+export function qrMatrix(text, forcedMask = null, level = "M", segments = [{ mode: "byte", data: text }]) {
+  const { version, out } = codewords(segments, level);
   if (forcedMask !== null) return { version, mask: forcedMask, modules: place(version, out, forcedMask, level) };
   let best = null;
   for (let mask = 0; mask < 8; mask += 1) { const modules = place(version, out, mask, level), score = penalty(modules); if (!best || score < best.score) best = { version, mask, modules, score }; }
   return { version: best.version, mask: best.mask, modules: best.modules };
 }
 
-/** The quiet zone, in modules, around every code the CLI draws (the standard's four; its ground is drawn white). */
-export const QUIET = 4;
-/** Half blocks, black on white, a four-module quiet zone. `color` false gives the plain characters (dark = block). */
+/**
+ * THE QUIET ZONE, in modules, around every code the CLI draws: two (CLI 0.11.12, owner 2026-11-15: "about 4 x 4 cm"), half
+ * the standard's four. A terminal code is drawn on its own explicitly white ground, so the margin a printed code needs
+ * against the paper's surroundings is the ground itself; the phone's scanner and the iOS camera read a 2-module margin.
+ */
+export const QUIET = 2;
+/** Half blocks, black on white, the quiet zone above. `color` false gives the plain characters (dark = block). */
 export function renderQr(modules, { color = true } = {}) {
   const quiet = QUIET, size = modules.length + quiet * 2;
   const dark = (r, c) => { const rr = r - quiet, cc = c - quiet; return rr >= 0 && cc >= 0 && rr < modules.length && cc < modules.length && modules[rr][cc]; };
@@ -190,11 +218,14 @@ export function renderQr(modules, { color = true } = {}) {
 
 /**
  * EVERY QR THE CLI DRAWS GOES THROUGH HERE (owner, 2026-11-14: "make the QR more compact"): the approval, the pairing and the
- * one-scan code alike, level L, half blocks (two module rows per terminal line), the white quiet zone, so a version-10 code
- * is 33 lines by 65 columns and fits an 80-column terminal. `color` as renderQr: the ground drawn white on a terminal with
- * colours, the plain characters otherwise (a pipe, NO_COLOR). check-remote-cli and cli-01110-cases hold that no other path
- * draws one.
+ * one-scan code alike, level L, half blocks (one character per module across, two module rows per terminal line), the
+ * white quiet zone, and since 0.11.12 an alphanumeric segment for a compact pairing fragment (segmentsOf). Sizes, level L:
+ * the compact pairing code is version 4 (33 modules): 37 characters by 19 lines; the approval link alone version 4; the
+ * one-scan approval with its compact fragment version 5 (37 modules): 41 by 21. At a 13 px monospace font (a cell about
+ * 7.8 px wide, so one module about 7.8 px square) 37 characters are about 289 px: 7.6 cm at 96 px an inch, 5.8 cm on a
+ * 127 px-an-inch laptop screen. `color` as renderQr: the ground drawn white on a terminal with colours, the plain characters
+ * otherwise (a pipe, NO_COLOR). check-remote-cli and cli-01110-cases hold that no other path draws one.
  */
 export function terminalQr(text, { color = true } = {}) {
-  return renderQr(qrMatrix(text, null, "L").modules, { color });
+  return renderQr(qrMatrix(text, null, "L", segmentsOf(text)).modules, { color });
 }

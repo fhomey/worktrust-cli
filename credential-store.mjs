@@ -98,6 +98,30 @@ export function createCredentialStore(file, vault = nativeKeyStore()) {
   };
 }
 
+/**
+ * THE KEY IN THE OS VAULT BY DEFAULT (0.11.12, owner 2026-11-15: "make protect-key happen automatically when you make the
+ * coupling"). The same protect() the command runs, after a new coupling and once at an update. → what happened:
+ *   "protected"  the vault holds the wrapping key, read back once without asking (protect() checks it), the file is sealed
+ *   "already"    it was protected before (a coupling again keeps its sealed slot)
+ *   "kept"       the vault was unavailable or refused: the private 0600 file stays exactly as it was; never a failed coupling
+ *   "remote"     not tried: an SSH session, or Linux without a desktop. There the login keychain or the Secret Service
+ *                collection can be LOCKED when an AI app later starts the hook, and a read never asks (credential-vault.mjs:
+ *                no unlock prompt by design), so the hook would stop measuring until someone unlocks it. The file stays.
+ *   "elsewhere"  not tried: this run's HOME is not the OS account's own home (a test harness, a sandbox). The vault is the
+ *                account's, whatever HOME says (macOS reads it as the OS user, credential-vault.mjs), so a key file in
+ *                another folder would leave an item in the person's own vault that nothing there needs. Found 2026-11-15:
+ *                the CLI's regression suite, coupling synthetic homes, wrote 22 such items into the login keychain.
+ * A read never raises a prompt: macOS reads go through /usr/bin/osascript with user interaction turned off, the one client
+ * that created the item (its default access list), whatever node, npx cache or CLI version asks; Linux `secret-tool search`
+ * never unlocks; Windows Credential Manager has no prompt. So the move cannot flood anyone with questions.
+ */
+export function protectByDefault(store, { remote = false, elsewhere = false } = {}) {
+  try { if (store.protected()) return "already"; } catch { return "kept"; }
+  if (elsewhere) return "elsewhere";
+  if (remote) return "remote";
+  try { store.protect(); return "protected"; } catch { return "kept"; }
+}
+
 /** Archive signing shares the coupling store; an unavailable vault is not an absent device. */
 export function readDeviceSigningKey(file) {
   const entry = createCredentialStore(file).load();

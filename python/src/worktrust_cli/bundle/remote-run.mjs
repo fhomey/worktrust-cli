@@ -195,7 +195,12 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   };
   process.on("SIGINT", () => stop(0));
   process.on("SIGTERM", () => stop(0));
-  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); registerCode(); releases.poll(); }, 3000).unref();
+  // WHAT A PHONE MAY REACH, TOLD AT ONCE (0.11.12, owner 2026-11-15): a grant made at this keyboard (the access step after
+  // "Phone linked", Remote Agent › Roots or › Projects) changes the lists another process wrote; the next tick sends the
+  // inventory again, sealed, so a phone waiting on "Choose access at your computer" learns it from this computer, not a server.
+  let grants = null;
+  const grantsChanged = () => { const now = [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id)].join(","); const changed = grants !== null && now !== grants; grants = now; return changed; };
+  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); registerCode(); releases.poll(); try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
   releases.schedule(); // queued tasks a restart kept
   return new Promise(() => {});
 }

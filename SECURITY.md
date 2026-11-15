@@ -29,13 +29,21 @@ private transcripts or account data in a public issue.
 
 ## Where the key is, and how long it lives
 
-- Existing installations use a private local file until explicit `worktrust protect-key` migration
-  (0.10.26 and later). Base64 in that legacy file is not encryption.
+- From 0.11.12 `connect` protects a new coupling's key by default and `update` migrates a plain file once (said in
+  its plan; `--keep-key-file` declines), through the same code path as `worktrust protect-key`. Where the OS store is
+  unavailable or refuses, in an SSH session or on Linux without a desktop (where a locked store would later stop the
+  hook, since reads never prompt), or when HOME is not the OS account's own home (the store belongs to the account, so
+  a key file elsewhere is never paired with it automatically), the private 0600 file stays unchanged and one line names
+  the retry command. Base64
+  in that plain file is not encryption.
 - Protected mode uses AES-256-GCM for all coupling secrets and OS storage for a separate random
   wrapping key: macOS Keychain, Windows Credential Manager with local-machine persistence, or
   Linux Secret Service. Only a random identifier, provider, nonce, ciphertext and authentication
   tag remain in `key.json`. Private file checks and atomic replacement still apply. Locked,
-  missing or unavailable OS storage fails closed, without a new key or plaintext fallback.
+  missing or unavailable OS storage fails closed, without a new key or plaintext fallback. Reads never request
+  interaction: on macOS the item is created and read only by `/usr/bin/osascript` with user interaction disabled for
+  reads (the default access list trusts its creator), so a Node update, an npx cache path or a new CLI version does not
+  change the requesting program and cannot raise a Keychain prompt.
 - This is exportable software credential protection, not hardware attestation. Other software
   authorized as the OS user can request decryption; an attacker controlling the launcher or OS
   can bypass local checks. Local activity remains untrusted for independent public claims.
@@ -56,6 +64,30 @@ private transcripts or account data in a public issue.
   and by itself 90 days after its last use.
 - Local `disconnect` is distinct from server revocation and archive deletion. Revoke through
   WorkTrust's device settings when the server credential must stop working.
+
+## Decoy credentials (the next release; owner 2026-11-15)
+
+Beside the real coupling, `connect` (and `update`, once) writes credential files in `~/.worktrust` that look exactly like
+the real one (the same legacy format: base64 of the same JSON with a `wt_` token, an Ed25519 device key, the dates, the
+masked account), each with its own random token and key: `credentials.json`, `mcp-key.json`, `api-key.json`, `token.json`,
+`auth.json`, and in file mode also `session-key.json`, `bridge-key.json`, `access-token.json`, `device-key.json`. None of
+them is a backup of `key.json`: never restore one. If you restored a file from `~/.worktrust` yourself, run
+`npx worktrust connect`.
+Nothing in this package ever reads or sends them: the CLI, the session hook and the MCP bridge read only `key.json`. WorkTrust
+receives only their SHA-256 hashes, once, signed by this computer's own key (`POST /api/cli/decoys`), and keeps them under
+your account. The first time one of them is presented to WorkTrust, that computer's real coupling is revoked (reconnect
+with `npx worktrust connect`), every Remote Agent link of your account (computers, phones, browsers) is cut at once, the
+attempt is recorded and you get an e-mail naming the computer (one a day at most). A later use is recorded, never cuts
+again. Deleting the computer in Sources retires its decoys.
+
+- With protected credentials (`protect-key`, the OS keystore) the real secret is in no readable file: `key.json` is an
+  envelope that opens nowhere else, so every readable credential in the folder is a decoy (five of them) and a copy of
+  the folder can only trip the wire.
+- In file mode the real `key.json` stays readable beside nine decoys. Its name is the one this open-source package reads,
+  so someone who reads the code knows which is real; the decoys catch a copy used without that care (a file picked blind is
+  a decoy nine times in ten; trying them all always trips). Protect your key: that is the real protection.
+- The decoys are written only after WorkTrust confirmed their hashes, and never trip on your own use. Deleting them is
+  harmless; `update` writes them again only when none are present.
 
 ## What you agreed to: `~/.worktrust/consent.json` (0.10.30)
 

@@ -45,7 +45,7 @@ import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, PRODUCTION_G
 import { canonicalProject } from "./remote-policy.mjs";
 import { IssuerMissing, PairingDenied, PairingExpired, PairingRefused, compactForQr, oneScan, oneScanInvite, pairComputer } from "./remote-pairing.mjs";
 import { startCountdown, waitKey } from "./remote-countdown.mjs";
-import { askLine, connectionsCommand, disconnectCommand, linkPhone, removePhones } from "./remote-connections.mjs";
+import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSummary, linkPhone, reachStep, removePhones, withName } from "./remote-connections.mjs";
 import { installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { terminalQr } from "./remote-qr.mjs";
 import { webSocketAvailable } from "./remote-transport.mjs";
@@ -130,11 +130,30 @@ async function approve(io, road) {
   const service = installService({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "run"], path: process.env.PATH ?? "" });
   io.say(service.started ? `  ✓ The service runs (${service.kind}, while you are logged in; linger stays off).` : `  ! The service file was written (${service.file}) but did not start; run \`npx worktrust remote run\` to see why.`);
   if (service.started) io.say("  ✓ This computer is connected to Remote Agent.");
-  if (!io.has("no-pair")) await linkPhone(io, ready);
+  if (!io.has("no-pair")) await linkAndGrant(io, ready);
 }
 
-/** `remote pair`: a new QR for a phone (remote-connections.mjs `linkPhone`, which also ends `remote app`). */
-const pair = (io) => linkPhone(io);
+/**
+ * THE SCAN, THEN THE PHONE AND ITS REACH (0.11.12, remote-connections.mjs accessStep): the summary the moment the daemon confirmed the
+ * phone, then the access step through the keyboard's one door (applySettingsChange, the macOS folder question after it), so
+ * it ends exactly where Remote Agent › Roots or › Projects would. A refused folder is said and the others still go.
+ */
+async function linkAndGrant(io, ready = null) {
+  const phone = await linkPhone(io, ready);
+  if (!phone) return;
+  for (const line of linkedSummary(await withName(phone))) io.say(line);
+  await reachStep(io, keyboardApply(io));
+}
+/** The keyboard's one door for the access step: applySettingsChange, then the macOS folder question; a refusal is said, not fatal. */
+const keyboardApply = (io) => async (change) => {
+  const done = applySettingsChange(change, { kind: "keyboard" });
+  if (!done.ok) return io.say(`  ! ${done.reason}`);
+  io.say(`  ✓ ${done.message}`);
+  if (done.paths && !io.has("no-folder-check")) await askMacFolderAccess(io, done.paths);
+};
+
+/** `remote pair`: a new QR for a phone (remote-connections.mjs `linkPhone`, which also ends `remote app`), then its reach. */
+const pair = (io) => linkAndGrant(io);
 
 async function phones(io, rest) {
   const list = loadPhones();
@@ -280,6 +299,7 @@ export async function remoteCommand(args, io) {
   if (remoteStopsHere(sub)) return guideToNode(io, ["remote", ...args], { connected: io.connected?.() }); // Node before 22.4: node-guide.mjs
   if (sub === "app" || sub === "web") return approve(io, sub);
   if (sub === "pair") return pair(io);
+  if (sub === "access") { needPaired(io); return accessCommand(io, keyboardApply(io)); } // 0.11.12: a linked phone's reach, chosen later
   if (sub === "status") return status(io);
   if (sub === "pause" || sub === "resume") { const s = loadSettings(); saveSettings({ ...s, paused: sub === "pause" ? "desk" : null }); io.say(sub === "pause" ? "  Paused: every command from a phone is refused until `npx worktrust remote resume`." : "  Resumed."); return; }
   if (sub === "disable") {
@@ -324,5 +344,5 @@ export async function remoteCommand(args, io) {
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
   if (sub !== "help") { io.say(sub === "enable" ? "  Unknown command: remote enable. Use `npx worktrust remote app` (approve with your phone) or `npx worktrust remote web` (approve in the browser)." : `  Unknown command: remote ${sub}. The remote commands are below.`); process.exitCode = 1; }
-  io.say("  npx worktrust remote app | web | pair | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | modes allow|deny edit|auto|status | admin on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote app | web | pair | access | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | modes allow|deny edit|auto|status | admin on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

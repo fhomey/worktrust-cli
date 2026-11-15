@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.11
+  WorkTrust CLI 0.11.12
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.11
+  WorkTrust CLI 0.11.12
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.11)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.12)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -113,6 +113,12 @@ switches that exist: `mcp off | on` and Remote Agent's pause. Remote Agent › C
 browser, and disconnecting one runs `remote disconnect` with its typed confirmation. Esc quits at the top and goes back
 one level below it.
 
+**Esc stops a running command.** While a command the menu started is busy (counting, reading, sending, waiting for an
+approval or a phone), Esc stops it and the menu says `Stopped. Enter: back to the menu · Esc: close`. A read or a wait
+stops at once. A write is never cut in half: a stop that comes during one says `Finishing a write, then stopping…` and
+the command ends the moment the write is whole. At a question the command's own keys apply, and Ctrl+C keeps its meaning.
+Typed directly (`npx worktrust status`, no menu) Esc is not read and Ctrl+C stops the command as it always did.
+
 Every item shows the command it runs, so you can type it next time. Without a terminal (a script, a hook, the MCP door)
 there is no menu and nothing waits for a key.
 
@@ -132,7 +138,7 @@ there is no menu and nothing waits for a key.
 | `npx worktrust mcp off` | Hours only: the WorkTrust door out of every AI app here. The session hook keeps measuring. |
 | `npx worktrust mcp on` | The door back in, so your AI can log finished work. |
 | `npx worktrust mcp` | Says which of the two this computer is in. |
-| `npx worktrust protect-key` | After an update: moves the key's protection into the operating system's vault. Asks first. |
+| `npx worktrust protect-key` | Moves the key's protection into the operating system's vault. Asks first. `connect` and `update` do it by themselves where the vault is there (`update --keep-key-file` keeps the file); this is the retry when it was not. |
 | `npx worktrust orchestration report --file recording.jsonl` | Inspects a local recording of agent metadata. Sends nothing. |
 | `npx worktrust mod` | The WorkTrust mod for Claude Code: what it counts and whether it is on. `mod install` turns it on, `mod remove` turns it off. |
 | `npx worktrust git` | Sends your own commits as counts and kinds, measured on this computer: never a file name, a message, code or the commit's id. Asks once. |
@@ -157,8 +163,9 @@ made; for any other repository a code that names nothing. The full list is in
 
 **What it never sends.** Your prompts, the AI's answers, your code, file contents or file paths.
 
-**Where the key lives.** In a private file on this computer, and after `protect-key` wrapped by the operating system's
-vault (Keychain, Credential Manager or the Secret Service). See [Credential protection](#credential-protection).
+**Where the key lives.** Encrypted in a private file on this computer, its key in the operating system's vault
+(Keychain, Credential Manager or the Secret Service): `connect` does this by itself, and `update` once. Where there is no
+vault, or over SSH, the key stays in the private file and one line says so. See [Credential protection](#credential-protection).
 
 **What you can check.** The package has no dependencies and is published with provenance. Each release is signed, and the
 launcher checks the package's files against that signature before it starts. A signature shows that a release is ours. It
@@ -616,10 +623,17 @@ the proof of possession the pairing binds, for nothing your record would gain.
 
 ## Credential protection
 
-Existing installations keep private file storage until the person opts in. From 0.10.26,
-run `worktrust update`, quit the AI apps, then run `worktrust protect-key` and restart
-those apps. A new computer can run `worktrust protect-key` before connecting. `worktrust status`
-shows the storage mode. This command is local and does not publish or change a Passport.
+From 0.11.12 a new coupling stores the key this way by itself (`connect`, after the key is saved), and `update` moves
+a key still in its plain file once, after saying so in its plan; `update --keep-key-file` keeps the file. Neither ever
+fails over it: where the vault is not there or refuses, the private file stays exactly as it was and one line names
+`npx -y worktrust protect-key` to try again. Over SSH, and on Linux without a desktop, it is not tried: the login
+keychain or the secret collection can be locked there when an AI app later starts the hook, and a read never asks to
+unlock, so the hook would stop measuring. Reading never raises a prompt: on macOS every read goes through
+`/usr/bin/osascript`, the program that created the item, with user interaction off, whichever Node, npx cache or CLI
+version asks. Quit and reopen your AI apps after an update (the update says so): an AI app still running a bridge older
+than 0.10.26 cannot read a protected key until it restarts. `worktrust protect-key` remains the explicit command, and
+a new computer can run it before connecting. `worktrust status` shows the storage mode. This is local and does not
+publish or change a Passport.
 
 Protected mode encrypts the token, pending renewal token, device private key and coupling metadata
 with AES-256-GCM in `~/.worktrust/key.json`. Its random encryption key lives in macOS Keychain,

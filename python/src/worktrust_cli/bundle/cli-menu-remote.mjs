@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { choose, muted, remoteState, runShown, typed } from "./cli-menu.mjs";
 import { makeProjectsFolder, pickFolder, pickerCommand, suggestedFolders } from "./folder-picker.mjs";
-import { connections } from "./remote-connections.mjs";
+import { awaitingName, awaitingRow, connections } from "./remote-connections.mjs";
 import { loadIdentity, loadProjects, loadRoots, loadSettings } from "./remote-store.mjs";
 import { allowedModes } from "./remote-settings.mjs";
 
@@ -211,7 +211,9 @@ export async function remoteMenu(term, io, header) {
     const approved = approval(), paused = (() => { try { return loadSettings().paused !== null; } catch { return false; } })();
     // The two roads; one that leaves this computer approved returns to the list above, which now opens on Link a phone.
     const road = (which) => async () => ((await runShown(term, io, ["remote", which, ...(approved ? ["--repair"] : [])])) === false ? false : approved === false && approval() === true ? "back" : true);
-    return remoteItems(approved, paused, {
+    // 0.11.12: a linked phone with no reach chosen yet is said first, and its row opens the access step (awaitingRow).
+    const waiting = state?.remoteAccess === "premium_required" ? null : awaitingName();
+    return [...(waiting ? [awaitingRow(waiting, (args) => runShown(term, io, args))] : []), ...remoteItems(approved, paused, {
       approve: () => level(term, header, approved ? "Approve this computer again (new keys)" : "Approve this computer", () => [
         { label: "With the WorkTrust app", hint: `npx worktrust remote app${approved ? " --repair" : ""}`, info: "One QR: the app approves and links this phone.", run: road("app") },
         { label: "In the browser", hint: `npx worktrust remote web${approved ? " --repair" : ""}`, info: "Opens WorkTrust in your browser, where you approve.", run: road("web") },
@@ -222,7 +224,7 @@ export async function remoteMenu(term, io, header) {
       pause: () => runShown(term, io, ["remote", paused ? "resume" : "pause"]),
       status: () => runShown(term, io, ["remote", "status"]),
       upgrade: () => showUpgrade(term, io, state?.upgrade ?? null), upgradeHint: state?.upgrade ? String(state.upgrade).replace(/^https?:\/\//, "") : undefined,
-    }, state?.remoteAccess ?? null);
+    }, state?.remoteAccess ?? null)];
   }, reading);
 }
 

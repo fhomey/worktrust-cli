@@ -165,6 +165,7 @@ export function lookItems(connected = false) {
 export async function lookMenu(term, io, levels) {
   const menu = await import("./cli-menu.mjs");
   const code = await menu.runShown(term, io, ["look"], null, { pause: false });
+  if (typeof code === "boolean") return code; // stopped with Esc (0.11.12): Enter is the menu, Esc closes it
   if (code !== 0) { term.write(`\n  ! It ended with a message above. ${menu.muted("Press any key for the menu.")}\n`); const k = await term.anyKey(); return !(k.ctrl && k.name === "c"); }
   const picked = await menu.choose(term, { title: "What next", items: lookItems(false) });
   if (picked === "quit") return false;

@@ -40,7 +40,7 @@ async function post(origin, path, body) {
 /**
  * ONE SCAN (CLI 0.11.10, owner 2026-11-14: "once you have done that, do you still have to pair? Otherwise you go through the
  * same step twice"). `remote app` draws the approval link with the PAIRING material in its fragment, which no browser sends
- * to a server: `<authorize_url>#v=1&g=<gateway>&k=<Ed25519 pub>&x=<X25519 pub>&s=<32-byte secret>&e=<expiry>`, the pairing
+ * to a server: `<authorize_url>#v=1&g=<gateway>&k=<Ed25519 pub>&x=<X25519 pub>&s=<32-byte secret>&e=<expiry>` (0.11.12: the compact code, below), the pairing
  * invite of PROTOCOL.md §Pairing without `d` (the issuer names this computer's device id only when it approves). The
  * WorkTrust app's own scanner approves with the authenticator, finds this computer in the account's device list by the
  * fingerprint of `k` and `x`, and makes the invite whole with its device id; the daemon then confirms the phone by the
@@ -48,27 +48,56 @@ async function post(origin, path, body) {
  * fragment: pairing a phone is then the second step it always was (`linkPhone` shows the QR after its wait).
  */
 export const ONE_SCAN_KEYS = Object.freeze(["v", "g", "k", "x", "s", "e"]);
+/**
+ * 0.11.12 (owner, 2026-11-15: "the QR must be about 4 x 4 cm"): for WorkTrust's own relay the fragment is the COMPACT code of
+ * remote-protocol pairing.ts (a 16-byte seed, a 128-bit commitment to `k` and `x`, the expiry; 58 base32 characters), the
+ * same one the pairing QR draws; the secret `s` is the seed expanded, so the daemon's invite is unchanged. Another relay keeps
+ * the long fragment above. The WorkTrust app reads both since build 17 (docs/OPEN.md: build 16 reads only the long one).
+ */
 export function oneScan({ gateway, publicKeys, nowMs, random }) {
   if (!gateway || !P.isGatewayOrigin(gateway)) return null;
-  const fields = { v: 1, g: gateway, k: publicKeys.ed25519_pub, x: publicKeys.x25519_pub, s: P.toBase64Url(random(32)), e: Math.floor(nowMs / 1000) + P.PAIRING_INVITE_LIFETIME_S };
-  return { ...fields, fragment: ONE_SCAN_KEYS.map((key) => `${key}=${encodeURIComponent(String(fields[key]))}`).join("&") };
+  const seed = random(P.PAIRING_SEED_BYTES);
+  const fields = { v: 1, g: gateway, k: publicKeys.ed25519_pub, x: publicKeys.x25519_pub, s: P.expandPairingSeed(seed), e: Math.floor(nowMs / 1000) + P.PAIRING_INVITE_LIFETIME_S };
+  const fragment = gateway === PRODUCTION_GATEWAY ? P.encodeCompactPairing({ seed, commitment: P.deviceCommitment(publicKeys), e: fields.e }) : ONE_SCAN_KEYS.map((key) => `${key}=${encodeURIComponent(String(fields[key]))}`).join("&");
+  return { ...fields, seed: P.toBase64Url(seed), fragment };
 }
 /**
  * THE QR'S OWN, SHORTER FORM OF A LINK (owner, 2026-11-14: "make the QR more compact"): `g` is left out when it names
  * WorkTrust's production relay, the one the phone assumes when `g` is missing (CLI 0.11.10 with the app's 2026-11-14
- * JavaScript, which reads both forms). `d`, `k`, `x`, `s` and `e` are never left out; another gateway (the dev relay) stays
- * named. Only the drawn code is shortened: the printed link and invite.json keep `g`, for a browser it is pasted into and
- * for the daemon. 36 characters fewer: the pairing QR goes from version 12 to 9 with level L.
+ * JavaScript, which reads both forms). Since 0.11.12 only a long link meets it (another relay, or an invite without a seed).
  */
 const DEFAULT_G = `&g=${encodeURIComponent(PRODUCTION_GATEWAY)}`;
 export const compactForQr = (link) => link.replace(DEFAULT_G, "");
+/**
+ * A PAIRING INVITE WHOSE SECRET COMES FROM A 16-BYTE SEED (0.11.12): the long invite of PROTOCOL.md §Pairing (its `s` the seed
+ * expanded, ten minutes), checked by the protocol's own encoder, with the seed kept beside it for the compact QR.
+ */
+export function seededInvite({ gateway, deviceId, publicKeys, nowMs, random }) {
+  const seed = random(P.PAIRING_SEED_BYTES);
+  const invite = { v: 1, g: gateway, d: deviceId, k: publicKeys.ed25519_pub, x: publicKeys.x25519_pub, s: P.expandPairingSeed(seed), e: Math.floor(nowMs / 1000) + P.PAIRING_INVITE_LIFETIME_S };
+  P.encodePairingInvite(invite);
+  return { ...invite, seed: P.toBase64Url(seed) };
+}
+/** The long link of an invite (its seven keys, whatever else it carries beside them). */
+export const inviteLink = (invite) => P.encodePairingInvite({ v: invite.v, g: invite.g, d: invite.d, k: invite.k, x: invite.x, s: invite.s, e: invite.e });
+/**
+ * WHAT THE PAIRING QR DRAWS (0.11.12): for WorkTrust's relay and an invite with its seed, the compact code
+ * `https://app.worktrust.io/remote/pair#<58 characters>` (version 4 at level L, 33 modules); else the long link without the
+ * default `g` (version 9 or more). The seed must expand to the invite's own secret, so the code can only name this invite.
+ */
+export function pairingQrText(invite) {
+  const seed = typeof invite.seed === "string" ? P.fromBase64Url(invite.seed) : null;
+  if (seed?.length === P.PAIRING_SEED_BYTES && invite.g === PRODUCTION_GATEWAY && P.expandPairingSeed(seed) === invite.s)
+    return `${P.PAIRING_LINK_BASE}#${P.encodeCompactPairing({ seed, commitment: P.deviceCommitment({ ed25519_pub: invite.k, x25519_pub: invite.x }), e: invite.e })}`;
+  return compactForQr(inviteLink(invite));
+}
 /** The approval link with the pairing material in its fragment, or the link as it was (no gateway, the browser's road). */
 export const withPairing = (url, once) => (once ? `${url}#${once.fragment}` : url);
 /** The invite the daemon reads (invite.json) once the issuer named this computer: the one-scan secret, now with its `d`; checked by the protocol's own encoder. */
 export function oneScanInvite(once, deviceId, code, nowMs) {
   const invite = { v: once.v, g: once.g, d: deviceId, k: once.k, x: once.x, s: once.s, e: once.e };
   P.encodePairingInvite(invite);
-  return { ...invite, code, used: false, created_at: nowMs };
+  return { ...invite, ...(once.seed ? { seed: once.seed } : {}), code, used: false, created_at: nowMs };
 }
 
 /** Which road, the app's QR here (Enter) or the browser; not a terminal, or --yes: the browser. Since 0.11.7 the person names the road (`remote app` | `remote web`, or the menu); kept for a caller that asks. */
@@ -120,7 +149,10 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
       if (road === "app") {
         // One scan (0.11.10): the app's scanner approves AND links this phone; the camera app only approves.
         say(once ? "  Scan this in the WorkTrust app (Scan › Connect agent): approve with your authenticator code, and the phone links too." : "  Scan this with the WorkTrust app (or the phone's camera) and approve with your authenticator code:");
+        // Room around the code (0.11.12, owner 2026-11-15): one empty line above it and one below.
+        say("");
         showQr(withPairing(authorize_url, once));
+        say("");
         // The printed link leaves the pairing secret out (scrollback, a shared screen; review 2026-11-14, P3-7): the QR carries
         // it, and --show-link prints it whole for a phone that cannot scan.
         say(`  Link: ${showLink ? withPairing(authorize_url, once) : authorize_url}`);

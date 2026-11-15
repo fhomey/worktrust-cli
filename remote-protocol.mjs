@@ -2001,6 +2001,25 @@ export function deviceFingerprint(keys                  )         {
   return base32Groups(digest.subarray(0, 10));
 }
 
+/** The bytes of a commitment to a device's public keys: 128 bits of the SAME digest the fingerprint takes 80 of. */
+export const COMMITMENT_BYTES = 16;
+
+/**
+ * A 128-BIT COMMITMENT TO A DEVICE'S KEYS (CLI 0.11.12, the compact pairing code): the first sixteen bytes of the digest
+ * whose first ten are the fingerprint. A code that carries it instead of both keys still pins the computer: the phone
+ * takes the keys from the computer's issuer-signed binding in the first welcome and compares all 128 bits (handshake.ts
+ * `pinnedCommitment`), and the fingerprint it pins from then on is read from the same bytes (`commitmentFingerprint`).
+ */
+export function deviceCommitment(keys                  )             {
+  return sha256(concatBytes(FINGERPRINT_DOMAIN, decodeKey(keys.ed25519_pub), decodeKey(keys.x25519_pub))).slice(0, COMMITMENT_BYTES);
+}
+
+/** The fingerprint a commitment names: the same characters `deviceFingerprint` gives for the committed keys. */
+export function commitmentFingerprint(commitment            )         {
+  if (commitment.length !== COMMITMENT_BYTES) throw new TypeError("a commitment is 16 bytes");
+  return base32Groups(commitment.subarray(0, 10));
+}
+
 // ---- packages/remote-protocol/src/crypto/jws.ts
 /**
  * COMPACT SIGNED TOKENS: JWS (RFC 7515) with EdDSA over Ed25519 (RFC 8037), so the gateway can verify an assertion
@@ -3874,8 +3893,9 @@ export function importChannel(stored               )                      {
  *                                       &s=<32-byte one-time secret>&e=<expiry, unix seconds>
  *
  * (worktrust://remote/pair#... is the same invite for a phone without the app link). Everything sits in the FRAGMENT, which
- * a browser never sends: no server, not app.worktrust.io and not the gateway, ever receives the secret. The invite lives five
- * minutes and is spent by its first use; the computer refuses a second.
+ * a browser never sends: no server, not app.worktrust.io and not the gateway, ever receives the secret. The invite lives ten
+ * minutes (five until CLI 0.11.12; owner 2026-11-15: "time to scan: 10 minutes") and is spent by its first use; the computer
+ * refuses a second. Since CLI 0.11.12 the computer draws the COMPACT form below for WorkTrust's own relay.
  *
  * WHY IT CONFIRMS THE PHONE. Whoever scanned the QR saw the computer's screen: that is the keyboard confirmation, done by
  * the camera. The secret is mixed into the first handshake as a pre-shared key (`pairingPsk`, HKDF over "worktrust-remote-
@@ -3890,7 +3910,7 @@ export function importChannel(stored               )                      {
  */
 
 export const PAIRING_INVITE_VERSION = 1;
-export const PAIRING_INVITE_LIFETIME_S = 300;
+export const PAIRING_INVITE_LIFETIME_S = 600;
 export const PAIRING_LINK_BASE = "https://app.worktrust.io/remote/pair";
 export const PAIRING_APP_LINK_BASE = "worktrust://remote/pair";
 
@@ -3926,7 +3946,7 @@ function checkInvite(value         , nowMs        )                         {
   return accept(invite);
 }
 
-/** The computer: a fresh invite for its own keys, five minutes. */
+/** The computer: a fresh invite for its own keys, ten minutes. */
 export function createPairingInvite(input                                                                                                                                                                     )                {
   const invite = { v: PAIRING_INVITE_VERSION, g: input.gateway, d: input.deviceId, k: input.ed25519_pub, x: input.x25519_pub, s: toBase64Url(input.random(32)), e: Math.floor(input.nowMs / 1000) + PAIRING_INVITE_LIFETIME_S };
   const checked = checkInvite(invite, input.nowMs);
@@ -3990,6 +4010,82 @@ export function generatePairingCode(random        )         {
   return out;
 }
 export const isPairingCode = (value         )                  => typeof value === "string" && /^[0-9A-HJKMNP-TV-Z]{8}$/.test(value);
+
+/**
+ * THE COMPACT PAIRING CODE (CLI 0.11.12, owner 2026-11-15: "the QR in the terminal must be about 4 x 4 cm"). For WorkTrust's
+ * own relay the computer draws `https://app.worktrust.io/remote/pair#<58 characters>`: RFC 4648 base32 (A-Z, 2-7, so the
+ * tail is a QR ALPHANUMERIC segment at 5.5 bits a character) of 36 bytes:
+ *
+ *   seed (16 bytes)        the one-time secret; both ends expand it (HKDF, "worktrust-remote-pair-v2-seed") to the 32-byte
+ *                          `s` of the long form, so pairingPsk, the proofs and the daemon's invite.json are unchanged
+ *   commitment (16 bytes)  the first 128 bits of the fingerprint's own digest over the computer's two public keys
+ *                          (keys.ts deviceCommitment); the phone checks all 128 against the keys in the computer's
+ *                          issuer-signed binding at the first welcome (handshake.ts pinnedCommitment) and pins the
+ *                          fingerprint read from the same bytes
+ *   e (4 bytes)            the expiry, unix seconds, big-endian
+ *
+ * WHAT IS LEFT OUT, AND WHY IT IS STILL SAFE. `k` and `x` (86 characters): the phone never used them for more than an 80-bit
+ * fingerprint pin; the commitment is a 128-bit pin of the same digest, so a forged computer needs a second preimage of
+ * 128 bits. `d` (26): the phone finds the device id in its account's device list by that fingerprint; a list naming
+ * another device under it meets the commitment and the computer's own binding in the handshake and is refused. `g` (40):
+ * the compact form means the build's own relay; any other relay keeps the long form. `v` (4): the fragment's shape is its
+ * version (the long form always holds `=`). The secret is 128 bits instead of 256: offline guessing of a pairing proof
+ * the relay saw costs 2^128 HKDF evaluations, and the invite is spent once within its ten minutes.
+ *
+ * PAYLOAD BUDGET (level L, the CLI's QR, scripts/remote-qr.mjs): `https://app.worktrust.io/remote/pair#` is a 37-byte BYTE
+ * segment (4 + 8 + 296 = 308 bits) and the 58 characters an ALPHANUMERIC one (4 + 9 + 29 * 11 = 332 bits): 640 bits, the
+ * exact capacity of version 4 at level L (80 data codewords), 33 modules, 37 with the 2-module quiet zone. The long form
+ * without `g` was 220 bytes: version 9, 53 modules (61 with the 4-module quiet zone of 0.11.10).
+ */
+export const PAIRING_SEED_BYTES = 16;
+const COMPACT_BYTE_COUNT = PAIRING_SEED_BYTES + COMMITMENT_BYTES + 4;
+/** 36 bytes in base32: 58 characters, the last carrying two zero bits. */
+export const COMPACT_PAIRING_LENGTH = Math.ceil((COMPACT_BYTE_COUNT * 8) / 5);
+const RFC4648_BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const COMPACT_SHAPE = new RegExp(`^[A-Z2-7]{${COMPACT_PAIRING_LENGTH}}$`);
+const SEED_INFO = utf8Encode("worktrust-remote-pair-v2-seed");
+
+/** A fragment in the compact form (58 base32 characters, nothing else). */
+export const isCompactPairing = (fragment         )                     => typeof fragment === "string" && COMPACT_SHAPE.test(fragment);
+
+/** The 32-byte secret (base64url, the long form's `s`) both ends derive from a compact code's 16-byte seed. */
+export function expandPairingSeed(seed            )         {
+  if (seed.length !== PAIRING_SEED_BYTES) throw new TypeError("a pairing seed is 16 bytes");
+  return toBase64Url(hkdfSha256(seed, new Uint8Array(0), SEED_INFO, 32));
+}
+
+/** The computer: the 58-character fragment. */
+export function encodeCompactPairing(p                )         {
+  if (p.seed.length !== PAIRING_SEED_BYTES || p.commitment.length !== COMMITMENT_BYTES || !Number.isInteger(p.e) || p.e < 0 || p.e > 0xffffffff) throw new TypeError("not a compact pairing");
+  const bytes = concatBytes(p.seed, p.commitment, new Uint8Array([p.e >>> 24, (p.e >>> 16) & 255, (p.e >>> 8) & 255, p.e & 255]));
+  let out = "", acc = 0, bits = 0;
+  for (const b of bytes) {
+    acc = (acc << 8) | b; bits += 8;
+    while (bits >= 5) { bits -= 5; out += RFC4648_BASE32[(acc >> bits) & 31] ; }
+    acc &= (1 << bits) - 1;
+  }
+  return bits > 0 ? out + RFC4648_BASE32[(acc << (5 - bits)) & 31]  : out;
+}
+
+/** What the phone reads from a compact code: the long form's secret, the commitment and the fingerprint it names. */
+
+/** The phone: a compact fragment, or a refusal (its shape, a non-zero padding, an expired or too long-lived code). */
+export function decodeCompactPairing(fragment        , nowMs        )                       {
+  if (!isCompactPairing(fragment)) return refuse("shape", "$compact");
+  const bytes = new Uint8Array(COMPACT_BYTE_COUNT);
+  let acc = 0, bits = 0, at = 0;
+  for (const ch of fragment) {
+    acc = (acc << 5) | RFC4648_BASE32.indexOf(ch); bits += 5;
+    if (bits >= 8) { bits -= 8; bytes[at++] = (acc >> bits) & 255; }
+    acc &= (1 << bits) - 1;
+  }
+  if (acc !== 0) return refuse("shape", "$compact: not canonical");
+  const e = ((bytes[32]  << 24) >>> 0) + (bytes[33]  << 16) + (bytes[34]  << 8) + bytes[35] ;
+  if (e * 1000 + CLOCK_SKEW_MS < nowMs) return refuse("expired", "$compact.e");
+  if (e * 1000 > nowMs + PAIRING_INVITE_LIFETIME_S * 1000 + CLOCK_SKEW_MS) return refuse("lifetime", "$compact.e: lives too long");
+  const commitment = bytes.slice(PAIRING_SEED_BYTES, PAIRING_SEED_BYTES + COMMITMENT_BYTES);
+  return accept({ secret: expandPairingSeed(bytes.slice(0, PAIRING_SEED_BYTES)), commitment, fingerprint: commitmentFingerprint(commitment), e });
+}
 
 // ---- packages/remote-protocol/src/crypto/handshake.ts
 /**
@@ -4160,6 +4256,7 @@ export function completeHandshake(input
   if (psk && !pairProofValid(psk, "welcome", withoutProof, proof )) return refuse("not_confirmed", "$welcome.pair_proof");
   const fingerprint = bindingFingerprint(computer.value);
   if (input.pinnedFingerprint !== null && input.pinnedFingerprint !== fingerprint) return refuse("not_confirmed", "$welcome: the computer's key changed");
+  if (input.pinnedCommitment && !equalBytes(deviceCommitment(computer.value), input.pinnedCommitment)) return refuse("not_confirmed", "$welcome: not the computer the code committed to");
   const expected = highestCommon(hello.versions, welcome.versions);
   if (expected === null || welcome.protocol_version !== expected) return refuse("downgrade", "$welcome.protocol_version: not the highest common");
   if (expected < MIN_PROTOCOL_VERSION) return refuse("downgrade", "$welcome.protocol_version: below the minimum");
@@ -4325,6 +4422,56 @@ export function deviceSignatureValid(bytes            , signature         , publ
 /** A request's own time (milliseconds) within a minute of the issuer's clock. */
 export const requestTimeValid = (iat         , nowMs        )          =>
   typeof iat === "number" && Number.isSafeInteger(iat) && Math.abs(nowMs - iat) <= CLOCK_SKEW_MS;
+
+// ---- packages/remote-protocol/src/crypto/app-pin.ts
+/**
+ * THE APP PIN OPENS REMOTE, WITH A SERVER-HELD HALF (owner, 2026-11-15, B18; docs/MOBILE.md §The app PIN opens Remote,
+ * docs/remote-agents/ISSUER.md §2e). One writer for every value the phone, the Passport app and the database must agree
+ * on, so a test computes exactly what each side computes:
+ *
+ *   P         scrypt(app PIN, a 16-byte salt that never leaves the phone): the phone's, never sent (mobile keyring/app-pin.ts)
+ *   V         HMAC-SHA256(P, "worktrust-app-pin/verifier/v1\n" ‖ device_id): the verifier the server keeps; it cannot be
+ *             guessed without the phone's salt, and it is never answered by any door
+ *   proof     HMAC-SHA256(V, "worktrust-app-pin/proof/v1\n" ‖ device_id ‖ "\n" ‖ challenge hex): one per server challenge;
+ *             the database computes the same (20261115400100 `remote_app_pin_release`) and compares
+ *   KEK       HKDF-SHA256(P ‖ S, salt = device_id, info = "worktrust-app-pin/kek/v1"): seals the vault's wrapping key; S is
+ *             the half only the server keeps (sealed under the app's own secret) and releases after a right proof
+ *
+ * And the two signed requests: enrolling is signed by the phone's BOUND remote key (only an open vault holds it), a
+ * release by the door key that enrollment named (kept in the keychain beside the box, so it binds the request to this
+ * install). Domain-separated like every other request (issuer-requests.ts), so neither opens anything else.
+ */
+
+const toHex = (bytes            )         => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+export const APP_PIN_CHALLENGE = /^[0-9a-f]{64}$/;
+
+/** V, as hex (64): what enrollment hands the server. */
+export const appPinVerifier = (p            , deviceId        )             =>
+  hmacSha256(p, utf8Encode(`worktrust-app-pin/verifier/v1\n${deviceId}`));
+
+/** The answer to one challenge, as hex (64). */
+export const appPinProof = (verifier            , deviceId        , challenge        )         =>
+  toHex(hmacSha256(verifier, utf8Encode(`worktrust-app-pin/proof/v1\n${deviceId}\n${challenge}`)));
+
+/** The key the vault's wrapping key is sealed under for the app PIN's road: neither P nor S alone makes it. */
+export const appPinKek = (p            , s            , deviceId        )             =>
+  hkdfSha256(concatBytes(p, s), utf8Encode(deviceId), utf8Encode("worktrust-app-pin/kek/v1"), 32);
+
+export const appPinHex = toHex;
+
+/** The door key's public half (base64url, 32 bytes) from its 32-byte seed; it signs with issuer-requests.ts `deviceSign`. */
+export const appPinDoorPublic = (seed            )         => toBase64Url(ed25519PublicKey(seed));
+
+const ENROLL = utf8Encode("worktrust-app-pin/v1/enroll\n");
+const RELEASE = utf8Encode("worktrust-app-pin/v1/release\n");
+
+/** Signed by the phone's bound remote Ed25519 key: the new verifier, door key and half, now. */
+export const appPinEnrollBytes = (b                                                                                      )             =>
+  concatBytes(ENROLL, canonicalBytes({ device_id: b.device_id, door_pub: b.door_pub, half: b.half, iat: b.iat, verifier: b.verifier }));
+
+/** Signed by the enrolled door key: this proof for this challenge on this phone. */
+export const appPinReleaseBytes = (b                                                         )             =>
+  concatBytes(RELEASE, canonicalBytes({ challenge: b.challenge, device_id: b.device_id, proof: b.proof }));
 
 // ---- packages/remote-protocol/src/gateway.ts
 /**

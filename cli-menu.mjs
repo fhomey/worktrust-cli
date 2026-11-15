@@ -8,7 +8,7 @@
  * Each item runs the direct command it shows in its muted line, as a child of this CLI with the terminal handed over
  * (io.runCli), so people learn the short form and every command keeps its own questions and its own guards. Keys: ↑/↓
  * move, Enter opens, Esc or ← goes back one level, q quits from the top, 1 to 9 jump, Ctrl+C quits. Raw mode and the
- * cursor are restored on every way out (quit, Ctrl+C, an error).
+ * cursor are restored on every way out (quit, Ctrl+C, an error). 0.11.12: Esc while a command runs stops it (cli-stop.mjs).
  *
  * 0.11.8 (owner, 2026-11-13): Update comes first and says whether there is something to update; every item carries one plain
  * sentence under it; the menu is redrawn IN PLACE (createTerminal) and never left in the scrollback; colours carry meaning
@@ -28,8 +28,9 @@
 import { emitKeypressEvents } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { busyWith, clip, coloursFor, visibleLength } from "./cli-colour.mjs";
+import { STOPPED } from "./cli-stop.mjs";
 import { loadIdentity, loadPhones, loadSettings } from "./remote-store.mjs";
-
+import { awaitingName, awaitingRow } from "./remote-connections.mjs";
 /** Whether bare `npx worktrust` opens the menu here. Pure: the caller passes what it knows. */
 export function menuWanted({ args: given = [], env = {}, stdinTTY = false, stdoutTTY = false, agentShell = null } = {}) {
   const args = given.filter((arg) => arg !== "--no-color" && arg !== "--no-colour"); // how it looks, not what it does
@@ -167,8 +168,7 @@ export async function typed(term, question, value = "") {
   return text || null;
 }
 
-/** While a command runs, Ctrl+C is the command's (it reaches the child too); the menu stays. */
-let busy = false;
+let busy = false; // while a command runs, Ctrl+C is the command's (it reaches the child too) and Esc stops it (cli-stop.mjs); the menu stays
 
 /**
  * Run one direct command with the terminal handed over, then wait for a key before the menu comes back. The menu's own
@@ -183,10 +183,17 @@ export async function runShown(term, io, args, label = null, { pause = true } = 
   let code = 1;
   try { code = await io.runCli(args); } catch { code = 1; } finally { busy = false; }
   term.enter();
+  if (code === STOPPED) return stoppedAsk(term); // Esc stopped it (0.11.12): true is the menu again, false closes it
   if (!pause) return code;
   term.write(`\n  ${code === 0 ? paint.green("✓ Done.") : paint.yellow("! It ended with a message above.")} ${muted("Press any key for the menu.")}\n`);
   const k = await term.anyKey();
   return !(k.ctrl && k.name === "c");
+}
+
+/** STOPPED WITH ESC (0.11.12, owner 2026-11-15; cli-stop.mjs): one line; Enter is the menu, Esc (or Ctrl+C) closes it. */
+export async function stoppedAsk(term) {
+  term.write(`\n  ${paint.yellow("Stopped.")} ${muted("Enter: back to the menu · Esc: close")}\n`);
+  for (;;) { const k = await term.anyKey(); if (k.name === "return" || k.name === "enter") return true; if (k.name === "escape" || (k.ctrl && k.name === "c")) return false; }
 }
 
 /** What the Remote Agent item says where this Node has no WebSocket; Enter opens the ways forward (node-guide.mjs). */
@@ -244,8 +251,7 @@ export function headerLines(state) {
 /** The account's plan in words (owner, 2026-11-14), as WorkTrust answered it; anything else, or no answer, is "not known". */
 const PLAN_WORDS = { free: "Free", premium: "Premium" };
 const HELP = (open) => ({ label: "Help · all commands", hint: "npx worktrust help", info: "Lists all commands. npx -y worktrust skips npm's question.", run: () => open(["help"]) });
-const QUIT = { label: "Quit", hint: "q", info: "Leaves the menu. Nothing keeps running.", quit: true };
-const PRESERVE = (sub, info) => ({ label: "Preserve evidence ›", hint: "npx worktrust preserve …", info, run: () => sub.preserve?.() });
+const QUIT = { label: "Quit", hint: "q", info: "Leaves the menu. Nothing keeps running.", quit: true }, PRESERVE = (sub, info) => ({ label: "Preserve evidence ›", hint: "npx worktrust preserve …", info, run: () => sub.preserve?.() });
 /** 0.11.10 (owner, 2026-11-14): the first row before sign-in; the table, then what to do with it (cli-look.mjs lookMenu). */
 const LOOK = (sub) => ({ label: "Look at this computer", hint: "npx worktrust look", info: "Reads what your AI apps recorded here. Nothing is sent.", run: () => sub.look?.() });
 
@@ -267,7 +273,7 @@ export function firstItems(open = () => true, sub = {}) {
 /** Why the first menu still stands after Connect ran, in one line, by how the command ended (0 without a key: a No or a dry run). */
 export function connectReason(code) {
   if (code === 0) return "Connect stopped before the sign-in; nothing was written. 2 tries again.";
-  if (code === 130) return "Connect was cancelled; this computer is not connected. 2 tries again.";
+  if (code === 130 || code === STOPPED) return "Connect was cancelled; this computer is not connected. 2 tries again.";
   return "Connect ended with the message above; not connected. 2 tries again.";
 }
 
@@ -285,7 +291,7 @@ export function topItems(state, open = () => true, sub = {}) {
     : same ? "Newest version not checked. Enter changes nothing here."
     : "Sets up this computer's hook and AI-app doors again.";
   return [
-    { label: "Update WorkTrust", note, hint: "npx worktrust update", info: updateInfo, run: () => open(["update"]), ...(note.settled ? { disabled: true, quiet: "Already up to date." } : {}) },
+    ...(state.awaiting ? [awaitingRow(state.awaiting, open)] : []), { label: "Update WorkTrust", note, hint: "npx worktrust update", info: updateInfo, run: () => open(["update"]), ...(note.settled ? { disabled: true, quiet: "Already up to date." } : {}) },
     { label: "Check this computer", hint: "npx worktrust", info: "Shows what is coupled here and finishes what waits.", run: () => open([]) },
     // Node before 22.4 has no WebSocket (0.11.8): the item stays, says why, and Enter opens the ways forward, not the levels.
     state.remoteBlocked
@@ -308,7 +314,7 @@ export function topItems(state, open = () => true, sub = {}) {
  */
 export async function menuLoop(term, io, levels) {
   let last = null, state = null; // the command the top level ran last and how it ended; this computer's state as last read
-  const read = async () => (state = { ...(await busyWith("Reading this computer's state", () => io.state())), remoteBlocked: typeof globalThis.WebSocket !== "function" });
+  const read = async () => (state = { ...(await busyWith("Reading this computer's state", () => io.state())), remoteBlocked: typeof globalThis.WebSocket !== "function", awaiting: awaitingName() });
   // A deeper level reads the state again after each of its commands (inner.state), so the head above it is true at once.
   const inner = { runCli: (args) => io.runCli(args), state: read, openUrl: (url) => io.openUrl?.(url) };
   for (;;) {

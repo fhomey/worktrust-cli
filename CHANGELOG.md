@@ -2,6 +2,39 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.12: a smaller code to link a phone, access chosen at once, Esc stops a command, and decoy keys
+
+**Decoy keys beside the real one.** `connect` and `update` write a few decoy credential files next to the computer's key,
+in the same format, and register only their fingerprints with WorkTrust. Someone who copies the folder and tries one of
+them is caught at once: every Remote Agent link of the account is cut, the computer's key is revoked, and the owner gets an
+alert and an e-mail. If you restored a file from `~/.worktrust` yourself, run `npx worktrust connect` again.
+
+**A smaller code to link a phone, and ten minutes to scan it.** The QR that links a phone carries a short code instead of
+the computer's two keys: a one-time secret and a 128-bit commitment to those keys, which the phone checks against the
+computer's signed key when it first connects. With a narrower margin it is drawn 37 characters wide and 19 lines high,
+where it was 61 by 31. It needs the WorkTrust app build 17 or later. The code and the QR work for ten minutes, with the
+time left counting down under the QR, and an empty line above and below the code gives it room. The pairing link is no
+longer printed with its secret (`--show-link` prints it).
+
+**The phone is named the moment it links, then you choose what it may reach.** `✓ Phone linked` shows the phone's device
+id and its type, and the next step asks right away: allow all your usual project folders (Desktop, Projects, code and the
+like, as roots) or tick the projects to grant. Both go through the same grants as Remote Agent › Roots and › Projects.
+Nothing is shared until you choose: close the CLI before that and the phone reaches no folder, and the next
+`npx worktrust` asks again (`npx worktrust remote access` does it directly).
+
+**Esc stops a running command in the menu.** While a command the menu started is busy, Esc stops it and the menu says
+`Stopped. Enter: back to the menu · Esc: close`. A read or a wait stops at once; a write is finished first (`Finishing a
+write, then stopping…`), so no file is left half-written. Typed directly, nothing changes: Ctrl+C stops a command as before.
+
+**The spinner stays on one line.** A key typed while "Counting what this computer measured" turned was echoed by the
+terminal and pushed the spinner onto a second line. In the menu the keys are no longer echoed while a command is busy, and
+the spinner is cut to the terminal's width.
+
+**The key goes into the OS vault by itself.** `connect` protects a new coupling's key with the macOS Keychain, Windows
+Credential Manager or the Secret Service, and `update` moves a key still in its plain file once, after saying so
+(`--keep-key-file` keeps the file). Where there is no vault, or over SSH, the private file stays and one line says how to
+retry (`npx -y worktrust protect-key`). Reading the key never raises a system prompt.
+
 ## 0.11.11: faster file sending, another model in the same chat, and no release from a phone for Codex and OpenCode
 
 **Files travel faster.** Remote Agent checks and encodes a file's pieces without decoding them first and gives the

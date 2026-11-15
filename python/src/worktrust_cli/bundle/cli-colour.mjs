@@ -68,11 +68,15 @@ const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "
  * A spinner in the accent colour while something runs: → stop(). Only on a real terminal with colours on; anywhere else it
  * writes nothing at all, so a pipe, a hook and CI read the same bytes as before. stop() removes the line it drew.
  * It draws on the line the cursor is on, which must be empty: start it between lines, never in the middle of one.
+ * ONE LINE, ALWAYS (0.11.12, owner 2026-11-15: the line stood twice): each frame is cut to the terminal's width less one
+ * column, read again at every frame, so a line never wraps and `\r` always lands on the spinner's own line. A key the
+ * terminal ECHOES is the other way down a line (an Enter is CR LF on the screen); a command the menu started reads keys in
+ * raw mode while a spinner turns, so nothing is echoed there (cli-stop.mjs watchKeys).
  */
 export function spinner(words, { stream = process.stdout, paint = coloursFor(stream), interval = 80, delay = 150 } = {}) {
   if (!paint.on || !stream?.isTTY) return () => {};
   let at = 0, shown = false, stopped = false, timer = null;
-  const frame = () => { shown = true; stream.write(`\r  ${paint.accent(FRAMES[at % FRAMES.length])} ${paint.dim(words)}\x1b[K`); at += 1; };
+  const frame = () => { shown = true; stream.write(`\r  ${paint.accent(FRAMES[at % FRAMES.length])} ${paint.dim(clip(words, Math.max(1, (stream.columns || 80) - 5)))}\x1b[K`); at += 1; };
   // Work that ends at once shows no spinner at all: a line that flashes is worse than none.
   const wait = setTimeout(() => { frame(); timer = setInterval(frame, interval); timer.unref?.(); }, delay);
   wait.unref?.();

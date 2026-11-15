@@ -83,25 +83,41 @@ export const refuse =            (code             , detail        )            
  */
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-const LOOKUP                                   = Object.fromEntries([...ALPHABET].map((c, i) => [c, i]));
+/** Each alphabet character's code, for encoding into a byte array (one fromCharCode per block, not one string per byte). */
+const CODES = Uint8Array.from(ALPHABET, (c) => c.charCodeAt(0));
+/** Each ASCII code's 6-bit value, -1 outside the alphabet. */
+const VALUES = new Int8Array(128).fill(-1);
+for (let i = 0; i < ALPHABET.length; i += 1) VALUES[ALPHABET.charCodeAt(i)] = i;
+/** The whole alphabet, anchored at both ends (no `m` flag: `$` is the end of the input, never before a newline). */
+const BASE64URL_TEXT = /^[A-Za-z0-9_-]*$/;
+const BLOCK = 8192;
 
 /** base64url, no padding. */
 export function toBase64Url(bytes            )         {
-  let out = "";
+  const out = new Uint8Array(Math.ceil((bytes.length * 4) / 3));
+  let o = 0;
   let i = 0;
   for (; i + 2 < bytes.length; i += 3) {
     const n = (bytes[i]  << 16) | (bytes[i + 1]  << 8) | bytes[i + 2] ;
-    out += ALPHABET[(n >> 18) & 63]  + ALPHABET[(n >> 12) & 63]  + ALPHABET[(n >> 6) & 63]  + ALPHABET[n & 63] ;
+    out[o++] = CODES[(n >> 18) & 63] ;
+    out[o++] = CODES[(n >> 12) & 63] ;
+    out[o++] = CODES[(n >> 6) & 63] ;
+    out[o++] = CODES[n & 63] ;
   }
   const rest = bytes.length - i;
   if (rest === 1) {
     const n = bytes[i]  << 16;
-    out += ALPHABET[(n >> 18) & 63]  + ALPHABET[(n >> 12) & 63] ;
+    out[o++] = CODES[(n >> 18) & 63] ;
+    out[o++] = CODES[(n >> 12) & 63] ;
   } else if (rest === 2) {
     const n = (bytes[i]  << 16) | (bytes[i + 1]  << 8);
-    out += ALPHABET[(n >> 18) & 63]  + ALPHABET[(n >> 12) & 63]  + ALPHABET[(n >> 6) & 63] ;
+    out[o++] = CODES[(n >> 18) & 63] ;
+    out[o++] = CODES[(n >> 12) & 63] ;
+    out[o++] = CODES[(n >> 6) & 63] ;
   }
-  return out;
+  let text = "";
+  for (let at = 0; at < o; at += BLOCK) text += String.fromCharCode.apply(null, out.subarray(at, Math.min(o, at + BLOCK))                       );
+  return text;
 }
 
 /**
@@ -109,14 +125,16 @@ export function toBase64Url(bytes            )         {
  * exactly one string decodes to a given byte string; a signature over the string then means one thing).
  */
 export function fromBase64Url(text        )                    {
-  if (text.length % 4 === 1) return null;
-  const out = new Uint8Array(Math.floor((text.length * 3) / 4));
+  const length = text.length;
+  if (length % 4 === 1) return null;
+  const out = new Uint8Array(Math.floor((length * 3) / 4));
   let o = 0;
   let acc = 0;
   let bits = 0;
-  for (const c of text) {
-    const v = LOOKUP[c];
-    if (v === undefined) return null;
+  for (let i = 0; i < length; i += 1) {
+    const code = text.charCodeAt(i);
+    const v = code < 128 ? VALUES[code]  : -1;
+    if (v < 0) return null;
     acc = (acc << 6) | v;
     bits += 6;
     if (bits >= 8) {
@@ -129,16 +147,61 @@ export function fromBase64Url(text        )                    {
   return out;
 }
 
+/**
+ * Whether `text` is canonical base64url (exactly what fromBase64Url accepts) of the stated size, WITHOUT decoding it
+ * (release 33; docs/OPEN.md "Rust was measured and not taken"): a 512 KiB attachment chunk was decoded only to be
+ * measured, about 110 ms on the phone and 96 ms of the relay's event loop per frame. The length gives the size, one
+ * anchored pattern the alphabet, and the last character's low bits the canonical form: of a length 2 past a multiple of
+ * four the last character carries 2 bits (its low 4 must be 0), of 3 past it carries 4 (its low 2 must be 0).
+ * scripts/lib/remote-protocol-bytes-cases.mjs proves the same accept and refuse set as decoding, over both builds.
+ */
 export function isBase64Url(text        , bytes                                   )          {
-  const decoded = fromBase64Url(text);
-  if (decoded === null) return false;
-  if (bytes?.exact !== undefined && decoded.length !== bytes.exact) return false;
-  if (bytes?.max !== undefined && decoded.length > bytes.max) return false;
-  return true;
+  const length = text.length;
+  const tail = length % 4;
+  if (tail === 1) return false;
+  const size = Math.floor((length * 3) / 4);
+  if (bytes?.exact !== undefined && size !== bytes.exact) return false;
+  if (bytes?.max !== undefined && size > bytes.max) return false;
+  if (!BASE64URL_TEXT.test(text)) return false;
+  if (tail === 0) return true;
+  const last = VALUES[text.charCodeAt(length - 1)] ;
+  return (last & (tail === 2 ? 15 : 3)) === 0;
 }
 
-/** UTF-8 encode. Lone surrogates are refused: they have no UTF-8 form and would otherwise round-trip lossy. */
+/** A lone surrogate, high without a low after it or low without a high before it (code units: no `u` flag). */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** Whether a string has a UTF-8 form (no lone surrogate): the engine's own check where it has one, else the pattern. */
+export function wellFormed(text        )          {
+  const native = (text                                    ).isWellFormed;
+  return typeof native === "function" ? native.call(text) : !LONE_SURROGATE.test(text);
+}
+
+// The host's encoder, declared here because this package names no DOM or Node library (a bare `typeof` is safe when absent).
+
+let nativeEncoder                            ;
+function encoder()                 {
+  if (nativeEncoder === undefined) {
+    nativeEncoder = typeof TextEncoder === "function" ? new TextEncoder() : null;
+  }
+  return nativeEncoder;
+}
+
+/**
+ * UTF-8 encode. Lone surrogates are refused: they have no UTF-8 form and would otherwise round-trip lossy (TextEncoder
+ * alone would replace them with U+FFFD, so the check comes first). The engine's TextEncoder where it has one (release
+ * 33: the per-character loop cost about 11 ms per attachment chunk), the portable loop elsewhere; both give the same
+ * bytes (scripts/lib/remote-protocol-bytes-cases.mjs).
+ */
 export function utf8Encode(text        )             {
+  const native = encoder();
+  if (!native) return utf8EncodePortable(text);
+  if (!wellFormed(text)) throw new TypeError("lone surrogate");
+  return native.encode(text);
+}
+
+/** UTF-8 encode without TextEncoder (an engine that has none); the same bytes and the same refusal as utf8Encode. */
+export function utf8EncodePortable(text        )             {
   const out           = [];
   for (let i = 0; i < text.length; i += 1) {
     let cp = text.charCodeAt(i);
@@ -219,8 +282,8 @@ export function canonicalJson(value         )         {
   if (value === null) return "null";
   switch (typeof value) {
     case "string":
-      // Lone surrogates are refused here too, so the string has a UTF-8 form.
-      utf8Encode(value);
+      // Lone surrogates are refused here too, so the string has a UTF-8 form (checked, not encoded: release 33).
+      if (!wellFormed(value)) throw new TypeError("lone surrogate");
       return JSON.stringify(value);
     case "boolean":
       return value ? "true" : "false";
@@ -589,6 +652,13 @@ export const AGENT_OPTIONS_SPEC = object({
   efforts: list(oneOf(AGENT_EFFORTS), AGENT_EFFORTS.length),
   /** How many extra projects a session of this adapter may reach; 0: single-project. */
   extra_projects: int(0, MAX_EXTRA_PROJECTS),
+  /**
+   * Release 33 (owner, 2026-11-13: option A): a running session of this adapter can continue on another of ITS OWN listed
+   * models (agent.prompt `model`): Claude Code by its own `--resume` with another `--model`, Codex by `turn/start`'s model,
+   * OpenCode by the next run's `--model`. Only in an inventory for a phone that asked `inventory.get` `model_switch`
+   * (an older phone refuses the unknown key); absent or false: another model is a new chat, as before.
+   */
+  model_switch: optional(bool()),
 });
 
 export const CAPABILITIES_SPEC = object({
@@ -2317,7 +2387,16 @@ export const COMMAND_PAYLOAD_SPECS = {
    * ends; with `interrupt: true` (only where the adapter reports interrupt) the computer ends the running turn first and
    * runs this prompt next (2026-11-07).
    */
-  "agent.prompt": object({ text: text(MAX_PROMPT_CHARS, 1), interrupt: optional(bool()), attachments: optional(list(id("att"), MAX_ATTACHMENTS_PER_PROMPT)) }),
+  "agent.prompt": object({
+    text: text(MAX_PROMPT_CHARS, 1), interrupt: optional(bool()), attachments: optional(list(id("att"), MAX_ATTACHMENTS_PER_PROMPT)),
+    /**
+     * Release 33 (owner, 2026-11-13: option A): another model of the SAME agent for this turn and the turns after it, from
+     * the session's adapter's own listed models; sent only to a computer whose extended inventory says `model_switch` for
+     * that adapter (an older computer refuses the unknown key and runs nothing). The computer checks it again
+     * (checkModelSwitch) against its own list and its adapter; another agent is never a model: it is a new chat.
+     */
+    model: optional(text(128, 1)),
+  }),
   /**
    * Words for an agent in the middle of a turn: redirect without stopping. Where the adapter reports steer_mode `live`
    * they enter the running turn (accepted with `landed: "running_turn"` once the agent read them); `queued`, they run as
@@ -2374,6 +2453,11 @@ export const COMMAND_PAYLOAD_SPECS = {
      * computer refuses the field with `extended` and the phone asks again without both.
      */
     device_name: optional(text(MAX_DEVICE_NAME, 1)),
+    /**
+     * Release 33: this phone reads `agent_options[].model_switch` and may send agent.prompt `model`. Only with `extended`.
+     * An older computer refuses the unknown field; the phone then asks again with `extended` alone (client-core.ts).
+     */
+    model_switch: optional(bool()),
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -2532,6 +2616,7 @@ export function validateCommandPayload                       (type   , value    
   if (type === "inventory.get") {
     const i = payload                                   ;
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
+    if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
   }
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
@@ -3273,6 +3358,20 @@ export function checkStart(payload                               , report       
   if (!isModelReported(report, payload.model)) return "unknown_model";
   if (!report.capabilities.permission_modes.includes(payload.permission_mode)) return "unsupported";
   if (payload.resume !== null && !report.capabilities.resume_by_id) return "unsupported";
+  return null;
+}
+
+/**
+ * ANOTHER MODEL OF THE SAME AGENT, CHECKED AT THE COMPUTER (release 33; owner, 2026-11-13: option A). An agent.prompt
+ * `model` is taken only when the session's own report (its adapter and mode) is installed and lists that model, and the
+ * computer's own options for it say `model_switch` (its agent's resume or turn takes another model). → null, or
+ * `unsupported` (no switch for this adapter or mode, a terminal session among them) or `unknown_model` (not listed).
+ * A model is never trusted from a phone, and another agent is never a model: the payload has no adapter.
+ */
+export function checkModelSwitch(model        , report                                  , options                                 )                      {
+  if (!report || !report.installed || !report.capabilities.start || report.mode !== "structured") return "unsupported";
+  if (!options || options.adapter !== report.adapter || options.mode !== report.mode || options.model_switch !== true) return "unsupported";
+  if (!isModelReported(report, model)) return "unknown_model";
   return null;
 }
 

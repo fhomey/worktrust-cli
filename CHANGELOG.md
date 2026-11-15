@@ -2,6 +2,25 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.11: faster file sending, another model in the same chat, and no release from a phone for Codex and OpenCode
+
+**Files travel faster.** Remote Agent checks and encodes a file's pieces without decoding them first and gives the
+computer room to breathe between them, so a large picture or document from your phone arrives sooner and the CLI stays
+responsive while it does. What travels over the wire is the same as before.
+
+**Another model of the same agent, in the same chat.** From a phone that offers it, a running Claude Code, Codex or
+OpenCode session can continue on another of that agent's own models: Claude Code resumes its own session with the new
+model, Codex takes it from the next turn, OpenCode from its next run. The computer checks the model against the list its
+agent reported; a model it did not list is refused, and another agent is always a new chat. A terminal session never
+switches. A phone that does not ask for it sees exactly what it saw before.
+
+**No release from a phone, for Codex and OpenCode too.** A Codex or OpenCode session steered from your phone can no
+longer run a ship script, a deploy script, `psql` or a release, whatever your own desk settings allow. Codex: while your
+own Codex rules allow a command that is not one WorkTrust reviewed, a remote Codex session does not start (Codex offers no
+way to set them aside for one session), and its approvals always come to your phone. OpenCode: your own and the project's
+shell allows are denied for the remote run, beside a fixed list; a settings file that cannot be read gives that run no
+shell at all. This computer's keyboard keeps every one of them. Nothing it measures changes: the measure rules stay 4.
+
 ## 0.11.10: one scan to connect, a look before you sign in, and no release from a phone
 
 **One QR connects a computer.** `npx -y worktrust remote app` draws one code. Scanned in the WorkTrust app (Scan ›

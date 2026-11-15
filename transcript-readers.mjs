@@ -13,7 +13,7 @@
  * counter's named rules and the hook's measure(), whose payloads are fixed allowlists of numbers,
  * dates and enum values (log-session.mjs, "WHAT CANNOT LEAVE").
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -252,16 +252,16 @@ export function* codexLines(records) {
  */
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 /**
- * A FILE'S LINES, 8 MB AT A TIME (0.10.32): a whole-file read throws past Node's longest string (about 512 MB), which is
- * how the owner's Claude Code session went unmeasured from 2026-10-18; a rollout is read the same way as a transcript.
- * Null when the file cannot be opened; a read that fails halfway ends the lines there.
+ * A FILE'S LINES, 8 MB AT A TIME (0.10.32; a buffer sized to the file, 64 KiB to 8 MB, since 0.11.11): a whole-file read
+ * throws past Node's longest string (about 512 MB), which is how the owner's Claude Code session went unmeasured from
+ * 2026-10-18; a rollout is read the same way. Null when the file cannot be opened; a read that fails halfway ends there.
  */
 export function streamedLines(file) {
   try { closeSync(openSync(file, "r")); } catch { return null; }
   return { *[Symbol.iterator]() {
     let fd; try { fd = openSync(file, "r"); } catch { return; }
     try {
-      const decoder = new StringDecoder("utf8"), buffer = Buffer.allocUnsafe(8 << 20);
+      const decoder = new StringDecoder("utf8"), buffer = Buffer.allocUnsafe(Math.min(8 << 20, Math.max(64 << 10, (() => { try { return fstatSync(fd).size + 1; } catch { return 8 << 20; } })())));
       let rest = "";
       for (;;) {
         let n; try { n = readSync(fd, buffer, 0, buffer.length, null); } catch { return; }

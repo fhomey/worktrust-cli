@@ -22,10 +22,12 @@
  * without a prompt (else Codex asks by `mcpServer/elicitation/request`), and the server's instructions reach the agent.
  */
 import { spawn } from "node:child_process";
-import { chmodSync, realpathSync, writeFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { chmodSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { changePaths, codexApprovalAsTool, refusalFor } from "./remote-codex-events.mjs";
 import { PLAN_TOOL_NAMES } from "./remote-approval-bridge.mjs";
+import { REVIEWED_COMMANDS } from "./remote-policy.mjs";
 
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const THREAD = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -68,12 +70,49 @@ export function writeBridgeSession(file, { socket, token }) {
   return file;
 }
 
+/**
+ * THE PERSON'S OWN CODEX RULES ARE DESK GRANTS (S0 for Codex, release 33; PROTOCOL.md §Approvals). Codex reads its execpolicy
+ * `.rules` files (`$CODEX_HOME/rules/`, else ~/.codex/rules/, and a project's `.codex/rules/`) whatever a session asks, and a
+ * `prefix_rule` whose decision is `allow` (the default when none is named) runs that command outside the sandbox without
+ * asking: a desk's "always allow `zsh …/ships/*`" would run a ship script from a phone prompt. `codex exec` has
+ * `--ignore-rules`; `codex app-server` (0.154.0) has no such flag and no config key that unloads them, so there is NO way to
+ * deny them per session. So the files are only READ here, at the session's start, never written: every allow that is not a
+ * reviewed command (remote-policy.mjs REVIEWED_COMMANDS, matched by its words) is returned, and a remote Codex session is
+ * refused while any is there (remote-sessions.mjs, `not_allowed`): then every command it runs is one the phone approved or
+ * one Codex itself deems read-only. A folder that cannot be read (other than missing) or a rule that cannot be read as a
+ * plain list of words counts as an allow: unknown is never allowed.
+ */
+export function codexDeskGrants({ env = process.env, home = homedir(), projectPath = null, read = (f) => readFileSync(f, "utf8"), list = (d) => readdirSync(d) } = {}) {
+  const dirs = [join(env.CODEX_HOME || join(env.HOME || home, ".codex"), "rules"), ...(projectPath ? [join(projectPath, ".codex", "rules")] : [])];
+  const reviewed = new Set(REVIEWED_COMMANDS);
+  const out = [];
+  for (const dir of dirs) {
+    let names;
+    try { names = list(dir).filter((n) => n.endsWith(".rules")).sort(); } catch (error) { if (error?.code !== "ENOENT") out.push(`${dir}: unreadable`); continue; }
+    for (const name of names) {
+      let text;
+      try { text = read(join(dir, name)); } catch { out.push(`${name}: unreadable`); continue; }
+      const code = text.replace(/#[^\n]*/g, "");
+      for (const m of code.matchAll(/prefix_rule\s*\(([\s\S]*?)\)\s*(?=prefix_rule|$)/g)) {
+        const decision = /decision\s*=\s*"([a-z]+)"/.exec(m[1])?.[1] ?? "allow";
+        if (decision === "prompt" || decision === "forbidden") continue;
+        const words = /pattern\s*=\s*\[([^\[\]]*)\]/.exec(m[1])?.[1];
+        const line = words !== undefined && /^\s*("[^"\\]*"\s*,\s*)*"[^"\\]*"\s*,?\s*$/.test(words) ? [...words.matchAll(/"([^"\\]*)"/g)].map((w) => w[1]).join(" ") : null;
+        if (line === null || !reviewed.has(line)) out.push(`${name}: ${line ?? "a rule that is not a plain list of words"}`);
+      }
+    }
+  }
+  return out;
+}
+
 /** thread/start or thread/resume parameters from the protocol's closed options. */
 export function threadParams({ cwd, model, mode, resume }) {
   if (mode !== "ask" && mode !== "plan") throw new Error("the protocol offers the ask and plan modes only");
   if (model !== null && !MODEL.test(model)) throw new Error("not a model name");
   if (resume !== null && !isCodexThreadId(resume)) throw new Error("a resume id is Codex's own thread id");
-  const common = { cwd, approvalPolicy: "untrusted", sandbox: mode === "plan" ? "read-only" : "workspace-write", ...(model ? { model } : {}) };
+  // approvalsReviewer "user" (S0 for Codex, release 33): the person's config may route approvals to Codex's own reviewing
+  // subagent (`approvals_reviewer = "auto_review"`, which approves by itself); a remote session's go to the phone, always.
+  const common = { cwd, approvalPolicy: "untrusted", approvalsReviewer: "user", sandbox: mode === "plan" ? "read-only" : "workspace-write", ...(model ? { model } : {}) };
   return resume ? { method: "thread/resume", params: { threadId: resume, ...common } } : { method: "thread/start", params: common };
 }
 
@@ -81,15 +120,17 @@ const text = (t) => [{ type: "text", text: t }];
 
 /**
  * o: { file, cwd, env, model, mode, resume, plans?, onMessage(msg), onThread(threadId), onExit(how), approve(tool, input) → Promise<boolean> }.
- * → { pid, alive, write(text), steer(text) → Promise<{ ok }>, interrupt() → Promise<boolean>, stop(), close() }.
+ * → { pid, alive, write(text), steer(text) → Promise<{ ok }>, interrupt() → Promise<boolean>, setModel(model), stop(), close() }.
+ * setModel (release 33): the next `turn/start` carries `model`, which the app-server takes "for this turn and subsequent turns"
+ * (its own JSON schema, 0.154.0); the thread and the process stay.
  */
 export function startCodex(o) {
   const child = spawn(o.file, codexArgs({ cwd: o.cwd, plans: o.plans ?? null }), { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
-  let buffer = "", exited = false, nextId = 1, threadId = null, turnId = null, ready = false;
+  let buffer = "", exited = false, nextId = 1, threadId = null, turnId = null, ready = false, switched = null;
   const waiting = new Map(), queue = [], fileChanges = {};
   const send = (msg) => { if (!exited) child.stdin.write(`${JSON.stringify(msg)}\n`); };
   const call = (method, params) => new Promise((resolve) => { if (exited) { resolve({ error: { message: "codex exited" } }); return; } const id = nextId++; waiting.set(id, resolve); send({ id, method, params }); });
-  const turn = (t) => call("turn/start", { threadId, input: text(t) });
+  const turn = (t) => call("turn/start", { threadId, input: text(t), ...(switched ? { model: switched } : {}) });
   async function answer(msg) {
     // An MCP server's question (a tool call to approve, a form): the planning tools never ask (approval_mode above), and
     // nothing else of an MCP server is the phone's to answer. Declined in the elicitation's own shape.
@@ -142,6 +183,8 @@ export function startCodex(o) {
     /** Words into the running turn, guarded by its id: a turn that just ended refuses them, and they wait for the next. */
     async steer(t) { if (!ready || !turnId) return { ok: false }; const r = await call("turn/steer", { threadId, expectedTurnId: turnId, input: text(t) }); return { ok: !r.error }; },
     async interrupt() { if (!ready || !turnId) return false; const r = await call("turn/interrupt", { threadId, turnId }); return !r.error; },
+    /** Another of Codex's own models from the next turn on (a name the computer listed and checked; never free text). */
+    setModel(model) { if (typeof model !== "string" || !MODEL.test(model)) throw new Error("not a model name"); switched = model; },
     async stop(graceMs = 3000) {
       if (exited) return;
       if (turnId) await Promise.race([this.interrupt(), new Promise((r) => setTimeout(r, 1000))]);

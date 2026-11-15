@@ -38,9 +38,11 @@ export function createDaemonCore(o) {
    * unknown keys, so every other channel gets the inventory without them. Kept per phone for the daemon's life; a phone
    * asks again on every inventory.get.
    */
-  const extendedPeers = new Set();
+  const extendedPeers = new Set(), switchPeers = new Set(); // release 33: `model_switch` only for a phone that asked for it
   const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections"];
-  const bodyFor = (channel, record) => (record.type !== "device.inventory" || extendedPeers.has(channel.peer_device_id) ? record.body
+  const withoutSwitch = (body) => (body.agent_options ? { ...body, agent_options: body.agent_options.map(({ model_switch: _drop, ...o }) => o) } : body);
+  const bodyFor = (channel, record) => (record.type !== "device.inventory" ? record.body
+    : extendedPeers.has(channel.peer_device_id) ? (switchPeers.has(channel.peer_device_id) ? record.body : withoutSwitch(record.body))
     : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key))));
 
   function sealAll(record) {
@@ -181,6 +183,7 @@ export function createDaemonCore(o) {
     if (settings.paused !== null && !DEVICE_COMMANDS.has(env.type)) return "remote_paused";
     if (env.type === "inventory.get") {
       if (payload.extended === true && env.sender_device_id) extendedPeers.add(env.sender_device_id);
+      if (payload.extended === true && payload.model_switch === true && env.sender_device_id) switchPeers.add(env.sender_device_id); // kept, as extendedPeers
       if (payload.device_name && env.sender_device_id) rememberName(env.sender_device_id, payload.device_name);
       emit(null, "device.inventory", inventoryBody(payload.refresh_models));
       return "taken";

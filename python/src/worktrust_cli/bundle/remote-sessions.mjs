@@ -17,13 +17,13 @@ import { allowedModes, startChoice } from "./remote-settings.mjs";
 import { claudeArgs, isClaudeSessionId, removeQuietly, startClaude, writeMcpConfig } from "./remote-adapter-claude-code.mjs";
 import { backgroundJobs, emptyClaudeState, endClaudeRun, mapClaudeLine } from "./remote-claude-events.mjs";
 import { collectChanges, snapshotChanges } from "./remote-changes.mjs";
-import { isCodexThreadId, startCodex, writeBridgeSession } from "./remote-adapter-codex.mjs";
+import { codexDeskGrants, isCodexThreadId, startCodex, writeBridgeSession } from "./remote-adapter-codex.mjs";
 import { emptyCodexState, mapCodexMessage, unwrapShell } from "./remote-codex-events.mjs";
 import { isOpenCodeSessionId, mintOpenCodeSessionId } from "./remote-adapter-opencode.mjs";
 import { emptyOpenCodeState } from "./remote-opencode-events.mjs";
 import { spawnOpenCode } from "./remote-opencode-session.mjs";
 import { createCoalescer } from "./remote-coalesce.mjs";
-import { accept, announceQueue, claudeReplay, codexLanded, dropWaiting, interruptedEnd, interruptOf, steerLive, steerModeOf } from "./remote-steering.mjs";
+import { accept, announceQueue, claudeReplay, codexLanded, dropWaiting, interruptedEnd, interruptOf, modelRefusal, steerLive, steerModeOf, switchModel } from "./remote-steering.mjs";
 import { classifyAction } from "./remote-policy.mjs";
 import { activeRows, listSessions, statusReport } from "./remote-session-list.mjs";
 
@@ -46,10 +46,12 @@ export function createSessions(ctx) {
   };
   const mark = (s) => s.agent_ref && appendSteered({ v: 1, steered: "remote", adapter: s.adapter, agent_session_ref: s.agent_ref, remote_session_id: s.session_id, project_id: s.project_id, how: s.how, first_steered_at: s.first, last_steered_at: ctx.now() });
   const advance = (s, kind) => { if (s.command_id) ctx.journal.advance(s.command_id, { kind }, ctx.now()); };
+  const deskGranted = (adapter, projectPath) => adapter === "codex" && codexDeskGrants({ env: ctx.agentEnv(), projectPath }).length > 0; // read at each start
 
   function nextTurn(s) {
     // A Claude Code steer not yet read may become a turn of its own: the next prompt waits until it was (P3-7).
-    if (s.turnOpen || s.queue.length === 0 || !s.run?.alive() || (s.adapter !== "codex" && s.steers.length > 0)) return;
+    if (s.switching || s.turnOpen || s.queue.length === 0 || !s.run?.alive() || (s.adapter !== "codex" && s.steers.length > 0)) return;
+    if (s.queue[0].model !== undefined && s.queue[0].model !== s.model && switchModel(ctx, s, s.queue[0].model, { respawn: () => spawnAgent(s, s.agent_ref), resumeTurns: () => nextTurn(s) }) === "later") return;
     const item = s.queue.shift();
     s.waiting = item;
     s.turnOpen = true;
@@ -173,7 +175,7 @@ export function createSessions(ctx) {
     if (!s.stopping) taskEnded(s, "failed"); // an agent that exits before its task's turn ended did not do the task
     s.turnOpen = false;
     s.run = null;
-    dropWaiting(ctx, s); // a revived session never runs words sent to the agent that died
+    if (!s.switching) dropWaiting(ctx, s); // a revived session never runs words sent to the agent that died (a model switch's restart keeps them)
     ctx.onActivity?.();
   }
 
@@ -189,8 +191,7 @@ export function createSessions(ctx) {
       onThread: (id) => { s.agent_ref = id; mark(s); ctx.journal.recordSession({ session_id: s.session_id, agent_session_ref: id }); },
       approve: async (tool, input) => (await ctx.approvals.request(s, tool, input))?.behavior === "allow" });
     ctx.journal.recordSession({ session_id: s.session_id, pid: s.run.pid ?? null });
-    s.ledgerTimer = setInterval(() => { if (s.turnOpen) mark(s); }, LEDGER_EVERY_MS);
-    s.ledgerTimer.unref?.();
+    s.ledgerTimer = setInterval(() => { if (s.turnOpen) mark(s); }, LEDGER_EVERY_MS); s.ledgerTimer.unref?.();
   }
 
   function spawnAgent(s, resume) {
@@ -203,8 +204,7 @@ export function createSessions(ctx) {
     mark(s); // the ledger names the session before the agent writes a line
     s.run = startClaude({ file: ctx.inventory().files["claude-code"], cwd: s.projectPath, env: ctx.agentEnv(), args, onLine: (line) => onLine(s, line), onExit: (how) => onExit(s, how) });
     ctx.journal.recordSession({ session_id: s.session_id, pid: s.run.pid ?? null, agent_session_ref: s.agent_ref }); // a later daemon ends it if this one dies (P2-b)
-    s.ledgerTimer = setInterval(() => { if (s.turnOpen) mark(s); }, LEDGER_EVERY_MS);
-    s.ledgerTimer.unref?.();
+    s.ledgerTimer = setInterval(() => { if (s.turnOpen) mark(s); }, LEDGER_EVERY_MS); s.ledgerTimer.unref?.();
   }
 
   function start(env, payload) {
@@ -215,8 +215,8 @@ export function createSessions(ctx) {
     if (!project) return "not_found";
     const refused = P.checkStart(payload, adapterOf(ctx.inventory(), payload.adapter)); if (refused) return refused;
     const choice = startChoice(payload, project.project_id, ctx.inventory(), ctx.settings(), known); if (typeof choice === "string") return choice;
-    if (!AGENT_ID[payload.adapter]) return "unsupported";
-    if (payload.resume !== null && !AGENT_ID[payload.adapter](payload.resume)) return "unsupported";
+    if (!AGENT_ID[payload.adapter] || (payload.resume !== null && !AGENT_ID[payload.adapter](payload.resume))) return "unsupported";
+    if (deskGranted(payload.adapter, project.path)) return "not_allowed"; // S0: Codex's own allow rules cannot be denied per session
     const s = { session_id: env.session_id, project_id: project.project_id, projectPath: project.path, adapter: payload.adapter, model: payload.model, mode: payload.permission_mode,
       agent_ref: payload.resume ?? (payload.adapter === "codex" ? null : payload.adapter === "opencode" ? mintOpenCodeSessionId(ctx.now(), ctx.random) : randomUUID()), how: "started", first: ctx.now(), queue: [], state: FRESH_STATE[payload.adapter](),
       coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: env.task === true, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: payload.name ?? null, active: 0, countedTurn: null,
@@ -234,11 +234,11 @@ export function createSessions(ctx) {
   /** A known session whose agent is gone (a daemon restart) resumes by the agent's own id. */
   function revive(sessionId) {
     let s = live.get(sessionId);
-    if (s?.run) return s;
+    if (s?.run || s?.switching) return s; // a model switch restarts it on its own
     const saved = s ?? ctx.journal.session(sessionId);
     if (!saved || saved.closed) return null;
     const known = ctx.projects(), project = known.find((p) => p.project_id === saved.project_id), ref = s?.agent_ref ?? saved.agent_session_ref;
-    if (!project || !AGENT_ID[saved.adapter]?.(ref)) return null;
+    if (!project || !AGENT_ID[saved.adapter]?.(ref) || deskGranted(saved.adapter, project.path)) return null;
     const agentMode = s?.agentMode ?? saved.agent_mode ?? null; // within today's ceiling, or it stays down (0.11.7)
     if (agentMode && !allowedModes(ctx.settings()).includes(agentMode)) return null;
     const extras = (s?.extraIds ?? saved.extra_project_ids ?? []).map((id) => known.find((p) => p.project_id === id)).filter(Boolean);
@@ -246,8 +246,7 @@ export function createSessions(ctx) {
     s = s ?? { session_id: sessionId, project_id: saved.project_id, projectPath: project.path, adapter: saved.adapter, model: saved.model ?? null, mode: saved.mode ?? "ask", agent_ref: ref, how: "started", first: ctx.now(), queue: [], state: FRESH_STATE[saved.adapter](),
       coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: false, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: saved.name ?? null, active: saved.active_ms ?? null, countedTurn: null,
       agentMode, effort: saved.effort ?? null, extraIds: extras.map((p) => p.project_id), extraPaths: extras.map((p) => p.path) };
-    live.set(sessionId, s);
-    spawnAgent(s, s.agent_ref);
+    live.set(sessionId, s); spawnAgent(s, s.agent_ref);
     return s;
   }
 
@@ -275,7 +274,8 @@ export function createSessions(ctx) {
     const report = adapterOf(ctx.inventory(), s.adapter);
     const named = ctx.attachments ? ctx.attachments.referenceText(s.session_id, payload.attachments) : payload.attachments?.length ? null : ""; // null: refused, never ""
     if (named === null) return "not_found"; // a file it names is not here whole: never a prompt without its file
-    const item = { text: payload.text + named, command_id, received_at: ctx.now() };
+    const refusedModel = payload.model === undefined ? null : modelRefusal(ctx, s, payload.model); if (refusedModel) return refusedModel;
+    const item = { text: payload.text + named, command_id, received_at: ctx.now(), ...(payload.model !== undefined ? { model: payload.model } : {}) };
     if (type === "agent.steer" && steerModeOf(report) === "none") return "unsupported";
     mark(s);
     if (type === "agent.steer" && s.turnOpen && steerModeOf(report) === "live" && (await steerLive(ctx, s, item))) return null;

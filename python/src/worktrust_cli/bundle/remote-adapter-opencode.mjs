@@ -25,8 +25,10 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { isAbsolute, relative } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
+import { REVIEWED_COMMANDS } from "./remote-policy.mjs";
 
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+#-]{0,127}$/;
 const SESSION = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
@@ -47,7 +49,51 @@ export function openCodeArgs({ sessionRef, model, mode }) {
   if (!isOpenCodeSessionId(sessionRef)) throw new Error("an OpenCode session id is ses_ and 26 characters");
   if (model !== null && !MODEL.test(model)) throw new Error("not a model name");
   if (mode !== "ask" && mode !== "plan") throw new Error("the protocol offers the ask and plan modes only");
-  return ["run", "--format", "json", "--session", sessionRef, ...(model ? ["--model", model] : []), ...(mode === "plan" ? ["--agent", "plan"] : [])];
+  // The agent is always named (release 33): a person's `default_agent` could otherwise pick one of their own, with its rules.
+  return ["run", "--format", "json", "--session", sessionRef, ...(model ? ["--model", model] : []), "--agent", mode === "plan" ? "plan" : "build"];
+}
+
+/**
+ * NO SHIP SCRIPT FROM A PHONE, FOR OPENCODE (S0, release 33; PROTOCOL.md §Approvals). The run's own config sits above the
+ * person's and the project's, but OpenCode merges configs key by key: a `permission.bash` OBJECT of ours keeps every key of
+ * theirs it does not name, so a desk grant such as `"zsh /Users/…/ships/*": "allow"` would still run without asking. So
+ * the person's global config (`$OPENCODE_CONFIG`, `$XDG_CONFIG_HOME/opencode/opencode.json[c]`, else ~/.config/opencode/)
+ * and the project's own `opencode.json[c]` are only READ at the session's start, never written, and each bash pattern they
+ * allow (in `permission.bash` and in any agent's) that is not a reviewed command comes back under the same key as `deny`;
+ * the fixed list (OPENCODE_DENY) is denied besides. A file that is there but cannot be read or parsed: the allows are not
+ * known, so the session gets no shell at all (`unreadable`). Missing files deny nothing more.
+ */
+export const OPENCODE_DENY = Object.freeze(["zsh *", "bash *", "sh *", "SHIP_YES=1 *", "node scripts/deploy-production.mjs*", "node scripts/mobile-update.mjs*", "gh release*", "gh workflow*", "psql*", "git push*", "npm publish*", "pnpm publish*", "vercel *", "eas *", "sudo *", "curl *", "wget *"]);
+
+/** JSON with comments and trailing commas (OpenCode's .jsonc) as JSON; strings are kept as they are. */
+export function jsoncText(text) {
+  let out = "", i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"') { const end = /"(?:[^"\\]|\\.)*"/y; end.lastIndex = i; const m = end.exec(text); if (!m) return null; out += m[0]; i += m[0].length; continue; }
+    if (c === "/" && text[i + 1] === "/") { while (i < text.length && text[i] !== "\n") i += 1; continue; }
+    if (c === "/" && text[i + 1] === "*") { const end = text.indexOf("*/", i + 2); if (end < 0) return null; i = end + 2; continue; }
+    out += c; i += 1;
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+
+export function openCodeDeskDenies({ env = process.env, home = homedir(), projectPath = null, read = (f) => readFileSync(f, "utf8") } = {}) {
+  const base = env.XDG_CONFIG_HOME || join(env.HOME || home, ".config");
+  const files = [...(env.OPENCODE_CONFIG ? [env.OPENCODE_CONFIG] : []), join(base, "opencode", "opencode.json"), join(base, "opencode", "opencode.jsonc"), ...(projectPath ? [join(projectPath, "opencode.json"), join(projectPath, "opencode.jsonc")] : [])];
+  const reviewed = new Set(REVIEWED_COMMANDS.flatMap((line) => [line, `${line} *`, `${line}*`]));
+  const denies = new Set(), edits = new Set();
+  for (const file of files) {
+    let text;
+    try { text = read(file); } catch (error) { if (error?.code === "ENOENT") continue; return { denies: [], edits: [], unreadable: true }; }
+    let config;
+    try { const clean = jsoncText(text); config = clean === null ? null : JSON.parse(clean); } catch { config = null; }
+    if (!config || typeof config !== "object") return { denies: [], edits: [], unreadable: true };
+    const bashes = [config.permission?.bash, ...Object.values(config.agent ?? {}).map((a) => a?.permission?.bash)];
+    for (const bash of bashes) if (bash && typeof bash === "object") for (const [pattern, decision] of Object.entries(bash)) if (decision === "allow" && pattern !== "*" && !reviewed.has(pattern)) denies.add(pattern);
+    for (const edit of [config.permission?.edit, ...Object.values(config.agent ?? {}).map((a) => a?.permission?.edit)]) if (edit && typeof edit === "object") for (const [pattern, decision] of Object.entries(edit)) if (decision === "allow" && pattern !== "*") edits.add(pattern);
+  }
+  return { denies: [...denies].sort(), edits: [...edits].sort(), unreadable: false };
 }
 
 const SECRET_READS = ["*.env", "*.env.*", "*.envrc", "*.netrc", "*.npmrc", "*.pypirc", "*.git-credentials", "*.pem", "*.key", "*.p12", "*.pfx", "*id_rsa*", "*id_ed25519*", "*id_ecdsa*", "*credentials*", "*secret*"];
@@ -57,12 +103,15 @@ const noWildcard = (text) => typeof text === "string" && text.length > 0 && !/[*
  * `{ tool: "Edit", path }` (relative to the project), allowed by their exact text on top of "ask". String values replace
  * whatever a person's or a repository's config set for the same key (OpenCode merges configs key by key).
  */
-export function permissionConfig(mode, allow = []) {
+export function permissionConfig(mode, allow = [], desk = { denies: [], unreadable: false }) {
   const read = Object.fromEntries([["*", "allow"], ...SECRET_READS.map((p) => [p, "deny"])]);
   const bash = allow.filter((a) => a.tool === "Bash" && noWildcard(a.command)), edit = allow.filter((a) => a.tool === "Edit" && noWildcard(a.path));
+  // S0 (release 33): the fixed denies and the person's own allows as denies, last, so they outrank every allow; no shell at all
+  // when the person's config could not be read.
   const permission = { "*": "ask", read, glob: "allow", grep: "allow", list: "allow", todowrite: "allow", external_directory: "deny", question: "deny", doom_loop: "deny",
-    bash: bash.length ? Object.fromEntries([["*", "ask"], ...bash.map((a) => [a.command, "allow"])]) : "ask",
-    edit: mode === "plan" ? "deny" : edit.length ? Object.fromEntries([["*", "ask"], ...edit.map((a) => [a.path, "allow"])]) : "ask" };
+    bash: desk.unreadable ? "deny" : Object.fromEntries([["*", "ask"], ...bash.map((a) => [a.command, "allow"]), ...[...OPENCODE_DENY, ...desk.denies].map((p) => [p, "deny"])]),
+    // A path the person allows at the desk asks here (their key, our value): only the phone's approval of this run allows one.
+    edit: mode === "plan" ? "deny" : edit.length ? Object.fromEntries([["*", "ask"], ...(desk.edits ?? []).map((p) => [p, "ask"]), ...edit.map((a) => [a.path, "allow"])]) : "ask" };
   return { permission, agent: { build: { permission }, plan: { permission: { ...permission, edit: "deny" } } } };
 }
 
@@ -94,15 +143,17 @@ const MAX_FOLLOW_UPS = 3;
 
 /**
  * o: { file, cwd, env, model, mode, sessionRef, onMessage(line), onExit(how), approve(tool, input) → Promise<boolean> }.
- * → { pid, alive, write(text), interrupt() → Promise<boolean>, stop(), close() }. A turn is one run and its follow-ups;
- * onMessage hears each JSON line and `wt.turn_started` / `wt.turn_ended` around them.
+ * → { pid, alive, write(text), interrupt() → Promise<boolean>, setModel(model), stop(), close() }. A turn is one run and its
+ * follow-ups; onMessage hears each JSON line and `wt.turn_started` / `wt.turn_ended` around them. setModel (release 33): the
+ * next run's `--model`, the same `--session`.
  */
 export function startOpenCode(o) {
-  const args = openCodeArgs({ sessionRef: o.sessionRef, model: o.model, mode: o.mode });
+  let args = openCodeArgs({ sessionRef: o.sessionRef, model: o.model, mode: o.mode });
+  const desk = openCodeDeskDenies({ env: o.env, projectPath: o.cwd }); // read once, at the session's start (S0)
   let child = null, closed = false, interrupted = false, busy = false, exited = false;
   const queue = [];
   const runOnce = (text, allow) => new Promise((resolve) => {
-    const env = { ...o.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(permissionConfig(o.mode, allow)) };
+    const env = { ...o.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(permissionConfig(o.mode, allow, desk)) };
     const run = child = spawn(o.file, args, { cwd: o.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
     const asks = [];
     let buffer = "";
@@ -154,6 +205,8 @@ export function startOpenCode(o) {
     alive: () => !closed,
     sessionRef: () => o.sessionRef,
     write: (t) => { if (closed) return; if (busy) queue.push(t); else turn(t); },
+    /** Another of OpenCode's own models from the next run on, checked as the first one was (openCodeArgs throws on anything else). */
+    setModel(model) { args = openCodeArgs({ sessionRef: o.sessionRef, model, mode: o.mode }); },
     /** End the running turn: OpenCode cancels its session's work on SIGINT and exits; the session stays for the next prompt. */
     async interrupt() { if (!child) return false; interrupted = true; await halt(3000); return true; },
     async stop(graceMs = 3000) {

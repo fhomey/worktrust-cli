@@ -15,6 +15,7 @@
  * Pure helpers over a session record `s`; the sessions module owns the agent processes.
  */
 import * as P from "./remote-protocol.mjs";
+import { agentOptionsOf } from "./remote-inventory.mjs";
 
 /** Tell the phone where each waiting command stands, once per change of place. */
 export function announceQueue(ctx, s, reason = "turn_running") {
@@ -95,3 +96,62 @@ export function interruptedEnd(ctx, s, event) {
 /** What the adapter reports for words sent mid-turn (the phone offers only this). */
 export const steerModeOf = (report) => (report ? P.steerOffered(report.capabilities) : "none");
 export const interruptOf = (report) => Boolean(report && P.interruptOffered(report.capabilities));
+
+/**
+ * ANOTHER MODEL OF THE SAME AGENT INSIDE A SESSION (release 33; owner, 2026-11-13: option A; docs/remote-agents/PROTOCOL.md
+ * "A model is chosen per session"). An agent.prompt may carry `model`: one of the session's OWN adapter's listed models,
+ * for that turn and the turns after it. Another agent is never a model (the payload names no adapter): it is a new chat,
+ * with no hand-over. Verified per adapter from the adapters themselves (2026-11-14):
+ *
+ *   Claude Code  its own resume with another model flag: the idle process ends and starts again with
+ *                `--resume <its own session id> --model <model>` (claudeArgs takes both; `--model` is "Model for the current
+ *                session" in 2.1.322's help). NOT run against a live model here: the restart is proven on a fake Claude Code.
+ *   Codex        `turn/start` carries `model`: "Override the model for this turn and subsequent turns" (the app-server's own
+ *                JSON schema, `codex app-server generate-json-schema`, 0.154.0); the thread and its process stay.
+ *   OpenCode     one process per run, `--session <id> --model <p/m>`: the next run takes the new model. NOT VERIFIED on a
+ *                real install (OpenCode is not on the build machine), as the adapter itself says.
+ *   terminal     no switch: nothing is typed into a terminal session that the phone composed (a `/model` would be one).
+ *
+ *   modelRefusal(ctx, s, model)            on receipt: null, or why the prompt is refused (it then runs nothing)
+ *   switchModel(ctx, s, model, o)          at the turn's start: "now" (switched in place) or "later" (Claude Code restarts;
+ *                                          o.respawn() then o.resumeTurns() run when its process is gone)
+ *
+ * The check is the protocol's own (checkModelSwitch) against the computer's CURRENT report and its own options, never the
+ * phone's: a model the agent did not list, or a switch for an adapter whose options do not say `model_switch`, is refused.
+ */
+/** → null when the session may continue on `model`, else the reject reason (unsupported, unknown_model). */
+export function modelRefusal(ctx, s, model) {
+  const inv = ctx.inventory();
+  const report = P.reportFor(inv.reports, s.adapter, "structured");
+  const options = agentOptionsOf(inv).find((o) => o.adapter === s.adapter && o.mode === "structured") ?? null;
+  return P.checkModelSwitch(model, report, options);
+}
+
+/**
+ * Switch the session to `model` before its next turn. Codex and OpenCode take it in place (`run.setModel`). Claude Code's
+ * process is idle here (a turn starts only when none is open), so it ends and comes back on its own session id with the new
+ * model; the queue is held aside meanwhile and nothing waiting is dropped (`s.switching`, remote-sessions.mjs onExit).
+ */
+export function switchModel(ctx, s, model, o) {
+  const record = () => { s.model = model; ctx.journal.recordSession({ session_id: s.session_id, model }); ctx.onSessionsChanged?.(); };
+  if (typeof s.run?.setModel === "function") { s.run.setModel(model); record(); return "now"; }
+  if (s.adapter !== "claude-code") throw new Error("this adapter has no model switch"); // modelRefusal kept it out
+  s.switching = true;
+  s.stopping = true;
+  const held = s.queue.splice(0);
+  (async () => {
+    try {
+      await s.run?.stop();
+      s.stopping = false;
+      record();
+      o.respawn(); // spawnAgent(s, s.agent_ref): the ledger names the session first, then --resume <id> --model <model>
+    } catch {
+      s.stopping = false;
+    }
+    s.queue.unshift(...held, ...s.queue.splice(0)); // what arrived during the restart waits behind what was held
+    s.switching = false;
+    if (!s.run) dropWaiting(ctx, s); // the agent did not come back: what waited is cancelled, never left hanging
+    o.resumeTurns();
+  })();
+  return "later";
+}

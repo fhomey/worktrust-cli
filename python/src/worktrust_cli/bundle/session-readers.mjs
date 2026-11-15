@@ -25,6 +25,16 @@ import { join } from "node:path";
  */
 const CHUNK_BYTES = 8 << 20;
 /**
+ * The read buffer for one file, sized to what is left of it (CLI 0.11.11; docs/OPEN.md "Rust was measured and not taken"):
+ * 8 MB allocated for every file cost about 3.4 s over 10,000 small rollouts. At least 64 KiB, so a file that grows while
+ * it is read (a live transcript) still reads in sensible steps; at most CHUNK_BYTES; CHUNK_BYTES when fstat fails.
+ */
+function readBufferFor(fd, from = 0) {
+  let left = CHUNK_BYTES;
+  try { left = fstatSync(fd).size - from + 1; } catch { left = CHUNK_BYTES; }
+  return Buffer.allocUnsafe(Math.min(CHUNK_BYTES, Math.max(64 << 10, left)));
+}
+/**
  * A READ THAT FAILS IS COUNTED, NEVER SILENT (0.10.32): a transcript that exists and cannot be opened or read to its end
  * is one failure. The run keeps the count in sessions.json (`npx worktrust status` says it) and tells WorkTrust the
  * count alone, never which file or what was in it (reportUnreadable).
@@ -70,11 +80,11 @@ function* chunkedLines(file, from = 0, at = null, expect = null) {
         if (!same) { if (at) at.moved = true; return; }
       }
     }
-    const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
+    const buffer = readBufferFor(fd, from);
     let pending = [], position = from, lineStart = from;
     for (;;) {
       let n;
-      try { n = readSync(fd, buffer, 0, CHUNK_BYTES, position); } catch { READ_FAILURES.n += 1; if (at) at.failed = true; return; }
+      try { n = readSync(fd, buffer, 0, buffer.length, position); } catch { READ_FAILURES.n += 1; if (at) at.failed = true; return; }
       if (n <= 0) break;
       READ_BYTES.n += n;
       const chunk = buffer.subarray(0, n);

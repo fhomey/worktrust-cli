@@ -89,11 +89,21 @@ export function agentOptionsOf(inv) {
   const f = inv.features?.["claude-code"] ?? {};
   return inv.reports.filter((r) => r.installed && r.capabilities.start).map((r) => {
     const base = r.capabilities.permission_modes.map((m) => (m === "plan" ? "plan" : "manual"));
-    if (r.adapter !== "claude-code" || r.mode !== "structured") return { adapter: r.adapter, mode: r.mode, agent_modes: P.AGENT_MODES.filter((m) => base.includes(m)), efforts: [], extra_projects: 0 };
+    const model_switch = modelSwitchOf(r);
+    if (r.adapter !== "claude-code" || r.mode !== "structured") return { adapter: r.adapter, mode: r.mode, agent_modes: P.AGENT_MODES.filter((m) => base.includes(m)), efforts: [], extra_projects: 0, model_switch };
     const modes = new Set([...base, ...(f.editMode ? ["edit"] : []), ...(f.autoMode ? ["auto"] : [])]);
-    return { adapter: r.adapter, mode: r.mode, agent_modes: P.AGENT_MODES.filter((m) => modes.has(m)), efforts: [...(f.efforts ?? [])], extra_projects: f.addDir ? P.MAX_EXTRA_PROJECTS : 0 };
+    return { adapter: r.adapter, mode: r.mode, agent_modes: P.AGENT_MODES.filter((m) => modes.has(m)), efforts: [...(f.efforts ?? [])], extra_projects: f.addDir ? P.MAX_EXTRA_PROJECTS : 0, model_switch };
   });
 }
+
+/**
+ * WHETHER A RUNNING SESSION OF THIS REPORT MAY CONTINUE ON ANOTHER OF ITS MODELS (release 33; remote-model-switch.mjs): a
+ * structured session of Claude Code that can resume by id (its own `--resume` with another `--model`), Codex (`turn/start`
+ * takes `model`) and OpenCode (each run takes `--model`), and only where the agent listed models to choose from. A terminal
+ * session never: nothing the phone composed is typed into it. Sent only to a phone that asked `model_switch` (remote-daemon.mjs).
+ */
+export const modelSwitchOf = (r) => r.mode === "structured" && Array.isArray(r.models) && r.models.length > 0
+  && ((r.adapter === "claude-code" && r.capabilities.resume_by_id === true) || r.adapter === "codex" || r.adapter === "opencode");
 
 /** The model aliases Claude Code's own --model help names, in its order; none when the help names none. */
 export function claudeAliases(help) {

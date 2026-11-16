@@ -85,6 +85,7 @@ export function createTerminalSessions(ctx) {
     const project = ctx.projects().find((p) => p.project_id === env.project_id);
     if (!project) return "not_found";
     if (payload.resume !== null && !UUID.test(payload.resume)) return "unsupported";
+    const held = payload.resume !== null ? (ctx.desk ? ctx.desk.resumable(payload.resume, project.project_id) : "not_found") : null; if (held) return held; // release 36: the computer's own list, free
     const s = sessionOf({ session_id: env.session_id, project_id: project.project_id, projectPath: project.path, name: payload.name ?? null, model: payload.model, origin: "phone", how: "started",
       tmux: tmuxNameOf(env.session_id), agent_ref: payload.resume ?? randomUUID(), command_id: env.command_id });
     let argv;

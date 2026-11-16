@@ -2,6 +2,35 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.13: computer health in Remote Agent, and continue a session on this computer
+
+**This computer's health, live on your phone and in the browser.** The Remote Agent service reads memory pressure, free
+memory, swap and its growth over two minutes, the load per core, the GPU's utilisation (Apple silicon) and the three
+programs using the most memory (by name only) every 15 seconds, with no model and no sudo, and sends them sealed to your
+linked phones and browsers; the relay passes them on and keeps none. Red (critical pressure, or under 5 % free while swap
+grows for two minutes) shows in `remote status` and the Remote Agent menu, and a new session is refused with "This
+computer is under heavy memory load" until it eases; running sessions continue.
+
+**Continue a session on this computer.**
+**Carry on in the chat from your phone or a browser.** Remote Agent now lists this computer's recent Claude Code sessions
+(the last 20 by activity) to the WorkTrust app and the web Remote Console, and continues the one you pick through the same
+start as a session begun from the phone: Claude Code's own `--resume`, the approval tool, the deny rules (no release,
+pipeline or deploy from a remote session) and the agent modes you allowed here. From then on it is a remote session like
+any other, in the normal sessions list, and its turns from the phone are not your AI Hours.
+
+**Only what it needs, only from folders you granted.** The CLI opens Claude Code's own transcript folders for your granted
+projects and roots' projects only, never the store as a whole, and drops a transcript whose recorded folder is another. Per
+session it sends, sealed end to end, only its id, the project's id, the last activity time, a title (Claude Code's own
+summary when there is one, else the first line you typed, cut to 80 characters) and the model when recorded. Nothing
+else of a transcript leaves this computer, and WorkTrust's servers see none of it. The list goes only to a phone or
+browser that asks for it; an older app never receives it.
+
+**One owner per conversation.** A session is refused while it is open here: its transcript was written in the last 30
+seconds, a Claude Code process names it (`--resume`), or a Claude Code window open in that project folder started before
+its last line. The phone and the browser say "This session is open on the computer. Close it there first." Agents running
+in that window do not come along. On Windows, where the CLI cannot read the process list without a shell, the list stays
+empty for now.
+
 ## 0.11.12: a smaller code to link a phone, access chosen at once, Esc stops a command, and decoy keys
 
 **Decoy keys beside the real one.** `connect` and `update` write a few decoy credential files next to the computer's key,

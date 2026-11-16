@@ -49,6 +49,7 @@ import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSu
 import { installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { terminalQr } from "./remote-qr.mjs";
 import { webSocketAvailable } from "./remote-transport.mjs";
+import { healthLine, keptHealth } from "./remote-health.mjs";
 import { guideToNode, remoteStopsHere } from "./node-guide.mjs";
 import { inventory } from "./remote-inventory.mjs";
 import { allowCommand, parsePipelineConfig, PIPELINE_FILE } from "./remote-pipeline-config.mjs";
@@ -282,9 +283,10 @@ function status(io) {
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
     gateway: gatewayOf(settings), gateway_default: settings.gateway === null || settings.gateway === undefined, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false,
-    agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false) };
+    agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false), health: keptHealth() };
   if (io.has("json")) { io.say(JSON.stringify(summary, null, 2)); return; }
   io.say(`  Remote: ${settings.enabled ? (settings.paused ? `paused (${settings.paused === "desk" ? "here" : "from a phone"})` : "on") : "off"}`);
+  io.say(healthLine(summary.health)); // the remote service's newest sample, a minute old at most (remote-health.mjs)
   io.say(`  Paired: ${identity ? `${identity.device_id} · key ${summary.fingerprint}` : "no"}`);
   io.say(`  Gateway: ${summary.gateway === PRODUCTION_GATEWAY ? `${new URL(PRODUCTION_GATEWAY).host} (WorkTrust's)` : `${summary.gateway}${isLoopbackGateway(summary.gateway) ? " (this computer: dev relay)" : " (chosen here)"}`}`);
   io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);

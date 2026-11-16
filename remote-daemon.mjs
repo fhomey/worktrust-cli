@@ -18,15 +18,17 @@ import { createProject, rootLabel, sessionProjects, worktreeMain } from "./remot
 import { agentOptionsOf } from "./remote-inventory.mjs";
 import { allowedModes, applySettingsChange } from "./remote-settings.mjs";
 import { adminInventory } from "./remote-admin.mjs";
+import { deskBodyFor } from "./remote-desk-sessions.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
 const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
 const DEVICE_COMMANDS = new Set(["inventory.get", "device.configure", "status.get", "pairing.revoke", "release.list", "pipeline.cancel"]);
+const NEW_SESSIONS = new Set(["agent.start", "release.start"]);
 const KEEP_REMOVED = 20;
 const MAX_PENDING_PHONES = 10;
 
 export function createDaemonCore(o) {
-  // o: { local, issuerKeys, journal, now, random, send(frame), inventory(refresh), log(kind, fields), sessions?, approvals? }
+  // o: { local, issuerKeys, journal, now, random, send(frame), inventory(refresh), log(kind, fields), sessions?, approvals?, health?() }
   const channels = new Map(loadChannels().map((c) => [c.channel_id, c]));
   const confirmed = () => confirmedFingerprints(loadPhones());
   const self = o.local.claims.device_id;
@@ -39,9 +41,10 @@ export function createDaemonCore(o) {
    * asks again on every inventory.get.
    */
   const extendedPeers = new Set(), switchPeers = new Set(); // release 33: `model_switch` only for a phone that asked for it
-  const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections"];
+  const deskPeers = new Set(); // release 36: `desk_sessions` (and the `in_use` refusal) only for a phone that asked for them
+  const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections", "desk_sessions"];
   const withoutSwitch = (body) => (body.agent_options ? { ...body, agent_options: body.agent_options.map(({ model_switch: _drop, ...o }) => o) } : body);
-  const bodyFor = (channel, record) => (record.type !== "device.inventory" ? record.body
+  const bodyFor = (channel, record) => deskBodyFor(deskPeers.has(channel.peer_device_id), record.type, record.type !== "device.inventory" ? record.body
     : extendedPeers.has(channel.peer_device_id) ? (switchPeers.has(channel.peer_device_id) ? record.body : withoutSwitch(record.body))
     : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key))));
 
@@ -88,7 +91,7 @@ export function createDaemonCore(o) {
   function inventoryBody(refresh) {
     const settings = loadSettings();
     const inv = o.inventory(refresh);
-    return {
+    const body = {
       remote_enabled: settings.enabled && settings.paused === null,
       default_adapter: settings.default_adapter ?? null,
       default_model: settings.default_model ?? null,
@@ -108,6 +111,9 @@ export function createDaemonCore(o) {
       // Every session this computer knows, live or in the journal, newest activity first, with its name and its release task.
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };
+    // Release 36, read only while a phone that asked is linked: this computer's own Claude Code sessions, under the projects above.
+    if (o.desk && deskPeers.size > 0) { try { body.desk_sessions = o.desk.list().filter((d) => body.projects.some((p) => p.project_id === d.project_id)); } catch { o.log("desk_unreadable", {}); } }
+    return body;
   }
 
   function resendReceipts(entry) {
@@ -184,6 +190,7 @@ export function createDaemonCore(o) {
     if (env.type === "inventory.get") {
       if (payload.extended === true && env.sender_device_id) extendedPeers.add(env.sender_device_id);
       if (payload.extended === true && payload.model_switch === true && env.sender_device_id) switchPeers.add(env.sender_device_id); // kept, as extendedPeers
+      if (payload.extended === true && payload.desk_sessions === true && env.sender_device_id) deskPeers.add(env.sender_device_id);
       if (payload.device_name && env.sender_device_id) rememberName(env.sender_device_id, payload.device_name);
       emit(null, "device.inventory", inventoryBody(payload.refresh_models));
       return "taken";
@@ -208,6 +215,9 @@ export function createDaemonCore(o) {
       return "taken";
     }
     if (env.type === "approval.decision") return approvals.decide(payload.decision_token).ok ? "taken" : "approval_invalid";
+    // HEAVY MEMORY LOAD (remote-health.mjs, 2026-11-15): while red, no NEW session starts; running sessions continue. `busy`
+    // is the reason every phone already knows; the run terminal says "This computer is under heavy memory load".
+    if (NEW_SESSIONS.has(env.type) && o.health?.()?.refusing === true) { o.log("session_refused", { reason: "memory_load", type: env.type }); return "busy"; }
     if (P.RELEASE_COMMANDS.has(env.type)) return releases ? releases.handle(env, payload) : "unsupported"; // remote-releases.mjs
     if (env.type === "attachment.put" || env.type === "attachment.clear") return o.attachments ? o.attachments.handle(env, payload) : "unsupported"; // remote-attachments.mjs
     if (env.type === "preview.targets" || env.type === "preview.render") return o.preview ? o.preview.handle(env, payload) : "unsupported"; // remote-preview.mjs
@@ -271,6 +281,8 @@ export function createDaemonCore(o) {
 
   return {
     emit, replay, receiveCommand, receiveHello, inventoryBody,
+    /** The computer's health (remote-health.mjs): device-wide on the transient lane, to every open channel, never journaled. */
+    emitHealth(body) { if (channels.size > 0) emit(null, "device.health", body, null, "none", { transient: true }); },
     /** The gateway's device.revoked: a phone this computer will no longer hear from. */
     peerRevoked(event) { return dropPhone(event.device_id, event.reason === "unpaired" ? "phone" : "revoked"); },
     attach(s, a, r = null) { sessions = s; approvals = a; releases = r; },

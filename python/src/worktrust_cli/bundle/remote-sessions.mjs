@@ -32,7 +32,6 @@ const LEDGER_EVERY_MS = 10 * 60_000;
 /** Per agent: the shape of its own session id (a resume names one), and a fresh stream state. */
 const AGENT_ID = { "claude-code": isClaudeSessionId, codex: isCodexThreadId, opencode: isOpenCodeSessionId };
 const FRESH_STATE = { "claude-code": emptyClaudeState, codex: emptyCodexState, opencode: emptyOpenCodeState };
-
 export { createCoalescer } from "./remote-coalesce.mjs"; // kept here for the modules that import it from sessions
 
 export function createSessions(ctx) {
@@ -216,9 +215,10 @@ export function createSessions(ctx) {
     const refused = P.checkStart(payload, adapterOf(ctx.inventory(), payload.adapter)); if (refused) return refused;
     const choice = startChoice(payload, project.project_id, ctx.inventory(), ctx.settings(), known); if (typeof choice === "string") return choice;
     if (!AGENT_ID[payload.adapter] || (payload.resume !== null && !AGENT_ID[payload.adapter](payload.resume))) return "unsupported";
+    const desk = payload.resume !== null && env.task !== true ? (ctx.desk ? ctx.desk.resumable(payload.resume, project.project_id) : "not_found") : null; if (desk) return desk; // release 36: only a session of the computer's own list, free
     if (deskGranted(payload.adapter, project.path)) return "not_allowed"; // S0: Codex's own allow rules cannot be denied per session
     const s = { session_id: env.session_id, project_id: project.project_id, projectPath: project.path, adapter: payload.adapter, model: payload.model, mode: payload.permission_mode,
-      agent_ref: payload.resume ?? (payload.adapter === "codex" ? null : payload.adapter === "opencode" ? mintOpenCodeSessionId(ctx.now(), ctx.random) : randomUUID()), how: "started", first: ctx.now(), queue: [], state: FRESH_STATE[payload.adapter](),
+      agent_ref: payload.resume ?? (payload.adapter === "codex" ? null : payload.adapter === "opencode" ? mintOpenCodeSessionId(ctx.now(), ctx.random) : randomUUID()), how: payload.resume !== null && env.task !== true ? "attached" : "started", first: ctx.now(), queue: [], state: FRESH_STATE[payload.adapter](),
       coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: env.task === true, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: payload.name ?? null, active: 0, countedTurn: null,
       agentMode: payload.agent_mode ?? null, effort: choice.effort, extraIds: choice.extraProjectIds, extraPaths: choice.extras.map((p) => p.path) };
     live.set(s.session_id, s);

@@ -264,6 +264,13 @@ What it is: standing remote execution of AI agents on this computer, steered fro
   grant only folders whose code you trust. The phone's keys are on the phone: until you revoke it, whoever unlocks it can
   steer agents within these rules. macOS asks for folder access per program, so the access you grant the service's `node`
   covers every script that `node` runs.
+- Continuing a desk session (0.11.13). The daemon reads Claude Code's transcript folders of granted projects only (the
+  encoded folder of each granted path, never the whole store; a transcript whose recorded folder is another is dropped),
+  at most the first and last 64 KB of a file, and sends per session only its id, the project's id, the last activity, an
+  80-character title and the model, sealed, to a phone that asked. A resume is refused unless the id is in that list,
+  under the project named, and nothing on this computer holds it (`ps`, and `lsof` or /proc for a window's folder; a
+  process list it cannot read counts as holding it). The title is the first line typed when Claude Code wrote no summary:
+  what you typed first in a session reaches your own phones and browsers.
 - Hours. A remote-steered session is never your AI Hours (see README).
 
 ## Python distribution and explicit agent observations

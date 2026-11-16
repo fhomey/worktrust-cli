@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.12
+  WorkTrust CLI 0.11.13
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.12
+  WorkTrust CLI 0.11.13
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.12)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.13)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -197,6 +197,14 @@ here with `remote modes allow`. The computer refuses a mode above what you allow
 
 **Sealed end to end.** The computer holds one outbound connection and opens no port. Messages are sealed between your
 phone and this computer; the relay passes them on and cannot read a prompt, a file, a path, an output or a model name.
+
+**This computer's health, on your phone.** While Remote Agent runs, it reads a few numbers of this computer every 15
+seconds, itself, with no model and no sudo: memory pressure, free memory, swap and how fast it grows, the CPU load per
+core, the GPU's utilisation on Apple silicon, and the three programs using the most memory, by name only (never their
+arguments, paths or window titles). The newest reading stays in `~/.worktrust/remote/health.json`; it goes sealed to
+your linked phones and browsers only, and the relay keeps none of it. When memory runs out (critical pressure, or under
+5 % free while swap keeps growing), `remote status` and the menu say so in red, and a phone cannot start a new session
+until it eases; sessions already running continue.
 
 A session steered from a phone is recorded as an agent run. It never counts as your AI Hours.
 
@@ -774,6 +782,11 @@ Off until you run `npx worktrust remote app` (or `remote web`) at this keyboard;
   told why.
 - One outbound connection to the WorkTrust gateway, end-to-end encrypted: the gateway relays sealed messages and reads no
   prompt, file, path, output or model name. No port is opened on this computer.
+- Continue a session on this computer (0.11.13): the phone or the browser lists this computer's recent Claude Code
+  sessions in your granted folders (the last 20; per session only its id, the project, the last activity, a title of at
+  most 80 characters and the model, sealed end to end) and continues the one you pick with Claude Code's own `--resume`,
+  under the same rules as a session started from the phone. A session open here (written in the last 30 seconds, named
+  by a running Claude Code, or in a Claude Code window open in that folder) is refused until you close it here.
 - A session steered from a phone is never your AI Hours: the service records it in `~/.worktrust/remote/steered.jsonl`
   before the agent starts, and the session hook sends it as an agent run (`session_kind` headless, `steered_from`
   remote).

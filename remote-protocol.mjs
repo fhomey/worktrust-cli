@@ -1717,6 +1717,110 @@ export function agentsActiveRule(a              )                {
   return null;
 }
 
+// ---- packages/remote-protocol/src/health.ts
+/**
+ * THE COMPUTER'S HEALTH (owner, 2026-11-15: "the computer sometimes crashes from RAM/GPU load"). The Remote daemon reads
+ * a few numbers of its own machine every 15 seconds, without a model and without sudo, and seals one `device.health`
+ * body for each paired phone and browser. It travels on the TRANSIENT LANE (envelopes.ts), device-wide: the relay passes
+ * it on to a phone that is there and keeps, buffers and records none of it, so the server never sees or stores a sample.
+ *
+ * Every field is a number, an enum or a flag, except a process's NAME: the program's basename (`ps -o comm=`), never its
+ * arguments, its path or a window title. healthRule refuses a name that looks like a path or an argument, and refuses a
+ * level that is not what healthLevel says of the numbers, so no sender can call a critical computer green.
+ *
+ * A reading that failed is null, never 0. `gpu_busy` is the GPU's own "Device Utilization %" reading (IOAccelerator),
+ * 0 to 100, passed through as the device states it: no figure computed by the sender. Memory and load travel as counts
+ * (MB, the load average times 100, the cores); a surface derives a share from them (healthView in the client).
+ */
+
+/** How often the daemon samples, and how far back "swap growing" looks. */
+export const HEALTH_SAMPLE_MS = 15_000;
+export const SWAP_GROWTH_WINDOW_MS = 120_000;
+/** Swap that grew by at least this much over the window is "growing" (a few MB of churn is not). */
+export const SWAP_GROWTH_MIN_MB = 64;
+/** Below this share of the memory free (with swap growing) the computer is red. */
+export const LOW_MEMORY_SHARE = 0.05;
+/** An hour of samples, in memory only (the client's history; never stored). */
+export const HEALTH_HISTORY_MS = 3_600_000;
+export const MAX_PROCESS_NAME = 64;
+
+export const HEALTH_LEVELS = ["green", "yellow", "red", "unknown"]         ;
+
+/** macOS kern.memorystatus_vm_pressure_level 1, 2, 4; Linux PSI memory (`some`/`full` avg10). */
+export const MEMORY_PRESSURES = ["normal", "warn", "critical"]         ;
+
+export const HEALTH_REASONS = ["pressure_critical", "low_memory_swap_growing", "pressure_warn", "swap_growing"]         ;
+
+const MB = int(0, 16_777_216);
+export const HEALTH_PROCESS_SPEC = object({ name: text(MAX_PROCESS_NAME, 1), memory_mb: MB });
+
+export const HEALTH_BODY_SPEC = object({
+  sampled_at: int(0),
+  level: oneOf(HEALTH_LEVELS),
+  reasons: list(oneOf(HEALTH_REASONS), HEALTH_REASONS.length),
+  pressure: nullable(oneOf(MEMORY_PRESSURES)),
+  memory_total_mb: nullable(MB),
+  memory_free_mb: nullable(MB),
+  swap_used_mb: nullable(MB),
+  /** Swap used now minus SWAP_GROWTH_WINDOW_MS ago; null until the daemon has a reading that old. */
+  swap_growth_mb: nullable(int(-16_777_216, 16_777_216)),
+  /** The one-minute load average times 100, and the logical cores it is shared by. */
+  load_centi: nullable(int(0, 100_000_000)),
+  cores: nullable(int(1, 4096)),
+  gpu_busy: nullable(int(0, 100)),
+  /** The three programs holding the most memory, by basename, summed over their processes. */
+  top: list(HEALTH_PROCESS_SPEC, 3),
+  /** True while the daemon starts no new session (level red); running sessions continue. */
+  refusing: bool(),
+});
+
+/**
+ * THE THRESHOLDS, ONE PURE FUNCTION (the daemon, the CLI line and every surface read this). Red: pressure critical, or
+ * under 5 % of the memory free while swap grew for two minutes. Yellow: pressure warn, or swap growing. Unknown: no
+ * reading to judge by at all. Green otherwise.
+ */
+export function healthLevel(input             )                                                                             {
+  const swapGrowing = input.swap_growth_mb !== null && input.swap_growth_mb >= SWAP_GROWTH_MIN_MB;
+  const share = input.memory_total_mb && input.memory_free_mb !== null ? input.memory_free_mb / input.memory_total_mb : null;
+  const reasons                 = [];
+  if (input.pressure === "critical") reasons.push("pressure_critical");
+  if (share !== null && share < LOW_MEMORY_SHARE && swapGrowing) reasons.push("low_memory_swap_growing");
+  if (input.pressure === "warn") reasons.push("pressure_warn");
+  if (swapGrowing) reasons.push("swap_growing");
+  if (reasons.includes("pressure_critical") || reasons.includes("low_memory_swap_growing")) return { level: "red", reasons };
+  if (reasons.length > 0) return { level: "yellow", reasons };
+  if (input.pressure === null && share === null && input.swap_growth_mb === null) return { level: "unknown", reasons };
+  return { level: "green", reasons };
+}
+
+/**
+ * A NAME THAT IS A PROGRAM'S BASENAME AND NOTHING ELSE. Refused: a path separator, a control character, a leading dash,
+ * an argument after a space (` -x`, ` --flag`), an `=` (a setting), a URL scheme. Spaces and brackets stay: "Google
+ * Chrome Helper (Renderer)" is one program's name.
+ */
+export function processNameRefusal(name        )                {
+  if (name.length === 0 || name.length > MAX_PROCESS_NAME) return "length";
+  if (/[/\\]/.test(name)) return "a path";
+  if (/[\u0000-\u001f\u007f]/.test(name)) return "a control character";
+  if (/^-|\s-{1,2}\S|=|:\/\//.test(name)) return "an argument";
+  return null;
+}
+
+/** The rules between fields, after the schema (events.ts validateEventBody). */
+export function healthRule(body            )                {
+  for (const p of body.top) {
+    const bad = processNameRefusal(p.name);
+    if (bad) return `top: a process name with ${bad}`;
+  }
+  if (new Set(body.top.map((p) => p.name)).size !== body.top.length) return "top: a name twice";
+  if (body.top.some((p, n) => n > 0 && p.memory_mb > body.top[n - 1] .memory_mb)) return "top: largest first";
+  if (body.memory_total_mb !== null && body.memory_free_mb !== null && body.memory_free_mb > body.memory_total_mb) return "memory_free_mb: above the total";
+  const judged = healthLevel(body);
+  if (judged.level !== body.level || judged.reasons.join() !== body.reasons.join()) return "level: not what the numbers say";
+  if (body.refusing && body.level !== "red") return "refusing: only while red";
+  return null;
+}
+
 // ---- packages/remote-protocol/src/latency.ts
 /**
  * HOW LONG EACH HOP TOOK (owner, 2026-11-07: a prompt sent while the agent is busy waits, and the app must show it).
@@ -1732,6 +1836,41 @@ const span = (from               , to               )                =>
 
 export function deliveryHops(r             )                                                                                  {
   return { to_relay_ms: span(r.sent_at, r.relay_ack_seen_at), on_computer_ms: span(r.received_at, r.accepted_at) };
+}
+
+// ---- packages/remote-protocol/src/desk.ts
+/**
+ * CONTINUE A SESSION ON THIS COMPUTER (release 36, owner 2026-11-15; docs/remote-agents/DESK-SESSIONS.md). The computer's
+ * newest Claude Code sessions in GRANTED projects, sealed in device.inventory `desk_sessions`, only for a phone that asked
+ * `inventory.get` `desk_sessions` (an older phone refuses unknown keys and never receives it). Per session ONLY: Claude
+ * Code's own session id, the project's id, the last activity, a title of at most 80 characters (Claude Code's own summary,
+ * else the first line typed) and the model when recorded. Never more of the transcript. A phone continues one with
+ * `agent.start` `resume` = `session_ref` under that project; the computer checks it is in its own list, that the project is
+ * granted, and that nothing on the computer holds it (`in_use`).
+ */
+
+export const MAX_DESK_SESSIONS = 20;
+export const MAX_DESK_TITLE = 80;
+const CLAUDE_SESSION_REF = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export const DESK_SESSION_SPEC = object({
+  session_ref: text(36, 36),
+  project_id: id("prj"),
+  last_activity_at: int(0),
+  title: nullable(text(MAX_DESK_TITLE, 1)),
+  model: nullable(text(128, 1)),
+});
+
+/** device.inventory's field (events.ts spreads it): sealed only for a phone that asked `inventory.get` `desk_sessions`. */
+export const DESK_INVENTORY_FIELDS = { desk_sessions: optional(list(DESK_SESSION_SPEC, MAX_DESK_SESSIONS)) }         ;
+
+/** The rules between fields: a uuid each, each once, each under a project the same inventory lists. → null, or what is wrong. */
+export function deskRule(desk                                    , projects                                            )                {
+  const rows = desk ?? [];
+  if (rows.some((d) => !CLAUDE_SESSION_REF.test(d.session_ref))) return "a session_ref is Claude Code's own uuid";
+  if (new Set(rows.map((d) => d.session_ref)).size !== rows.length) return "a session twice";
+  if (rows.some((d) => !projects.some((p) => p.project_id === d.project_id))) return "under a project the inventory lists";
+  return null;
 }
 
 // ---- packages/remote-protocol/src/state-machine.ts
@@ -2477,6 +2616,11 @@ export const COMMAND_PAYLOAD_SPECS = {
      * An older computer refuses the unknown field; the phone then asks again with `extended` alone (client-core.ts).
      */
     model_switch: optional(bool()),
+    /**
+     * Release 36: this phone reads `desk_sessions` (events.ts) and may continue one. Only with `extended`; an older computer
+     * drops the unknown field, so the phone asks it by a probe of its own (client-core.ts, inventory-asks.ts).
+     */
+    desk_sessions: optional(bool()),
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -2636,6 +2780,7 @@ export function validateCommandPayload                       (type   , value    
     const i = payload                                   ;
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
+    if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
   }
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
@@ -2753,6 +2898,7 @@ export const REJECT_REASONS = [
   "busy", // the agent is mid-turn and the command needs it idle (a release: its tasks still run, or no slot for a pipeline)
   "unreviewed", // the project's pipeline file was not reviewed at the keyboard, or changed since (2026-11-07)
   "not_allowed", // the computer did not allow it at its keyboard (a browser endorsement without allow-endorse), or the sender may not (2026-11-09)
+  "in_use", // release 36: the desk session to continue is open on the computer; sent only to a phone that asked `desk_sessions` (others hear `busy`)
 ]         ;
 
 export const FAIL_REASONS = ["agent_exited", "adapter_error", "not_ready", "timeout", "internal"]         ;
@@ -2902,7 +3048,7 @@ export const EVENT_BODY_SPECS = {
     agent_options: optional(list(AGENT_OPTIONS_SPEC, 16)),
     modes_allowed: optional(list(oneOf(AGENT_MODES), AGENT_MODES.length)),
     /** Part B (owner, 2026-11-12), only for an `extended` phone: the settings page's admin switch, folders, connections (crypto/admin.ts). */
-    ...ADMIN_INVENTORY_FIELDS,
+    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, // release 36: `desk_sessions`, only for a phone that asked (desk.ts)
     sessions: list(
       object({
         session_id: id("ses"),
@@ -2940,19 +3086,16 @@ export const EVENT_BODY_SPECS = {
   ...TRANSFER_EVENT_SPECS,
   /** The live preview (release 19, live-preview.ts): its state, and its frames on the transient lane only. */
   ...LIVE_EVENT_SPECS,
+  /** The computer's health (health.ts), every 15 s on the transient lane, device-wide: passed on, kept by nobody. */
+  "device.health": HEALTH_BODY_SPEC,
 }                                                  ;
 
 export const DEVICE_EVENT_TYPES = Object.keys(EVENT_BODY_SPECS)                              ;
 
 /** The one device event about the computer as a whole; every other names a session. */
-export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active"]);
+export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active", "device.health"]);
 /** Events that answer one command, so their envelope names it (command_id is required). */
-export const COMMAND_RECEIPT_EVENTS                               = new Set                 ([
-  "command.device_received",
-  "command.agent_accepted",
-  "command.rejected",
-  "command.queued",
-]);
+export const COMMAND_RECEIPT_EVENTS                               = new Set                 (["command.device_received", "command.agent_accepted", "command.rejected", "command.queued"]);
 
 export const isDeviceEventType = (value         )                           =>
   typeof value === "string" && Object.hasOwn(EVENT_BODY_SPECS, value);
@@ -3004,6 +3147,10 @@ export function validateEventBody                           (type   , value     
     const bad = agentsActiveRule(checked.value                );
     if (bad) return refuse("payload", `$body: ${bad}`);
   }
+  if (type === "device.health") {
+    const bad = healthRule(checked.value              );
+    if (bad) return refuse("payload", `$body: ${bad}`);
+  }
   if (type === "agent.attention") {
     const a = validateAttention(value, "$body");
     if (!a.ok) return refuse("payload", a.detail);
@@ -3016,6 +3163,7 @@ export function validateEventBody                           (type   , value     
     }
     // One report per (adapter, mode) since release 19: Claude Code structured and in a terminal are two reports.
     if (new Set(inv.adapters.map((a) => `${a.adapter}/${a.mode}`)).size !== inv.adapters.length) return refuse("payload", "$body.adapters: an adapter twice");
+    { const desk = deskRule(inv.desk_sessions, inv.projects); if (desk) return refuse("payload", `$body.desk_sessions: ${desk}`); }
   }
   return checked;
 }
@@ -3100,9 +3248,12 @@ export const COMMAND_ENVELOPE_SPEC = object({
  * So the stream stays gap-free for every phone, whoever followed. Only the types below may take the lane.
  */
 export const EVENT_LANES = ["transient"]         ;
-export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame"]);
-/** Types that may ONLY travel on the transient lane (a live preview's frames: never journaled, never replayed). */
-export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame"]);
+export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame", "device.health"]);
+/**
+ * Types that may ONLY travel on the transient lane (a live preview's frames: never journaled, never replayed), and the
+ * computer's health (health.ts, 2026-11-15): device-wide, so its lane is the device stream's, with its own rising number.
+ */
+export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame", "device.health"]);
 export const isTransientEvent = (e                            )          => e.lane === "transient";
 
 export const EVENT_ENVELOPE_SPEC = object({
@@ -3243,9 +3394,10 @@ export function validateEventEnvelope(value         )                         {
   if (!COMMAND_RECEIPT_EVENTS.has(type) && DEVICE_SCOPED_EVENTS.has(type) !== (e.session_id === null))
     return refuse("shape", "$event.session_id: a session event names a session, a device event none");
   if (COMMAND_RECEIPT_EVENTS.has(type) && e.command_id === null) return refuse("shape", "$event.command_id: a receipt names its command");
-  if (isTransientEvent(e) && (!TRANSIENT_EVENT_TYPES.has(type) || e.command_id !== null || e.session_id === null || e.notify !== "none"))
-    return refuse("shape", "$event.lane: only a pushed screen or frame, of a session, without a command or a push hint, is transient");
-  if (TRANSIENT_ONLY_TYPES.has(type) && !isTransientEvent(e)) return refuse("shape", "$event.lane: a live preview's frame travels on the transient lane only");
+  // A session's screen or frame names its session; the computer's health names none (DEVICE_SCOPED_EVENTS, checked above).
+  if (isTransientEvent(e) && (!TRANSIENT_EVENT_TYPES.has(type) || e.command_id !== null || (e.session_id === null) !== DEVICE_SCOPED_EVENTS.has(type) || e.notify !== "none"))
+    return refuse("shape", "$event.lane: only a pushed screen or frame of a session, or the computer's health, without a command or a push hint, is transient");
+  if (TRANSIENT_ONLY_TYPES.has(type) && !isTransientEvent(e)) return refuse("shape", "$event.lane: a live preview's frame and the computer's health travel on the transient lane only");
   return checked;
 }
 

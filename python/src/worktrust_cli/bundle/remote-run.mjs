@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import * as P from "./remote-protocol.mjs";
 import { loadPreviewGrants, loadRoots } from "./remote-store.mjs";
 import { sessionProjects } from "./remote-projects.mjs";
-import { ensureRemoteDir, gatewayOf, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
+import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { inventory as listAgents, offered } from "./remote-inventory.mjs";
 
@@ -34,7 +34,9 @@ import { createLivePreview } from "./remote-live-preview.mjs";
 import { SETTING_WORDS } from "./remote-admin.mjs";
 import { appendPipelineMark } from "./remote-steered.mjs";
 import { createDaemonCore } from "./remote-daemon.mjs";
+import { createDesk } from "./remote-desk-sessions.mjs";
 import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
+import { createHealthMonitor, fixtureReaders, HEALTH_REFUSAL, healthLine, keepHealth } from "./remote-health.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), kind, ...fields })}\n`);
@@ -42,6 +44,7 @@ const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: 
 const notice = (kind, fields) => {
   if (kind === "browser_endorsed") process.stderr.write(`  ! A browser was added by your phone ${fields.by}: ${fields.fingerprint}. See or remove it: npx worktrust remote phones\n`);
   // Part B: a change approved in the app or on the web with the authenticator, signed by WorkTrust and verified here.
+  if (kind === "session_refused") process.stderr.write(`  ! A new session from a phone or browser was refused: ${HEALTH_REFUSAL}. Running sessions continue.\n`);
   if (kind === "settings_changed") process.stderr.write(`  ! ${SETTING_WORDS[fields.setting] ?? "a remote setting"} changed from ${fields.by}, approved there with your authenticator. To keep every change at this keyboard: npx worktrust remote admin off\n`);
 };
 const logged = (kind, fields = {}) => { log(kind, fields); notice(kind, fields); };
@@ -135,7 +138,10 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   // The live preview (release 19): the session's granted page, live, over the browser's pipe; one per computer.
   const live = createLivePreview({ emit: (...a) => core.emit(...a), grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log, now: Date.now,
     sessionProject: (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; } });
-  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, now: Date.now, random, log: logged, send: (f) => transport?.send(f) ?? false, inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
+  // Continue a session on this computer (release 36): its own Claude Code sessions in the projects a phone may reach.
+  const desk = createDesk({ projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), journal });
+  let health = null; // the sampler below (remote-health.mjs): every 15 s, local numbers, no model
+  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, now: Date.now, random, log: logged, health: () => health?.latest() ?? null, send: (f) => transport?.send(f) ?? false, inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
@@ -144,13 +150,13 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
     // A session runs in a granted project or in an existing project inside a root (0.11.7), each by the inventory's id.
     settings: loadSettings, projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), inventory: () => inventory({ env: agentEnv(loadSettings()) }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
     onTaskEnded: (id, outcome) => releases.taskEnded(id, outcome), onActivity: () => releases?.activity(),
-    onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)), attachments });
+    onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)), attachments, desk });
   ctx.onApprovalOpened = sessions.onApprovalOpened; ctx.onApprovalSettled = sessions.onApprovalSettled;
   // Terminal sessions (release 19, off until `worktrust remote terminal on`): Claude Code in tmux on WorkTrust's own socket.
   const tmuxFile = listAgents({ env: agentEnv(loadSettings()) }).files.tmux;
   const tmux = tmuxFile ? createTmux({ file: tmuxFile, config: writeTmuxConfig(runDir), env: agentEnv(loadSettings()) }) : NO_TMUX;
   const terminal = createTerminalSessions({ journal, now: Date.now, emit: core.emit, settings: loadSettings, projects: loadProjects, inventory: () => inventory({ env: agentEnv(loadSettings()) }),
-    tmux, claudeFile: () => listAgents({ env: agentEnv(loadSettings()) }).files["claude-code"], replay: core.replay, running: () => sessions.runningCount(), detect: (lines) => detectScreen("claude-code", lines), approvals,
+    tmux, claudeFile: () => listAgents({ env: agentEnv(loadSettings()) }).files["claude-code"], replay: core.replay, running: () => sessions.runningCount(), detect: (lines) => detectScreen("claude-code", lines), approvals, desk,
     onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)) });
   const registry = withTerminal(sessions, terminal);
   // Releases and pipelines (2026-11-07): one queue for every release's tasks, the reviewed pipeline of each project.
@@ -168,8 +174,22 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
     if (frame.frame === "hello") core.receiveHello(frame.hello);
     else if (frame.frame === "command") await core.receiveCommand(frame.envelope);
     else if (frame.frame === "relay") { log("relay", { type: frame.event?.type ?? null }); if (frame.event?.type === "device.revoked") core.peerRevoked(frame.event); }
-    else if (frame.frame === "error") log("gateway_error", { reason: typeof frame.reason === "string" ? frame.reason.slice(0, 40) : null });
+    else if (frame.frame === "error") {
+      log("gateway_error", { reason: typeof frame.reason === "string" ? frame.reason.slice(0, 40) : null });
+      // A gateway older than device.health answers it `error: shape` (and closes nothing): rest the samples half an hour.
+      if (frame.reason === "shape" && Date.now() - healthSentAt < 5000) { healthRestUntil = Date.now() + 30 * 60_000; log("health_rested", { minutes: 30 }); }
+    }
   };
+  // THE COMPUTER'S HEALTH (2026-11-15): kept here for `remote status` and the menu, said in the run terminal when it turns
+  // red or back, and sealed for the paired phones and browsers on the transient lane (the gateway keeps none of it).
+  let healthSentAt = 0, healthRestUntil = 0, healthSaid = null;
+  const healthFixture = isLoopbackGateway(gateway) ? process.env.WORKTRUST_REMOTE_HEALTH_FIXTURE ?? null : null; // tests on the dev relay only
+  health = createHealthMonitor({ log, ...(healthFixture ? fixtureReaders(healthFixture) : {}), onSample: (body) => {
+    keepHealth(body);
+    if (body.level !== healthSaid && (body.level === "red" || healthSaid === "red")) process.stderr.write(`${healthLine(body)}\n`);
+    healthSaid = body.level;
+    if (Date.now() >= healthRestUntil && transport?.ready()) { healthSentAt = Date.now(); core.emitHealth(body); }
+  } });
   let sentCode = null;
   const registerCode = (again = false) => {
     const invite = readJson("invite.json");
@@ -186,6 +206,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
     if (stopping) return;
     stopping = true;
     approvals.close();
+    health.stop();
     await pipelines.stopAll();
     await live.stopAll(); // the browser ended, its profile removed
     await registry.stopAll(); // the structured agents; a terminal session lives on in tmux
@@ -202,5 +223,6 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   const grantsChanged = () => { const now = [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id)].join(","); const changed = grants !== null && now !== grants; grants = now; return changed; };
   setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); registerCode(); releases.poll(); try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
   releases.schedule(); // queued tasks a restart kept
+  health.start();
   return new Promise(() => {});
 }

@@ -14,6 +14,7 @@ import { makeProjectsFolder, pickFolder, pickerCommand, suggestedFolders } from 
 import { awaitingName, awaitingRow, connections } from "./remote-connections.mjs";
 import { loadIdentity, loadProjects, loadRoots, loadSettings } from "./remote-store.mjs";
 import { allowedModes } from "./remote-settings.mjs";
+import { HEALTH_REFUSAL, keptHealth } from "./remote-health.mjs";
 
 const BACK = { label: "← Back", hint: "Esc", back: true }; // its name and its key say it: no sentence of its own (owner, 2026-11-14)
 const tilde = (path) => (path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path);
@@ -213,7 +214,9 @@ export async function remoteMenu(term, io, header) {
     const road = (which) => async () => ((await runShown(term, io, ["remote", which, ...(approved ? ["--repair"] : [])])) === false ? false : approved === false && approval() === true ? "back" : true);
     // 0.11.12: a linked phone with no reach chosen yet is said first, and its row opens the access step (awaitingRow).
     const waiting = state?.remoteAccess === "premium_required" ? null : awaitingName();
-    return [...(waiting ? [awaitingRow(waiting, (args) => runShown(term, io, args))] : []), ...remoteItems(approved, paused, {
+    // HEAVY MEMORY LOAD (remote-health.mjs): the remote service's newest sample, red, is said first, in red; Enter shows the figures.
+    const red = keptHealth()?.level === "red" ? [{ label: "Health: heavy memory load", note: { text: "red", tone: "red" }, hint: "npx worktrust remote status", info: `${HEALTH_REFUSAL}. New sessions wait; running ones continue. Enter shows the figures.`, run: () => runShown(term, io, ["remote", "status"]) }] : [];
+    return [...red, ...(waiting ? [awaitingRow(waiting, (args) => runShown(term, io, args))] : []), ...remoteItems(approved, paused, {
       approve: () => level(term, header, approved ? "Approve this computer again (new keys)" : "Approve this computer", () => [
         { label: "With the WorkTrust app", hint: `npx worktrust remote app${approved ? " --repair" : ""}`, info: "One QR: the app approves and links this phone.", run: road("app") },
         { label: "In the browser", hint: `npx worktrust remote web${approved ? " --repair" : ""}`, info: "Opens WorkTrust in your browser, where you approve.", run: road("web") },

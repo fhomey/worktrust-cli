@@ -277,6 +277,12 @@ What it is: standing remote execution of AI agents on this computer, steered fro
   under the project named, and nothing on this computer holds it (`ps`, and `lsof` or /proc for a window's folder; a
   process list it cannot read counts as holding it). The title is the first line typed when Claude Code wrote no summary:
   what you typed first in a session reaches your own phones and browsers.
+- A new version reaches the service (0.11.15). `update` re-installs an installed service on the verified copy it just
+  installed. The running service also compares its version with `~/.worktrust/installed-release.json` (at start and every
+  ten minutes) and moves only to a newer copy in `~/.worktrust/verified` that verifies under the release key pinned in the
+  RUNNING version (signature, every file's hash, its identity), only while no agent turn, task or pipeline runs, through a
+  one-shot launchd job (`io.worktrust.remote.handover`) or a systemd restart. It never fetches anything: only a release
+  you installed is started. `~/.worktrust/remote/daemon.json` holds its process id, version and whether it is busy.
 - Hours. A remote-steered session is never your AI Hours (see README).
 
 ## Python distribution and explicit agent observations

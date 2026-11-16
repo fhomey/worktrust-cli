@@ -21,6 +21,7 @@ import { pairingQrText, seededInvite } from "./remote-pairing.mjs";
 import { watchKeys } from "./cli-stop.mjs";
 import { startCountdown } from "./remote-countdown.mjs";
 import { suggestedFolders } from "./folder-picker.mjs";
+import { dropNoticeKeysOf } from "./remote-notices.mjs";
 
 const KEEP_REMOVED = 20;
 const when = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "never");
@@ -53,12 +54,13 @@ export function findConnection(list, key) {
     ?? (shortPrint(k).length === 4 ? list.filter((c) => shortPrint(c.fingerprint) === shortPrint(k)).at(0) ?? null : null);
 }
 
-/** Take phones off this computer, the one removal `remote phones remove` and `remote disconnect` share. */
+/** Take phones off this computer, the one removal `remote phones remove` and `remote disconnect` share; their notice keys go too. */
 export function removePhones(fingerprints, at = Date.now()) {
   const phones = loadPhones(), gone = new Set(fingerprints);
   const out = [...phones.confirmed, ...phones.pending].filter((p) => gone.has(p.fingerprint));
   savePhones({ ...phones, pending: phones.pending.filter((p) => !gone.has(p.fingerprint)), confirmed: phones.confirmed.filter((p) => !gone.has(p.fingerprint)),
     removed: [...phones.removed.filter((p) => !out.some((x) => x.device_id === p.device_id)), ...out.map((p) => ({ device_id: p.device_id, fingerprint: p.fingerprint, how: "keyboard", removed_at: at }))].slice(-KEEP_REMOVED) });
+  dropNoticeKeysOf(out.map((p) => p.device_id));
   return out.length;
 }
 

@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.14
+  WorkTrust CLI 0.11.15
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.14
+  WorkTrust CLI 0.11.15
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.14)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.15)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -753,7 +753,8 @@ Off until you run `npx worktrust remote app` (or `remote web`) at this keyboard;
 - `app` and `web` make a REMOTE key pair for this computer (Ed25519 and X25519, files of mode 0600 in `~/.worktrust/remote/`),
   never the measurement key, and has it approved in WorkTrust with your second factor; then it starts a service while you
   are logged in (launchd on macOS, a systemd user unit on Linux, linger off; on Windows `npx worktrust remote run` in a
-  terminal) and draws a QR code for the WorkTrust app. `pair` draws a new one: five minutes, one phone, once. A phone
+  terminal) and draws a QR code for the WorkTrust app. `npx worktrust update` moves that service onto the new version
+  (0.11.15 and later), never while an agent turn, task or pipeline runs. `pair` draws a new one: five minutes, one phone, once. A phone
   that scanned it is confirmed; one that typed the code instead waits for `npx worktrust remote phones confirm`.
 - Two roads to approve the computer's key: `npx worktrust remote app` shows the approval as a QR code here (no browser);
   the WorkTrust app scans it and you approve with your authenticator code. `npx worktrust remote web` opens the approval

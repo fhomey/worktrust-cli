@@ -83,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.14";
+const CLI_VERSION = "0.11.15";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -119,7 +119,7 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-desk-sessions.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "cli-stop.mjs", "cli-look.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-admin.mjs", "remote-health.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "credential-decoy.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
+const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-desk-sessions.mjs", "remote-notices.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "cli-stop.mjs", "cli-look.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-admin.mjs", "remote-health.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "credential-decoy.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["project-modes.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -754,8 +754,10 @@ async function update() {
     const standing = doorIsOff || planLines(plan.out).filter((line) => !line.includes("not on this machine")).every((line) => /^\s+✓ /.test(line));
     const asked = (existsSync(join(homedir(), ".codex")) && !codexNotify().text) || (antigravityHere() && agyHooks() !== null && !agyHooks()?.worktrust);
     if (plan.code === 0 && standing && fresh.length === 0 && agreed.has("session-hook") && !asked) {
+      const moved = await remoteFollows(); // a service left on an older release moves even when nothing else changes (0.11.15)
       say();
-      say(`  Already up to date (${CLI_VERSION}). Nothing changed.`);
+      say(`  Already up to date (${CLI_VERSION}).${moved ? "" : " Nothing changed."}`);
+      if (moved) say(`  ${moved}`);
       if (doorIsOff) say(`    the door stays off here (hours only, ${DOOR_SWITCH})`); // a choice the update keeps is still said
       say("  To set this computer up again all the same: npx worktrust update --force");
       return;
@@ -801,6 +803,8 @@ async function update() {
   if (moveKey && !has("keep-key-file")) keyIntoVault(); // after this release's copy is in place, so the hook that reads it is this one
   await plantDecoys?.({ dir: HOME_DIR, key, protectedMode: keyStore.protected(), proof, agent: `worktrust-cli/${CLI_VERSION}`, once: true });
   });
+  const moved = await remoteFollows();
+  if (moved) say(`  ${moved}`);
   // Codex installed since, or a No said at connect: the one question, asked again (or "already set").
   await offerCodex();
   await offerAntigravity();
@@ -810,6 +814,21 @@ async function update() {
   doubleDoorNotice();
   say();
   say("  Done. Quit your AI apps completely and open them again to use the updated CLI.");
+}
+
+/**
+ * THE REMOTE AGENT SERVICE FOLLOWS THE UPDATE (CLI 0.11.15; the owner's iMac, 2026-11-16: three updates while the service
+ * kept running 0.11.9 from `remote app`, and the newer phone's inventory ask was dropped as an invalid payload). When the
+ * service is installed it is moved onto THIS release's verified launcher (remote-service.mjs serviceOnRelease): a daemon
+ * of 0.11.15 or later moves itself when no task runs, an older one is re-installed now. Paused stays paused: the service
+ * reads the same settings; identity, keys, phones, channels and grants are not touched. → the line to say, or null.
+ */
+async function remoteFollows() {
+  if (OS === "windows") return null;
+  try {
+    const { serviceOnRelease } = await import("./remote-service.mjs");
+    return await serviceOnRelease({ program: [NODE, ...NODE_FLAGS, ...NODE_ARGS, STABLE, "remote", "run"], version: CLI_VERSION });
+  } catch { return "! Remote Agent was not moved to this release; npx worktrust remote app restarts it."; }
 }
 
 /** `setup-mcp --restore` with the snapshot on stdin: never on a command line, never in a file. */
@@ -1924,7 +1943,7 @@ else if (command === "disconnect") await disconnect();
 else if (command === "status") await status();
 else if (command === "look") await look(agentShell);
 else if (command === "project") { if (!projectCommand) fail("worktrust project needs the complete WorkTrust package. Nothing was changed."); projectCommand(args.slice(args.indexOf("project") + 1).filter((arg) => !arg.startsWith("--")), { say, fail }); }
-else if (command === "remote") await (await import("./remote-cli.mjs")).remoteCommand(args.slice(args.indexOf("remote") + 1).filter((a, i, all) => !a.startsWith("--") && !(i > 0 && ["--gateway", "--origin"].includes(all[i - 1]))), { say, fail, ask, has, flag, connected: () => { try { return Boolean(keyStore.load()); } catch { return false; } }, origin: ORIGIN, os: OS, openBrowser, prepare: async () => { await prepareBundledRuntime(); return { node: NODE, nodeArgs: [...NODE_FLAGS, ...NODE_ARGS], entry: STABLE }; } });
+else if (command === "remote") await (await import("./remote-cli.mjs")).remoteCommand(args.slice(args.indexOf("remote") + 1).filter((a, i, all) => !a.startsWith("--") && !(i > 0 && ["--gateway", "--origin"].includes(all[i - 1]))), { say, fail, ask, has, flag, connected: () => { try { return Boolean(keyStore.load()); } catch { return false; } }, origin: ORIGIN, os: OS, openBrowser, version: CLI_VERSION, prepare: async () => { await prepareBundledRuntime(); return { node: NODE, nodeArgs: [...NODE_FLAGS, ...NODE_ARGS], entry: STABLE }; } });
 else if (command === "preserve") await preserve();
 else if (command === "mod") await mod();
 else if (command === "git") await gitCommits();

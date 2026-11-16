@@ -19,10 +19,11 @@ import { agentOptionsOf } from "./remote-inventory.mjs";
 import { allowedModes, applySettingsChange } from "./remote-settings.mjs";
 import { adminInventory } from "./remote-admin.mjs";
 import { deskBodyFor } from "./remote-desk-sessions.mjs";
+import { createNotices, projectNameOf } from "./remote-notices.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
 const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
-const DEVICE_COMMANDS = new Set(["inventory.get", "device.configure", "status.get", "pairing.revoke", "release.list", "pipeline.cancel"]);
+const DEVICE_COMMANDS = new Set(["inventory.get", "device.configure", "status.get", "pairing.revoke", "notice.key", "release.list", "pipeline.cancel"]);
 const NEW_SESSIONS = new Set(["agent.start", "release.start"]);
 const KEEP_REMOVED = 20;
 const MAX_PENDING_PHONES = 10;
@@ -48,11 +49,21 @@ export function createDaemonCore(o) {
     : extendedPeers.has(channel.peer_device_id) ? (switchPeers.has(channel.peer_device_id) ? record.body : withoutSwitch(record.body))
     : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key))));
 
-  function sealAll(record, only = null) { // `only`: one phone's channel (a catch-up page is for the phone that asked)
+  /**
+   * THE SEALED NOTICE (release 38, remote-notices.mjs): a milestone of a session, sealed per channel under that phone's own
+   * notice key, for its lock screen. Named from the record before any channel, never for a replay or the transient lane,
+   * and only on a channel whose phone sent `notice.key`.
+   */
+  const notices = createNotices({ now: o.now, random: o.random, projectOf: projectNameOf(() => sessions?.listAll?.() ?? sessions?.list() ?? [], loadProjects) });
+
+  // `only`: one phone's channel (a catch-up page is for the phone that asked, and a replay: it names no milestone).
+  function sealAll(record, { replayed = false, only = null } = {}) {
+    const milestone = replayed ? null : notices.observe(record);
     for (const [id, channel] of channels) {
       if (!confirmed().has(channel.peer_fingerprint)) { channels.delete(id); continue; } // a revoked phone hears nothing
       if (only !== null && channel.peer_device_id !== only) continue;
-      const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify, ...(record.lane ? { lane: record.lane } : {}) };
+      const notice = milestone ? notices.sealFor(channel.peer_device_id, record, milestone) : null;
+      const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify, ...(record.lane ? { lane: record.lane } : {}), ...(notice ? { notice } : {}) };
       const sealed = P.sealEvent(channel, draft, bodyFor(channel, record), o.random);
       if (!sealed.ok) { o.log("seal_refused", { type: record.type, code: sealed.code }); continue; }
       channels.set(id, sealed.value.channel);
@@ -87,7 +98,7 @@ export function createDaemonCore(o) {
   }
 
   /** Re-seal what the journal holds for a session after `after` (session.attach): same event_seq, so the phone dedups. */
-  const replay = (sessionId, after) => { for (const record of o.journal.eventsAfter(sessionId, after)) sealAll(record); };
+  const replay = (sessionId, after) => { for (const record of o.journal.eventsAfter(sessionId, after)) sealAll(record, { replayed: true }); };
 
   /**
    * THE CATCH-UP (release 37, CLI 0.11.14; PROTOCOL.md §Catch-up): session.attach with `after`, `max_events` and `max_bytes`
@@ -103,7 +114,7 @@ export function createDaemonCore(o) {
     for (const record of o.journal.eventsAfter(sessionId, payload.after)) {
       const weight = P.canonicalJson(record).length;
       if (sent >= most || (sent > 0 && bytes + weight > room)) break;
-      sealAll(record, phone);
+      sealAll(record, { replayed: true, only: phone });
       sent += 1; bytes += weight;
     }
     o.log("catch_up", { sent });
@@ -216,6 +227,7 @@ export function createDaemonCore(o) {
     const gone = [...phones.confirmed, ...phones.pending].find((p) => p.device_id === deviceId);
     for (const [id, c] of channels) if (c.peer_device_id === deviceId) channels.delete(id);
     persist();
+    notices.dropPhone(deviceId);
     if (!gone) return false;
     savePhones({ ...phones, confirmed: phones.confirmed.filter((p) => p.device_id !== deviceId), pending: phones.pending.filter((p) => p.device_id !== deviceId),
       removed: [...(phones.removed ?? []).filter((p) => p.device_id !== deviceId), { device_id: deviceId, fingerprint: gone.fingerprint, how, removed_at: o.now() }].slice(-KEEP_REMOVED) });
@@ -239,6 +251,7 @@ export function createDaemonCore(o) {
     if (env.type === "device.configure") return configure(payload, env);
     if (env.type === "status.get" && payload.scope === "device") { emit(null, "device.inventory", inventoryBody(false)); return "taken"; }
     if (env.type === "pairing.revoke") return "taken";
+    if (env.type === "notice.key") { notices.takeKey(env.sender_device_id, payload); return "taken"; }
     if (env.type === "project.create") {
       const made = createProject({ name: payload.name, root: loadRoots().find((r) => r.root_id === payload.root_id), projectSecret: o.projectSecret, projects: loadProjects, saveProjects, now: o.now });
       if (!made.ok) return made.reason;
@@ -280,7 +293,8 @@ export function createDaemonCore(o) {
     if (found === "conflict") return resealed(channel, envelope, input);
     if (found !== "unknown") return resendReceipts(found.duplicate);
     const opened = P.openCommand(channel, envelope, o.now());
-    if (!opened.ok && opened.code !== "expired") return o.log("command_dropped", { code: opened.code, command_id: envelope.command_id });
+    // A payload refused AFTER the signature and the seal verified names its (authenticated) type, never a byte of the payload (0.11.15).
+    if (!opened.ok && opened.code !== "expired") return o.log("command_dropped", { code: opened.code, command_id: envelope.command_id, ...(opened.code === "payload" ? { type: envelope.type } : {}) });
     if (opened.ok) { channels.set(channel.channel_id, opened.value.channel); persist(); }
     const admitted = o.journal.admit(input, { type: envelope.type, session_id: envelope.session_id, now: o.now() });
     if (admitted.verdict !== "new") return resendReceipts(admitted.entry);

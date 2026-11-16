@@ -2,6 +2,31 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.15: the Remote Agent service follows CLI updates, and sealed notices for your phone's lock screen
+
+**Follow a session with the app closed.** When your phone turns on notifications for Remote Agent, it hands this computer
+a key of its own (inside the paired, end-to-end channel). For a session you follow, the Remote Agent service then seals
+each milestone (started, the next step of the agent's plan, needs your approval, done, failed, stopped) under that key: this
+computer's name, the project folder's name, step n of m when the agent keeps a plan, and the time. Nothing an agent wrote
+can enter one: there is no field for it. Only your phone's notification extensions open it; the relay and Apple carry a
+box of one size. A phone without a key, an older phone, a replay after reconnecting and the live screen get none. Turning
+notifications off on the phone, or removing the phone, removes its key here (`~/.worktrust/remote/notice-keys.json`); so do
+`remote disconnect`, `remote phones remove` and `remote disable --forget` at this keyboard.
+
+**An update now moves the Remote Agent service too.** Until now `npx worktrust update` left the service on the version that
+`remote app` installed, so a newer phone could meet an old service that refused its requests (it showed no projects).
+Now, when the service is installed, the update moves it onto the new version and says so in one line ("Remote Agent
+restarted on 0.11.x"). It never cuts an agent at work: a service of this version or later waits until nothing is at work
+(a turn, a prompt still starting, a task, a pipeline, an open approval, the live preview, an upload from the phone, and on
+Linux any terminal session, which a restart would end), starts nothing new while it moves, and the update says what is
+true ("Remote Agent still runs 0.11.x: a task is running ..."). The service also notices by itself, at start and every ten
+minutes, that a newer verified release is installed, and moves when idle; an older release never takes it over. A
+pause stays a pause; the remote key, phones, channels, folders and settings are not touched; no service is installed
+where there was none. On Linux a re-install now restarts the running service instead of leaving it on its old program, and
+a `$` in a path is written so systemd does not expand it.
+A request from a phone that this computer refuses for its contents is now logged with its kind (never its contents) in
+`~/.worktrust/remote/daemon.log`, so a version mismatch is visible there.
+
 ## 0.11.14: the phone keeps its link, the link flow asks about browsers and modes, and dictation that hears you
 
 **Back in the app, the session carries on.** When the WorkTrust app comes back to the front after you sent a prompt and

@@ -328,6 +328,7 @@ export function parseJson(text        )          {
  *   HKDF-SHA-256   node:crypto hkdfSync
  *   XChaCha20-Poly1305   HChaCha20 from the raw chacha20 keystream (the block minus its known input words), then IETF
  *                        ChaCha20-Poly1305 under the subkey with the nonce's last 8 bytes
+ *   ChaCha20-Poly1305    node:crypto chacha20-poly1305 (RFC 8439), for the sealed notice alone (notice.ts)
  *
  * Node 18 has every one of these. Values are plain Uint8Array, never Buffer, so they compare as the package's do.
  */
@@ -410,6 +411,29 @@ export function aeadOpen(key, nonce, aad, ciphertext) {
   }
 }
 
+/** The IETF construction (RFC 8439), for the sealed notice alone (notice.ts): node:crypto's own chacha20-poly1305. */
+export const IETF_NONCE_BYTES = 12;
+
+export function ietfSeal(key, nonce, aad, plaintext) {
+  const cipher = createCipheriv("chacha20-poly1305", Buffer.from(key), Buffer.from(nonce), { authTagLength: TAG_BYTES });
+  cipher.setAAD(Buffer.from(aad), { plaintextLength: plaintext.length });
+  return u8(Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final(), cipher.getAuthTag()]));
+}
+
+/** Null when the tag does not verify. */
+export function ietfOpen(key, nonce, aad, ciphertext) {
+  if (key.length !== KEY_BYTES || nonce.length !== IETF_NONCE_BYTES || ciphertext.length < TAG_BYTES) return null;
+  try {
+    const body = Buffer.from(ciphertext.subarray(0, ciphertext.length - TAG_BYTES));
+    const decipher = createDecipheriv("chacha20-poly1305", Buffer.from(key), Buffer.from(nonce), { authTagLength: TAG_BYTES });
+    decipher.setAAD(Buffer.from(aad), { plaintextLength: body.length });
+    decipher.setAuthTag(Buffer.from(ciphertext.subarray(ciphertext.length - TAG_BYTES)));
+    return u8(Buffer.concat([decipher.update(body), decipher.final()]));
+  } catch {
+    return null;
+  }
+}
+
 // ---- packages/remote-protocol/src/ids.ts
 /**
  * OPAQUE IDS. Every id the relay sees is a prefix and 16 random bytes in base64url, nothing else: a project id is
@@ -439,6 +463,7 @@ export const ID_PREFIXES = {
   plr: "one run of a release's pipeline on the computer (pipeline.ts)",
   usr: "an account, as the remote system knows it (never the Passport owner id)",
   jti: "a token's single-use id",
+  nky: "a phone's notice key for one computer (notice.ts): which key opens a sealed notice, nothing more",
 }         ;
 
 const ID_BYTES = 16;
@@ -945,6 +970,152 @@ export const liveStartRule = (r           )                =>
 // eslint-disable-next-line no-control-regex
 export const liveTextOk = (t        )          => !/[\u0000-\u001f\u007f-\u009f]/.test(t);
 
+// ---- packages/remote-protocol/src/notice.ts
+/**
+ * THE SEALED NOTICE (release 38, owner 2026-11-16; docs/LIVE-ACTIVITY-PUSH.md §4). Follow a Remote Agent session with the
+ * app closed: a Live Activity and the "Done" / "Needs your approval" alerts, while the gateway and Apple learn only that
+ * something happened for one phone.
+ *
+ * The phone's channel keys sit behind Face ID, and a notification extension cannot ask for Face ID, so a notice has its
+ * OWN key, which opens notices and nothing else: per (phone, computer) the phone makes 32 random bytes `K_n`, names them
+ * with an opaque `kid`, and hands them to the computer INSIDE the paired channel (the sealed, signed command
+ * `notice.key`). The gateway relays that as ciphertext and never holds `K_n`.
+ *
+ * A milestone of a session (started, a step, needs you, done, failed, stopped) is sealed by the computer as:
+ *
+ *   plaintext  canonical JSON { v: 1, kind, c (computer), p (project), n, m | null, at }, padded with spaces to 256 bytes
+ *   aad        "worktrust-remote/v1/notice\n" || canonical { kid, phase, seq, session_id }
+ *   box        nonce (12, random) || ChaCha20-Poly1305 (RFC 8439) || tag (16): always 284 bytes, 379 base64url characters
+ *
+ * IETF ChaCha20-Poly1305 because CryptoKit's ChaChaPoly is exactly that, so the notification service extension and the
+ * Live Activity's widget open it with the system's own code (targets/shared/NoticeBox.swift; the vectors in
+ * packages/remote-protocol/notice-vectors.json hold the two to the same bytes). Two names, two counts, a kind and a time:
+ * no prompt, step label, output, path or model can enter a notice, because the plaintext has no field for one.
+ *
+ * `n of m` follows the percentage rule (progress.ts): `m` only from the agent's own plan or a measured count; without
+ * one, `n` is the steps started and `m` is null, and the phone writes "step n", never a total it does not have.
+ *
+ * Relay-visible beside the event (envelopes.ts `notice`): the `kid`, the `phase` (one of five, what the relay already
+ * infers from the event type and `notify`), the `seq` (the carrying event's own event_seq) and the box. All four are also
+ * the box's associated data, so the relay cannot relabel a phase, move a box to another session or present an old box under
+ * a newer seq. It CAN replay an old box as it was, or drop one: the phone's alert refuses a box older than ten minutes or
+ * dated more than a minute ahead of the phone's clock, and the Live Activity's widget refuses a seq older than the last one it
+ * showed for that session (targets/remote-activity/RemoteActivityWidget.swift). A dropped box is not detected.
+ */
+
+/** What a lock screen may say a session is doing. The relay infers the same from the event type and `notify`. */
+export const NOTICE_PHASES = ["running", "needs_you", "done", "failed", "stopped"]         ;
+
+/** The milestone inside the box. */
+export const NOTICE_KINDS = ["started", "step", "needs_you", "done", "failed", "stopped"]         ;
+
+export const phaseOfKind = (kind            )              => (kind === "started" || kind === "step" ? "running" : kind);
+/** A phase that ends the Live Activity. */
+export const FINAL_PHASES                           = new Set             (["done", "failed", "stopped"]);
+
+export const NOTICE_PLAIN_BYTES = 256;
+export const NOTICE_BOX_BYTES = IETF_NONCE_BYTES + NOTICE_PLAIN_BYTES + TAG_BYTES; // 284
+export const NOTICE_KEY_BYTES = KEY_BYTES;
+/** A computer's or a project's name in a notice, at most this many characters (and cut further to fit 256 bytes). */
+export const MAX_NOTICE_NAME = 40;
+export const MAX_NOTICE_COUNT = 100_000;
+
+/** The outer notice: relay-visible, every field also the box's associated data. */
+export const NOTICE_SPEC = object({
+  kid: id("nky"),
+  phase: oneOf(NOTICE_PHASES),
+  /** The carrying event's own event_seq: the Live Activity keeps the notice of the highest seq it showed per session. */
+  seq: int(1),
+  box: b64({ exact: NOTICE_BOX_BYTES }),
+});
+
+/** The sealed plaintext. Exactly these keys, nothing else. */
+export const NOTICE_PLAIN_SPEC = object({
+  v: int(1, 1),
+  kind: oneOf(NOTICE_KINDS),
+  c: text(MAX_NOTICE_NAME, 1),
+  p: text(MAX_NOTICE_NAME, 1),
+  n: int(0, MAX_NOTICE_COUNT),
+  m: nullable(int(1, MAX_NOTICE_COUNT)),
+  at: int(0),
+});
+
+const NOTICE_DOMAIN = utf8Encode("worktrust-remote/v1/notice\n");
+export const noticeAad = (o                                                                                                          )             =>
+  concatBytes(NOTICE_DOMAIN, canonicalBytes({ kid: o.kid, phase: o.phase, seq: o.seq, session_id: o.session_id }));
+
+/** A name cut to MAX_NOTICE_NAME UTF-16 units at a whole code point, control and direction marks removed; empty becomes a dash (the plaintext needs one). */
+export function noticeName(name                           )         {
+  const points = [...String(name ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/g, "").trim()];
+  let cut = "";
+  for (const point of points) { if (cut.length + point.length > MAX_NOTICE_NAME) break; cut += point; } // UTF-16 units, as text() counts
+  return cut.length > 0 ? cut : "-";
+}
+
+/** The canonical JSON, names shortened until it fits 256 bytes; null when even "-" names do not (never: the rest is ~90). */
+function plaintextBytes(plain             )                    {
+  let c = [...plain.c], p = [...plain.p];
+  for (;;) {
+    const bytes = canonicalBytes({ ...plain, c: c.join("") || "-", p: p.join("") || "-" });
+    if (bytes.length <= NOTICE_PLAIN_BYTES) {
+      const padded = new Uint8Array(NOTICE_PLAIN_BYTES).fill(0x20);
+      padded.set(bytes);
+      return padded;
+    }
+    if (c.length <= 1 && p.length <= 1) return null;
+    if (c.length >= p.length) c = c.slice(0, -1); else p = p.slice(0, -1);
+  }
+}
+
+/** The computer's side: the outer notice, or null when the plaintext does not validate or the key is not 32 bytes. */
+export function sealNotice(o            , random        )                {
+  if (o.key.length !== NOTICE_KEY_BYTES) return null;
+  const plain = { ...o.plain, c: noticeName(o.plain.c), p: noticeName(o.plain.p) };
+  if (!check(NOTICE_PLAIN_SPEC, plain, "$notice").ok) return null;
+  const bytes = plaintextBytes(plain);
+  if (!bytes) return null;
+  const phase = phaseOfKind(plain.kind);
+  const nonce = random(IETF_NONCE_BYTES);
+  const sealed = ietfSeal(o.key, nonce, noticeAad({ kid: o.kid, phase, seq: o.seq, session_id: o.session_id }), bytes);
+  const notice = { kid: o.kid, phase, seq: o.seq, box: toBase64Url(concatBytes(nonce, sealed)) };
+  return check(NOTICE_SPEC, notice, "$notice").ok ? notice : null;
+}
+
+/**
+ * The opener (the phone's extensions do the same in Swift; this one is the reference and the tests'): the plaintext, or
+ * null when the shape, the tag, the associated data or the kind's phase does not hold.
+ */
+export function openNotice(key            , sessionId        , notice         )                     {
+  const shaped = check(NOTICE_SPEC, notice, "$notice");
+  if (!shaped.ok) return null;
+  const n = shaped.value          ;
+  const box = fromBase64Url(n.box);
+  if (!box || box.length !== NOTICE_BOX_BYTES) return null;
+  const opened = ietfOpen(key, box.subarray(0, IETF_NONCE_BYTES), noticeAad({ kid: n.kid, phase: n.phase               , seq: n.seq, session_id: sessionId }), box.subarray(IETF_NONCE_BYTES));
+  if (!opened) return null;
+  const textValue = utf8Decode(opened);
+  if (textValue === null) return null;
+  const value = parseJson(textValue.trimEnd());
+  const plain = check(NOTICE_PLAIN_SPEC, value, "$notice.plain");
+  if (!plain.ok) return null;
+  const p = plain.value               ;
+  return phaseOfKind(p.kind              ) === n.phase ? p : null;
+}
+
+/** A fresh notice key and its id, the phone's side. */
+export const newNoticeKey = (random        )                                                 =>
+  ({ kid: `nky_${toBase64Url(random(16))}`, key: toBase64Url(random(NOTICE_KEY_BYTES)) });
+
+/**
+ * THE NOTICE KEY COMMAND (release 38; commands.ts spreads it): this phone's key for the sealed notices of this computer's
+ * sessions, which its notification extensions open with the app closed. `key: null` stops them (notifications off, or the
+ * phone's wipe). The computer keeps the key beside the phone's pairing until `not_after`, drops it with the pairing, and
+ * seals a notice only on a channel whose phone sent one. Sent only to a gateway that relays notices (the phone asked first).
+ */
+export const NOTICE_COMMAND_SPECS = {
+  "notice.key": object({ kid: id("nky"), key: nullable(b64({ exact: NOTICE_KEY_BYTES })), not_after: int(0) }),
+}         ;
+
 // ---- packages/remote-protocol/src/attention.ts
 /**
  * "NEEDS YOU" AND "FOLLOW". A session's activity in five words:
@@ -1008,8 +1179,12 @@ export function notifyHint(previous                  , next           )         
 /** Whether the relay pushes: a hint other than none, for a followed session. */
 export const shouldPush = (hint            , following         )          => following && hint !== "none";
 
-/** The whole push payload. Nothing in it is content: an opaque session id and the hint. */
-export const PUSH_PAYLOAD_SPEC = object({ session_id: id("ses"), hint: oneOf(["needs_you", "finished"]) });
+/**
+ * The whole push payload. Nothing in it is content: an opaque session id, the hint, and (release 38) the event's sealed
+ * notice (notice.ts), which only the phone's notification extension opens; without one the lock screen says the app's own
+ * content-free words.
+ */
+export const PUSH_PAYLOAD_SPEC = object({ session_id: id("ses"), hint: oneOf(["needs_you", "finished"]), notice: optional(NOTICE_SPEC) });
 
 /**
  * Whether a prompt may be typed into a session now. Never while something waits for a person (a dialog would take the
@@ -2506,11 +2681,9 @@ export const MAX_PROMPT_CHARS = 65_536;
 export const PROJECT_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/;
 export const projectNameOk = (name         )          => typeof name === "string" && PROJECT_NAME.test(name);
 export const MAX_SESSION_NAME = 100;
-/** A phone's or a browser's own name, as it tells a computer (inventory.get `device_name`). */
-export const MAX_DEVICE_NAME = 64;
+export const MAX_DEVICE_NAME = 64; // a phone's or a browser's own name, as it tells a computer (inventory.get `device_name`)
 /** One catch-up page (session.attach `after`, release 37): at most this many events, and this many characters of them. */
-export const CATCH_UP_MAX_EVENTS = 200;
-export const CATCH_UP_MAX_BYTES = 1_048_576;
+export const CATCH_UP_MAX_EVENTS = 200, CATCH_UP_MAX_BYTES = 1_048_576;
 
 export const COMMAND_PAYLOAD_SPECS = {
   /**
@@ -2655,6 +2828,8 @@ export const COMMAND_PAYLOAD_SPECS = {
    * confirmed list and its channels, as `worktrust remote phones remove` does at the keyboard. Sent sealed and signed
    * just before the phone's `unpair` frame, whose relay event (device.revoked) reaches a computer that was offline. */
   "pairing.revoke": object({}),
+  /** The notice key (release 38, notice.ts): a phone's key for the sealed notices of this computer's sessions. */
+  ...NOTICE_COMMAND_SPECS,
   /** Files from the phone and a local preview back (transfer.ts, 2026-11-07). */
   ...TRANSFER_COMMAND_SPECS,
   /** The live preview (release 19, live-preview.ts): session commands. */
@@ -2714,15 +2889,14 @@ export const COMMAND_PAYLOAD_SPECS = {
 export const COMMAND_TYPES = Object.keys(COMMAND_PAYLOAD_SPECS)                          ;
 
 export const RELEASE_COMMANDS                           = new Set             (["release.create", "release.add_task", "release.reorder", "release.cancel_task", "release.start", "release.list", "pipeline.start", "pipeline.cancel"]);
-export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "project.create", "browser.endorse", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
+export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "notice.key", "project.create", "browser.endorse", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
 export const commandScope = (type             )                       => (DEVICE_COMMANDS.has(type) ? "device" : "session");
 
 /** Commands whose acceptance starts a run with steps, approvals and an end (state-machine.ts follows those through
  * RUNNING); every other command ends at AGENT_ACCEPTED followed by its own effect or a rejection. */
 export const RUN_COMMANDS                           = new Set             (["agent.start", "agent.prompt", "question.answer"]);
 
-const MINUTE = 60_000;
-/**
+const MINUTE = 60_000; /**
  * How long a command stays deliverable. A stop that arrives an hour late would stop the wrong turn, so control
  * commands live a minute or two; a prompt may wait an hour for a sleeping laptop. Never above MAX_COMMAND_TTL_MS.
  */
@@ -2754,6 +2928,7 @@ export const COMMAND_TTL_MS                                        = {
   "inventory.get": 5 * MINUTE,
   "device.configure": 10 * MINUTE,
   "pairing.revoke": 24 * 60 * MINUTE,
+  "notice.key": 10 * MINUTE,
   "release.create": 60 * MINUTE,
   "release.add_task": 60 * MINUTE,
   "release.reorder": 5 * MINUTE,
@@ -3291,6 +3466,12 @@ export const EVENT_ENVELOPE_SPEC = object({
   notify: oneOf(NOTIFY_HINTS),
   /** Absent: the session's ordered stream. `transient`: beside it (EVENT_LANES above), kept by nobody. */
   lane: optional(oneOf(EVENT_LANES)),
+  /**
+   * The sealed notice (release 38, notice.ts): a milestone of the session, sealed under the phone's notice key for its
+   * notification extensions. Only on the session's ordered stream, only on a channel whose phone sent `notice.key`; its
+   * `seq` is this event's event_seq.
+   */
+  notice: optional(NOTICE_SPEC),
   body_ciphertext: sealed(),
 });
 
@@ -3419,6 +3600,8 @@ export function validateEventEnvelope(value         )                         {
   if (isTransientEvent(e) && (!TRANSIENT_EVENT_TYPES.has(type) || e.command_id !== null || (e.session_id === null) !== DEVICE_SCOPED_EVENTS.has(type) || e.notify !== "none"))
     return refuse("shape", "$event.lane: only a pushed screen or frame of a session, or the computer's health, without a command or a push hint, is transient");
   if (TRANSIENT_ONLY_TYPES.has(type) && !isTransientEvent(e)) return refuse("shape", "$event.lane: a live preview's frame and the computer's health travel on the transient lane only");
+  if (e.notice !== undefined && (e.session_id === null || isTransientEvent(e) || e.notice.seq !== e.event_seq))
+    return refuse("shape", "$event.notice: only on a session's ordered stream, numbered as its event");
   return checked;
 }
 

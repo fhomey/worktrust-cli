@@ -46,7 +46,7 @@ import { canonicalProject } from "./remote-policy.mjs";
 import { IssuerMissing, PairingDenied, PairingExpired, PairingRefused, compactForQr, oneScan, oneScanInvite, pairComputer } from "./remote-pairing.mjs";
 import { startCountdown, waitKey } from "./remote-countdown.mjs";
 import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSummary, linkPhone, reachStep, removePhones, withName } from "./remote-connections.mjs";
-import { installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
+import { handoverCommand, installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { terminalQr } from "./remote-qr.mjs";
 import { webSocketAvailable } from "./remote-transport.mjs";
 import { healthLine, keptHealth } from "./remote-health.mjs";
@@ -308,19 +308,19 @@ export async function remoteCommand(args, io) {
     const s = loadSettings();
     saveSettings({ ...s, enabled: false, paused: null });
     io.say(`  Off. The service is removed (${removeService()}); the daemon stops by itself within seconds.`);
-    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
+    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json", "notice-keys.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
     return;
   }
   if (sub === "phones") return phones(io, rest);
   if (sub === "connections") return connectionsCommand(io);
   if (sub === "disconnect") return disconnectCommand(io, rest, askLine);
   if (sub === "projects") return projects(io, rest);
-  if (sub === "run") return (await import("./remote-run.mjs")).runDaemon({ say: io.say });
+  if (sub === "run") return (await import("./remote-run.mjs")).runDaemon({ say: io.say, version: io.version ?? null });
   if (sub === "pipeline") return pipeline(io, rest);
   if (sub === "roots") return roots(io, rest);
-  if (sub === "modes") return modesCommand(io, rest);
-  if (sub === "admin") return adminCommand(io, rest);
+  if (sub === "modes") return modesCommand(io, rest); if (sub === "admin") return adminCommand(io, rest);
   if (sub === "folder-check") return folderCheck(); // internal: the one-shot launchd job of askMacFolderAccess
+  if (sub === "handover") return handoverCommand(io); // internal (0.11.15): the one-shot job a daemon hands over through, run by the NEW launcher
   if (sub === "preview") {
     const grants = loadPreviewGrants();
     if (rest[0] === "allow" || rest[0] === "deny") {

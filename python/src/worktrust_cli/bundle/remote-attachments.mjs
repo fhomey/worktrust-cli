@@ -55,8 +55,10 @@ const sizeOf = (dir) => { try { return readdirSync(dir).reduce((n, f) => { const
 export function createAttachments(ctx) {
   // ctx: { journal, now, emit, projects(), sessionProject(session_id) → project | null, log }
   const done = new Map(); // `${session_id}/${attachment_id}` -> relative path
+  let lastPut = -Infinity; // 0.11.15: an upload in the last two minutes holds a handover (its file is named by the next prompt)
 
   function put(env, a) {
+    lastPut = ctx.now();
     const project = ctx.sessionProject(env.session_id);
     if (!project) return "not_found";
     const bad = P.attachmentRule(a);
@@ -115,6 +117,7 @@ export function createAttachments(ctx) {
 
   return {
     handle: (env, payload) => (env.type === "attachment.put" ? put(env, payload) : clear(env)),
+    uploading: () => ctx.now() - lastPut < 120_000,
     /**
      * The words that tell the agent where its attachments are, appended to a prompt; null when one is not stored whole
      * in this session (the prompt is then refused, never sent without the file it names).

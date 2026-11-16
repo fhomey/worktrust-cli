@@ -37,6 +37,7 @@ import { createDaemonCore } from "./remote-daemon.mjs";
 import { createDesk } from "./remote-desk-sessions.mjs";
 import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
 import { createHealthMonitor, fixtureReaders, HEALTH_REFUSAL, healthLine, keepHealth } from "./remote-health.mjs";
+import { createHandover, daemonBusy, holdDuring } from "./remote-service.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), kind, ...fields })}\n`);
@@ -103,7 +104,7 @@ function lock() {
   return () => rmSync(file, { force: true });
 }
 
-export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } = {}) {
+export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), version = null } = {}) {
   ensureRemoteDir();
   const settings = loadSettings(), identity = loadIdentity(), keys = loadKeys();
   if (!settings.enabled) throw new Error("remote is off on this computer: run `worktrust remote app` (or `remote web`)");
@@ -146,6 +147,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
   let releases = null; // set below; the hooks run only once events flow
+  let handover = null; const hold = holdDuring(() => Boolean(handover?.handing)); // 0.11.15: nothing new starts while it hands over
   const sessions = createSessions({ ...ctx, approvals, runDir, node: process.execPath, bridgePath: join(HERE, "remote-approval-bridge.mjs"), socket: () => socket,
     // A session runs in a granted project or in an existing project inside a root (0.11.7), each by the inventory's id.
     settings: loadSettings, projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), inventory: () => inventory({ env: agentEnv(loadSettings()) }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
@@ -162,17 +164,20 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   // Releases and pipelines (2026-11-07): one queue for every release's tasks, the reviewed pipeline of each project.
   const pipelines = createPipelines({ journal, now: Date.now, random, emit: core.emit, projects: loadProjects, reviews: loadPipelineReviews, log, logDir: remotePath("pipelines"),
     markLedger: appendPipelineMark, env: (prepend) => stageEnv(loadSettings(), prepend), onEnded: (p) => releases?.pipelineEnded(p), commandOf });
-  releases = createReleases({ journal, now: Date.now, random, emit: core.emit, projects: loadProjects, settings: loadSettings, paused: ctx.paused, inventory: () => inventory({ env: agentEnv(loadSettings()) }),
-    sessions, pipelines, deskMarks: loadDeskMarks, log });
+  releases = createReleases({ journal, now: Date.now, random, emit: core.emit, projects: loadProjects, settings: loadSettings, paused: hold.paused(ctx.paused), inventory: () => inventory({ env: agentEnv(loadSettings()) }),
+    sessions, pipelines: hold.pipelines(pipelines), deskMarks: loadDeskMarks, log });
   // The agent plans its own work (plan_* over the approval socket, 2026-11-08): the same queue, the session's own project.
-  ctx.plan = (session, op, args) => releases.plan(session, op, args);
+  ctx.plan = hold.plan((session, op, args) => releases.plan(session, op, args));
   releases.recover(); // tasks an earlier daemon left running: interrupted, never run again
   pipelines.recover(); // and its pipeline runs
   core.attach(registry, approvals, releases);
+  // A NEWER RELEASE, TAKEN OVER WHEN NOTHING IS AT WORK (0.11.15, remote-service.mjs createHandover and daemonBusy); while it
+  // hands over no command is taken (the phone resends it, unanswered, to the next daemon) and nothing new starts (hold).
+  handover = version ? createHandover({ version, log, own: join(HERE, "worktrust-launch.mjs"), busy: () => daemonBusy({ sessions, journal, pipelines, terminal, approvals, live, attachments }) }) : null;
 
   const dispatchFrame = async (frame) => {
     if (frame.frame === "hello") core.receiveHello(frame.hello);
-    else if (frame.frame === "command") await core.receiveCommand(frame.envelope);
+    else if (frame.frame === "command") { if (handover?.handing) return log("command_held", {}); await core.receiveCommand(frame.envelope); }
     else if (frame.frame === "relay") { log("relay", { type: frame.event?.type ?? null }); if (frame.event?.type === "device.revoked") core.peerRevoked(frame.event); }
     else if (frame.frame === "error") {
       log("gateway_error", { reason: typeof frame.reason === "string" ? frame.reason.slice(0, 40) : null });
@@ -211,6 +216,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
     await live.stopAll(); // the browser ended, its profile removed
     await registry.stopAll(); // the structured agents; a terminal session lives on in tmux
     transport.close();
+    handover?.stop();
     release();
     process.exit(code);
   };
@@ -221,8 +227,9 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`) } 
   // inventory again, sealed, so a phone waiting on "Choose access at your computer" learns it from this computer, not a server.
   let grants = null;
   const grantsChanged = () => { const now = [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id)].join(","); const changed = grants !== null && now !== grants; grants = now; return changed; };
-  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); registerCode(); releases.poll(); try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
+  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); registerCode(); releases.poll(); try { handover?.tick(); } catch { log("handover_error", {}); } try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
   releases.schedule(); // queued tasks a restart kept
+  handover?.start();
   health.start();
   return new Promise(() => {});
 }

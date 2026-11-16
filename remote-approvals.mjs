@@ -61,6 +61,7 @@ export function createApprovals(ctx) {
   }
 
   return {
+    openCount: () => pending.size, // 0.11.15: an open approval holds a handover (remote-service.mjs daemonBusy)
     pendingOf: (sessionId) => [...pending.values()].filter((p) => p.session_id === sessionId).map((p) => p.record.approval_id),
     register(session) { const token = P.toBase64Url(ctx.random(24)); byToken.set(token, session); return token; },
     unregister(token) {

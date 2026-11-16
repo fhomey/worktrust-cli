@@ -256,6 +256,12 @@ What it is: standing remote execution of AI agents on this computer, steered fro
   under keys from an authenticated X25519 handshake). The gateway sees ids, message types, times and size classes.
 - At most once. Every command is written to `~/.worktrust/remote/journal.jsonl` and flushed to disk before an agent runs; a
   repeat is answered from the journal, and a command an interrupted daemon left mid-way is closed as failed, never run again.
+  Since 0.11.14 a phone's own resend sealed again on a new connection (same id, same idempotency key, and it opens under
+  that phone's signature) is answered with the stored receipts and never run again; anything else under a stored id is
+  refused as a conflict.
+- Catch-up (0.11.14). A linked phone may ask for a session's journaled events after a sequence it holds; the daemon re-seals
+  at most 200 events or 1 MB per page for that phone alone, runs nothing and writes nothing. It is the same sealed traffic
+  the phone received live; the gateway sees only the message type and sizes.
 - Approvals are classified on this computer. Only project edits, the reviewed test, build and lint commands, and outward
   messages shown whole can be approved from a phone, each by a signed decision bound to the exact action, single use,
   five minutes at most; offline or no answer is a denial. Claude Code also gets deny rules for pushes, installs, deploys

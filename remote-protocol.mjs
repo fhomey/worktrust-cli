@@ -2508,6 +2508,9 @@ export const projectNameOk = (name         )          => typeof name === "string
 export const MAX_SESSION_NAME = 100;
 /** A phone's or a browser's own name, as it tells a computer (inventory.get `device_name`). */
 export const MAX_DEVICE_NAME = 64;
+/** One catch-up page (session.attach `after`, release 37): at most this many events, and this many characters of them. */
+export const CATCH_UP_MAX_EVENTS = 200;
+export const CATCH_UP_MAX_BYTES = 1_048_576;
 
 export const COMMAND_PAYLOAD_SPECS = {
   /**
@@ -2581,8 +2584,15 @@ export const COMMAND_PAYLOAD_SPECS = {
   }),
   /** Ask for a status.report: of one session, or of the whole computer (then a device.inventory too). */
   "status.get": object({ scope: oneOf(["session", "device"]) }),
-  /** Join a session started at the desk, which the computer listed in its inventory. */
-  "session.attach": object({}),
+  /**
+   * Join a session started at the desk, which the computer listed in its inventory. Empty: the computer replays the
+   * session's journal whole. THE CATCH-UP (release 37, CLI 0.11.14): `after`, `max_events` and `max_bytes` together ask
+   * only the journaled events after `after`, in order, at most `max_events` of them and at most `max_bytes` (the journal
+   * record's canonical characters; one event always, so a page always moves), sealed for the asking phone alone; the phone
+   * asks the next page once this one's `command.agent_accepted` arrived. Sent only to a computer whose inventory probe
+   * showed it reads `catch_up` (inventory.get below): an older one drops the fields, so it is never asked.
+   */
+  "session.attach": object({ after: optional(int(0)), max_events: optional(int(1, CATCH_UP_MAX_EVENTS)), max_bytes: optional(int(1024, CATCH_UP_MAX_BYTES)) }),
   /** Bring the session to the front on the computer's own screen ("show it on my desk"). Moves the view only. */
   "session.focus": object({}),
   /** End the session and its agent. */
@@ -2621,6 +2631,11 @@ export const COMMAND_PAYLOAD_SPECS = {
      * drops the unknown field, so the phone asks it by a probe of its own (client-core.ts, inventory-asks.ts).
      */
     desk_sessions: optional(bool()),
+    /**
+     * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
+     * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
+     */
+    catch_up: optional(bool()),
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -2781,6 +2796,12 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended");
+  }
+  if (type === "session.attach") {
+    const a = payload                                    ;
+    const given = [a.after, a.max_events, a.max_bytes].filter((v) => v !== undefined).length;
+    if (given !== 0 && given !== 3) return refuse("payload", "$payload: after, max_events and max_bytes together, or none");
   }
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }

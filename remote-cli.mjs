@@ -174,8 +174,8 @@ async function phones(io, rest) {
     if (rest[1] !== "on" && rest[1] !== "off") io.fail("npx worktrust remote phones allow-endorse on|off");
     if (rest[1] === "on" && !process.stdin.isTTY) io.fail("endorsements are allowed at this keyboard, in a terminal");
     if (rest[1] === "on" && !(await askTyped("  A phone confirmed here may then add a browser it scanned as a controller of this computer. Allow it?"))) { io.say("  Not changed."); return; }
-    saveSettings({ ...loadSettings(), allow_endorse: rest[1] === "on" });
-    io.say(rest[1] === "on" ? "  ✓ Your confirmed phones may add a browser. Each one is listed here with the phone that added it." : "  ✓ No phone may add a browser. Browsers already added stay until you remove them.");
+    const done = applySettingsChange({ what: "endorse", on: rest[1] === "on" }, { kind: "keyboard" }); // the one door (remote-settings.mjs)
+    io.say(`  ✓ ${done.message}`);
     return;
   }
   if (rest[0] === "remove" && (rest[1] === "--all" || io.has("all"))) { // EVERY DEVICE OFF, FROM THE SOURCE (owner, 2026-11-09): the daemon reads this list per message

@@ -58,7 +58,8 @@ export function startChoice(payload, projectId, inventory, settings, known) {
 /**
  * The one door for a settings change. `change`: { what: "modes", allow|deny: "edit"|"auto" } | { what: "roots", add: dir,
  * git_init } | { what: "roots", remove: id|dir } | { what: "projects", add: dir } | { what: "projects", remove: id|dir } |
- * { what: "admin", on: boolean } | { what: "connections", remove: fingerprint } (resolved from the app's change only).
+ * { what: "admin", on: boolean } | { what: "endorse", on: boolean } (both this keyboard only) | { what: "connections", remove:
+ * fingerprint } (resolved from the app's change only).
  * `source`: { kind: "keyboard" }, or { kind: "admin", proof, issuerKeys, claims, now, via } (part B; its change is
  * crypto/admin.ts's ADMIN_CHANGE_SPEC, resolved by id before it reaches the rules below).
  * → { ok: true, message, paths?, setting? } or { ok: false, reason, code? } (code: the protocol's reject reason).
@@ -93,6 +94,13 @@ function applyRules(change, fromApp) {
     // From the app only (the keyboard's own `remote disconnect` asks twice and calls removePhones itself).
     const n = removePhones([String(change.remove ?? "")]);
     return n > 0 ? { ok: true, message: "Disconnected: it can no longer steer this computer." } : { ...refused("no phone or browser by that fingerprint"), code: "not_found" };
+  }
+  if (change?.what === "endorse") {
+    // May a phone confirmed here add a browser it scanned (remote-endorse.mjs)? This keyboard only, like the admin switch.
+    if (fromApp) return refused("whether phones may add a browser changes at this keyboard only");
+    if (typeof change.on !== "boolean") return refused("on or off");
+    saveSettings({ ...settings, allow_endorse: change.on });
+    return { ok: true, message: change.on ? "Your confirmed phones may add a browser. Each one is listed here with the phone that added it." : "No phone may add a browser. Browsers already added stay until you remove them." };
   }
   if (change?.what === "admin") {
     if (fromApp) return refused("the admin switch changes at this keyboard only");
@@ -188,4 +196,44 @@ export async function askMacFolderAccess(io, paths) {
   io.say(`  ! ${result ? `macOS refused: ${refusedHere.map((f) => f.path).join(", ")}` : "No answer from macOS in time"}. To allow it later: System Settings › Privacy & Security › Files and Folders,`);
   io.say(`    then turn on ${guarded.join(" and ")} for "node" (or "python"); or add that program under Full Disk Access.`);
   return false;
+}
+
+/**
+ * TWO MORE QUESTIONS WHEN A PHONE HAS LINKED (CLI 0.11.14, owner 2026-11-16), after its reach (remote-connections.mjs
+ * reachStep): may the confirmed phones add a browser, and which agent modes may a phone start here. Both are the settings
+ * that exist, changed through `apply` (the keyboard's one door, applySettingsChange): `endorse` is what `remote phones
+ * allow-endorse on|off` writes, the ceiling what `remote modes allow|deny` writes. Both answers are taken first and only
+ * then applied, so Ctrl+C or Esc at either question changes nothing. Without a terminal the commands are named.
+ */
+export const CEILINGS = Object.freeze([
+  { value: "plan", label: "Manual and Plan", info: "The agent asks before every change, or only reads and plans." },
+  { value: "edit", label: "+ Edit automatically", info: "Also sessions that edit in their projects without asking." },
+  { value: "auto", label: "+ Auto", info: "Also the agent's own automatic mode (it allows edit too)." },
+]);
+/** The ceiling a list of allowed modes is: plan, edit or auto. */
+export const ceilingOf = (allowed) => (allowed.includes("auto") ? "auto" : allowed.includes("edit") ? "edit" : "plan");
+/** The `modes` changes that move the ceiling from one step to another (none when it stays). */
+export function ceilingChanges(from, to) {
+  if (from === to) return [];
+  if (to === "plan") return [{ what: "modes", deny: "edit" }];
+  if (to === "auto") return [{ what: "modes", allow: "auto" }];
+  return from === "auto" ? [{ what: "modes", deny: "auto" }] : [{ what: "modes", allow: "edit" }];
+}
+const nowMark = (on) => (on ? { note: { text: "now", tone: "dim" } } : {});
+export async function trustStep(io, { apply, interactive, term = null, choose = null, settings = loadSettings() }) {
+  const endorse = settings.allow_endorse === true, ceiling = ceilingOf(allowedModes(settings));
+  if (!interactive || !term || !choose) { io.say("  Later: npx worktrust remote phones allow-endorse on|off   and   npx worktrust remote modes allow|deny edit|auto"); return "later"; }
+  term.enter();
+  try {
+    const asked = await choose(term, { title: "May your confirmed phones add a browser?", items: [
+      { label: "Yes, they may add a browser", info: "A phone confirmed here may add a browser it scanned.", value: true, ...nowMark(endorse) },
+      { label: "No", info: "Only this keyboard adds a browser.", value: false, ...nowMark(!endorse) }] });
+    const modes = asked === "quit" || asked === "back" ? asked : await choose(term, { title: "Which agent modes may a phone start here?", items: CEILINGS.map((c) => ({ ...c, ...nowMark(c.value === ceiling) })) });
+    term.erase(); term.restore();
+    if (modes === "quit" || modes === "back") { io.say("  Unchanged. Later: npx worktrust remote phones allow-endorse on|off · npx worktrust remote modes"); return "unchanged"; }
+    const changes = [...(asked.item.value === endorse ? [] : [{ what: "endorse", on: asked.item.value }]), ...ceilingChanges(ceiling, modes.item.value)];
+    for (const change of changes) await apply(change);
+    if (changes.length === 0) io.say("  ✓ Unchanged: these were already your settings.");
+    return "set";
+  } finally { term.restore(); }
 }

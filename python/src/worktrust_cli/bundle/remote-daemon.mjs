@@ -48,9 +48,10 @@ export function createDaemonCore(o) {
     : extendedPeers.has(channel.peer_device_id) ? (switchPeers.has(channel.peer_device_id) ? record.body : withoutSwitch(record.body))
     : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key))));
 
-  function sealAll(record) {
+  function sealAll(record, only = null) { // `only`: one phone's channel (a catch-up page is for the phone that asked)
     for (const [id, channel] of channels) {
       if (!confirmed().has(channel.peer_fingerprint)) { channels.delete(id); continue; } // a revoked phone hears nothing
+      if (only !== null && channel.peer_device_id !== only) continue;
       const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify, ...(record.lane ? { lane: record.lane } : {}) };
       const sealed = P.sealEvent(channel, draft, bodyFor(channel, record), o.random);
       if (!sealed.ok) { o.log("seal_refused", { type: record.type, code: sealed.code }); continue; }
@@ -88,6 +89,27 @@ export function createDaemonCore(o) {
   /** Re-seal what the journal holds for a session after `after` (session.attach): same event_seq, so the phone dedups. */
   const replay = (sessionId, after) => { for (const record of o.journal.eventsAfter(sessionId, after)) sealAll(record); };
 
+  /**
+   * THE CATCH-UP (release 37, CLI 0.11.14; PROTOCOL.md §Catch-up): session.attach with `after`, `max_events` and `max_bytes`
+   * re-seals, for the asking phone alone, the journaled events after `after`, in order, at most max_events of them and
+   * at most max_bytes of their canonical records (one always, so every page moves; both capped by the protocol's own
+   * bounds whatever was asked). A session this computer never ran or journaled is `not_found`. Reading only: it runs no
+   * agent, writes no event of its own, and is answered while the computer is paused, like status.get.
+   */
+  function catchUp(sessionId, payload, phone) {
+    if (!sessions?.get?.(sessionId) && !o.journal.session(sessionId)) return "not_found";
+    const most = Math.min(payload.max_events, P.CATCH_UP_MAX_EVENTS), room = Math.min(payload.max_bytes, P.CATCH_UP_MAX_BYTES);
+    let sent = 0, bytes = 0;
+    for (const record of o.journal.eventsAfter(sessionId, payload.after)) {
+      const weight = P.canonicalJson(record).length;
+      if (sent >= most || (sent > 0 && bytes + weight > room)) break;
+      sealAll(record, phone);
+      sent += 1; bytes += weight;
+    }
+    o.log("catch_up", { sent });
+    return "taken";
+  }
+
   function inventoryBody(refresh) {
     const settings = loadSettings();
     const inv = o.inventory(refresh);
@@ -121,6 +143,24 @@ export function createDaemonCore(o) {
     emit(meta.session_id ?? null, "command.device_received", {}, entry.command_id);
     if (entry.state === "REJECTED" || entry.state === "EXPIRED") emit(meta.session_id ?? null, "command.rejected", { reason: meta.reason ?? (entry.state === "EXPIRED" ? "expired" : "conflict") }, entry.command_id);
     else if (P.DELIVERY_RANK[entry.state] >= P.DELIVERY_RANK.AGENT_ACCEPTED) emit(meta.session_id ?? null, "command.agent_accepted", {}, entry.command_id);
+  }
+
+  /**
+   * THE PHONE'S OWN RESEND UNDER A NEW SEAL (release 37). A phone that was away comes back on a new channel and sends a
+   * message it kept, unconfirmed, sealed again under its OWN id and idempotency key (remote-client outbox-store.ts): other
+   * bytes, so the ledger calls it a conflict, and dropping it left the phone at "Delivery unconfirmed" for ever while the
+   * agent ran. Same id, same key, same sender, and it OPENS (the phone's signature, this channel): it is that duplicate,
+   * answered with the stored receipts again. It is never admitted and never dispatched, so nothing runs twice; anything
+   * else under a stored id stays a conflict and is dropped, as before.
+   */
+  function resealed(channel, envelope, input) {
+    const entry = o.journal.entry(envelope.command_id);
+    const same = entry !== null && entry.idempotency_key === input.idempotency_key && entry.sender_device_id === input.sender_device_id;
+    const opened = same ? P.openCommand(channel, envelope, o.now()) : null;
+    if (!opened || (!opened.ok && opened.code !== "expired")) return o.log("command_dropped", { code: "conflict", command_id: envelope.command_id });
+    if (opened.ok) { channels.set(channel.channel_id, opened.value.channel); persist(); }
+    o.log("command_resealed", { command_id: envelope.command_id });
+    return resendReceipts(entry);
   }
 
   function reject(env, reason) {
@@ -186,6 +226,7 @@ export function createDaemonCore(o) {
   async function dispatch(env, payload) {
     const settings = loadSettings();
     if (!settings.enabled) return "remote_paused";
+    if (env.type === "session.attach" && payload.after !== undefined) return catchUp(env.session_id, payload, env.sender_device_id); // reading, also while paused
     if (settings.paused !== null && !DEVICE_COMMANDS.has(env.type)) return "remote_paused";
     if (env.type === "inventory.get") {
       if (payload.extended === true && env.sender_device_id) extendedPeers.add(env.sender_device_id);
@@ -236,7 +277,7 @@ export function createDaemonCore(o) {
     if (!confirmed().has(channel.peer_fingerprint)) { channels.delete(channel.channel_id); persist(); return o.log("command_dropped", { code: "not_confirmed" }); }
     const input = { command_id: envelope.command_id, idempotency_key: envelope.idempotency_key, sender_device_id: envelope.sender_device_id, digest: P.envelopeDigest(envelope) };
     const found = o.journal.find(input);
-    if (found === "conflict") return o.log("command_dropped", { code: "conflict", command_id: envelope.command_id });
+    if (found === "conflict") return resealed(channel, envelope, input);
     if (found !== "unknown") return resendReceipts(found.duplicate);
     const opened = P.openCommand(channel, envelope, o.now());
     if (!opened.ok && opened.code !== "expired") return o.log("command_dropped", { code: opened.code, command_id: envelope.command_id });

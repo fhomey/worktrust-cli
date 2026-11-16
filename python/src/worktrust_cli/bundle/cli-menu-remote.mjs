@@ -13,7 +13,7 @@ import { choose, muted, remoteState, runShown, typed } from "./cli-menu.mjs";
 import { makeProjectsFolder, pickFolder, pickerCommand, suggestedFolders } from "./folder-picker.mjs";
 import { awaitingName, awaitingRow, connections } from "./remote-connections.mjs";
 import { loadIdentity, loadProjects, loadRoots, loadSettings } from "./remote-store.mjs";
-import { allowedModes } from "./remote-settings.mjs";
+import { allowedModes, ceilingOf } from "./remote-settings.mjs";
 import { HEALTH_REFUSAL, keptHealth } from "./remote-health.mjs";
 
 const BACK = { label: "← Back", hint: "Esc", back: true }; // its name and its key say it: no sentence of its own (owner, 2026-11-14)
@@ -163,7 +163,7 @@ export function approval() { try { return Boolean(loadIdentity()); } catch { ret
  * `approved` is approval()'s answer, `act` what each row does. NOT APPROVED: the approval is first and chosen, and what
  * cannot work before it cannot be chosen. By the code: `remote pair` and adding a project or a root refuse without this
  * computer's remote keys (remote-cli.mjs needPaired, remote-settings.mjs applyRules), and no phone can be linked, so there
- * is no connection to list and nothing to pause. Allowed modes is a local setting and Status only reads: both stay.
+ * is no connection to list and nothing to pause. Modes is a local setting and Status only reads: both stay.
  * APPROVED: Link a phone first, and approving again stays (new keys). NOT KNOWN: every row can be chosen and the title says so.
  *
  * PART OF PREMIUM (owner, 2026-11-14; docs/remote-agents/ISSUER.md §12): when WorkTrust itself answered `premium_required`
@@ -183,7 +183,7 @@ export function remoteItems(approved, paused, act = {}, access = null) {
     ...(approved ? [link, approve] : [approve, link]),
     { label: "Projects ›", hint: "npx worktrust remote projects", info: "Folders a phone may steer an agent in.", run: act.projects, ...wait },
     { label: "Roots for new projects ›", hint: "npx worktrust remote roots", info: "Where a phone may open and create projects.", run: act.roots, ...wait },
-    { label: "Allowed modes ›", hint: "npx worktrust remote modes", info: "Agent modes a phone may start. This computer is the limit.", run: act.modes },
+    { label: "Modes ›", hint: "npx worktrust remote modes", info: "Agent modes a phone may start. This computer is the limit.", run: act.modes, ...(act.modesNote ? { note: { text: act.modesNote, tone: "dim" } } : {}) },
     { label: "Connections ›", hint: "npx worktrust remote connections", info: "Phones and browsers linked here.", run: act.connections, ...wait },
     { label: paused ? "Resume" : "Pause", hint: `npx worktrust remote ${paused ? "resume" : "pause"}`, info: paused ? "Lets linked phones steer agents here again." : "Stops every phone until you resume. Links stay.", run: act.pause, ...wait },
     { label: "Status", hint: "npx worktrust remote status", info: "Shows if Remote Agent is on and what is linked. Only reads.", run: act.status },
@@ -224,6 +224,7 @@ export async function remoteMenu(term, io, header) {
       ], io),
       link: () => runShown(term, io, ["remote", "pair"]),
       projects: () => projectsMenu(term, io, header), roots: () => rootsMenu(term, io, header), modes: () => modesMenu(term, io, header), connections: () => connectionsMenu(term, io, header),
+      modesNote: (() => { try { return { plan: "Manual, Plan", edit: "+ Edit", auto: "+ Auto" }[ceilingOf(allowedModes(loadSettings()))]; } catch { return null; } })(), // 0.11.14: the ceiling in a word
       pause: () => runShown(term, io, ["remote", paused ? "resume" : "pause"]),
       status: () => runShown(term, io, ["remote", "status"]),
       upgrade: () => showUpgrade(term, io, state?.upgrade ?? null), upgradeHint: state?.upgrade ? String(state.upgrade).replace(/^https?:\/\//, "") : undefined,

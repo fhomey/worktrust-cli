@@ -2,6 +2,34 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.14: the phone keeps its link, the link flow asks about browsers and modes, and dictation that hears you
+
+**Back in the app, the session carries on.** When the WorkTrust app comes back to the front after you sent a prompt and
+opened another app, Remote Agent now sends it what happened in between: the phone asks for the session's events after the
+last one it holds, and the CLI answers from its own journal on this computer, page by page (at most 200 events and 1 MB
+per page), sealed for that phone alone. Nothing is run for it and nothing new is written; it is answered while remote
+control is paused too, as a status read is. A session this computer never ran is refused, so the phone drops it.
+
+**A message you sent just before leaving is no longer stuck at "Delivery unconfirmed".** The app keeps an unconfirmed
+message sealed on the phone and sends it again on its new connection, under its own id. The CLI used to see the new seal
+as a conflict and drop it silently, while the agent was already working on it. It now answers that resend as the
+duplicate it is, with the receipts it already gave, after checking it opens under your phone's signature on this
+channel: nothing runs twice, and another message under the same id is still refused.
+
+**Older apps and older CLIs are unaffected.** The phone asks this by a probe of its own first; a CLI before 0.11.14 drops
+the probe and the phone asks it nothing new.
+
+**After "✓ Phone linked" and what it may reach, the CLI asks two more things.** "May your confirmed phones add a browser?"
+(what `npx worktrust remote phones allow-endorse on|off` sets) and "Which agent modes may a phone start here?": Manual and
+Plan, + Edit automatically, or + Auto (what `npx worktrust remote modes allow|deny` sets). Each question marks the setting
+as it is now. Both answers are taken first and only then written, through the same door as the typed commands, so Ctrl+C
+or Esc at either question leaves both as they were. Without a terminal, or with `--yes`, nothing is asked and the commands
+are named. `remote access` ends with the same two questions.
+
+**Remote Agent › Modes.** The menu's modes row is now called Modes and names the ceiling beside it (Manual, Plan; + Edit;
++ Auto). `remote phones allow-endorse` writes through the one settings door too; a change from the app or the web can never
+turn it on.
+
 ## 0.11.13: computer health in Remote Agent, and continue a session on this computer
 
 **This computer's health, live on your phone and in the browser.** The Remote Agent service reads memory pressure, free

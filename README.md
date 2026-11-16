@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.13
+  WorkTrust CLI 0.11.14
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.13
+  WorkTrust CLI 0.11.14
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.13)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.14)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -193,7 +193,9 @@ whole.
 grant an "always allow". Those are decided at this keyboard or not at all.
 
 **Modes with a ceiling.** Manual and Plan are always there. Edit automatically and Auto exist only once you allow them
-here with `remote modes allow`. The computer refuses a mode above what you allowed.
+here with `remote modes allow`, in the menu under Remote Agent › Modes, or when a phone links: after what it may reach,
+the CLI asks which modes a phone may start and whether your confirmed phones may add a browser (Ctrl+C or Esc changes
+neither). The computer refuses a mode above what you allowed.
 
 **Sealed end to end.** The computer holds one outbound connection and opens no port. Messages are sealed between your
 phone and this computer; the relay passes them on and cannot read a prompt, a file, a path, an output or a model name.

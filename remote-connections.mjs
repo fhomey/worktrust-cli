@@ -285,11 +285,13 @@ export function awaitingAccess(phones = loadPhones(), roots = loadRoots(), proje
   return connections({ ...phones, pending: [] }).find((c) => c.device_id === newest.device_id) ?? null;
 }
 
-/** The access step in this terminal: interactive only with a terminal on both ends and no --yes. */
+/** The access step in this terminal (interactive only with a terminal on both ends and no --yes), then the 0.11.14 questions. */
 export async function reachStep(io, apply) {
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !io.has?.("yes");
-  const menu = interactive ? await import("./cli-menu.mjs") : null;
-  return accessStep(io, { apply, interactive, term: menu?.createTerminal() ?? null, choose: menu?.choose ?? null });
+  const menu = interactive ? await import("./cli-menu.mjs") : null, term = menu?.createTerminal() ?? null;
+  const reach = await accessStep(io, { apply, interactive, term, choose: menu?.choose ?? null });
+  await (await import("./remote-settings.mjs")).trustStep(io, { apply, interactive, term, choose: menu?.choose ?? null }); // may phones add a browser; the modes
+  return reach;
 }
 
 /** `remote access`: the newest linked phone, then the same step. */

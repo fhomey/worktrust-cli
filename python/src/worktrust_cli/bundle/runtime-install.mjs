@@ -11,6 +11,44 @@ const regular = (path) => { const stat = lstatSync(path); if (!stat.isFile() || 
 const directory = (path) => { const stat = lstatSync(path); if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("bundled installation requires owned directories, not symlinks"); };
 const checkedBytes = (path) => { regular(path); return readFileSync(path); };
 
+/**
+ * THE BOOTSTRAP OF AN INSTALLATION, AS TEXT (worktrust-launch.py): it pins the hash of every installed file. One function,
+ * so the Remote Agent daemon can check a newer installation's bootstrap is exactly this text for that installation's own
+ * files before it hands its service over to it (remote-service.mjs verifiedInstallation, CLI 0.11.16).
+ */
+export function bootstrapSource(identities, identity, executable) {
+  return `import hashlib, json, os, pathlib, subprocess, sys
+EXPECTED = json.loads(${JSON.stringify(JSON.stringify(identities))})
+IDENTITY = ${JSON.stringify(identity)}
+root = pathlib.Path(__file__).absolute().parent.resolve()
+try:
+    if not sys.flags.isolated or root.is_symlink(): raise ValueError("PACKAGE_BOOTSTRAP_REQUIRED")
+    if set(p.name for p in root.iterdir()) != {"engine", "runtime", "installation.json", "worktrust-launch.py"}: raise ValueError("PACKAGE_FILE_LIST_CHANGED")
+    for group in ("engine", "runtime"):
+        folder = root / group
+        if folder.is_symlink() or not folder.is_dir(): raise ValueError("PACKAGE_NON_REGULAR_DIRECTORY")
+        if set(p.name for p in folder.iterdir()) != {name.split("/", 1)[1] for name in EXPECTED if name.startswith(group + "/")}: raise ValueError("PACKAGE_FILE_LIST_CHANGED")
+    marker = root / "installation.json"
+    if marker.is_symlink() or marker.read_text() != IDENTITY: raise ValueError("PACKAGE_INSTALLATION_IDENTITY_MISMATCH")
+    for name, digest in EXPECTED.items():
+        file = root / name
+        if file.is_symlink() or not file.is_file() or file.stat().st_size > 128 * 1024 * 1024 or hashlib.sha256(file.read_bytes()).hexdigest() != digest: raise ValueError("PACKAGE_FILE_CHANGED")
+except (OSError, ValueError):
+    print("worktrust: PACKAGE_VERIFICATION_FAILED. Execution stopped; reinstall an official WorkTrust release.", file=sys.stderr)
+    sys.exit(1)
+node = root / "runtime" / ${JSON.stringify(executable)}
+entry = root / "engine" / "worktrust-launch.mjs"
+env = dict(os.environ)
+env["WORKTRUST_BUNDLED_PYTHON"] = sys.executable
+env["WORKTRUST_INSTALLED_LAUNCHER"] = str(root / "worktrust-launch.py")
+for key in ("NODE_OPTIONS", "NODE_PATH", "WORKTRUST_BUNDLED_RUNTIME_DIR"):
+    env.pop(key, None)
+argv = [str(node), str(entry), *sys.argv[1:]]
+if os.name != "nt": os.execve(node, argv, env)
+sys.exit(subprocess.call(argv, env=env))
+`;
+}
+
 export function installRuntime(runtime, engine, home, moduleNames) {
   directory(runtime); directory(engine); directory(home);
   const python = process.env.WORKTRUST_BUNDLED_PYTHON;
@@ -43,36 +81,7 @@ export function installRuntime(runtime, engine, home, moduleNames) {
   const identity = Buffer.from(JSON.stringify({ format: "worktrust-installation/2", files: identities }));
   // The external, package-manager Python starts BEFORE the copied Node executable. This bootstrap
   // pins the hashes authenticated above; it never trusts a locally rewritten descriptor to bless code.
-  const bootstrap = Buffer.from(`import hashlib, json, os, pathlib, subprocess, sys
-EXPECTED = json.loads(${JSON.stringify(JSON.stringify(identities))})
-IDENTITY = ${JSON.stringify(identity.toString())}
-root = pathlib.Path(__file__).absolute().parent.resolve()
-try:
-    if not sys.flags.isolated or root.is_symlink(): raise ValueError("PACKAGE_BOOTSTRAP_REQUIRED")
-    if set(p.name for p in root.iterdir()) != {"engine", "runtime", "installation.json", "worktrust-launch.py"}: raise ValueError("PACKAGE_FILE_LIST_CHANGED")
-    for group in ("engine", "runtime"):
-        folder = root / group
-        if folder.is_symlink() or not folder.is_dir(): raise ValueError("PACKAGE_NON_REGULAR_DIRECTORY")
-        if set(p.name for p in folder.iterdir()) != {name.split("/", 1)[1] for name in EXPECTED if name.startswith(group + "/")}: raise ValueError("PACKAGE_FILE_LIST_CHANGED")
-    marker = root / "installation.json"
-    if marker.is_symlink() or marker.read_text() != IDENTITY: raise ValueError("PACKAGE_INSTALLATION_IDENTITY_MISMATCH")
-    for name, digest in EXPECTED.items():
-        file = root / name
-        if file.is_symlink() or not file.is_file() or file.stat().st_size > 128 * 1024 * 1024 or hashlib.sha256(file.read_bytes()).hexdigest() != digest: raise ValueError("PACKAGE_FILE_CHANGED")
-except (OSError, ValueError):
-    print("worktrust: PACKAGE_VERIFICATION_FAILED. Execution stopped; reinstall an official WorkTrust release.", file=sys.stderr)
-    sys.exit(1)
-node = root / "runtime" / ${JSON.stringify(executable)}
-entry = root / "engine" / "worktrust-launch.mjs"
-env = dict(os.environ)
-env["WORKTRUST_BUNDLED_PYTHON"] = sys.executable
-env["WORKTRUST_INSTALLED_LAUNCHER"] = str(root / "worktrust-launch.py")
-for key in ("NODE_OPTIONS", "NODE_PATH", "WORKTRUST_BUNDLED_RUNTIME_DIR"):
-    env.pop(key, None)
-argv = [str(node), str(entry), *sys.argv[1:]]
-if os.name != "nt": os.execve(node, argv, env)
-sys.exit(subprocess.call(argv, env=env))
-`);
+  const bootstrap = Buffer.from(bootstrapSource(identities, identity.toString(), executable));
   contents.set("worktrust-launch.py", bootstrap);
   const installations = join(home, "installations"), installed = join(installations, hash(Buffer.concat([identity, bootstrap])));
   if (!existsSync(installations)) mkdirSync(installations, { mode: 0o700 });

@@ -2,6 +2,35 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.16: the Remote Agent service names its version and says its restart, and a phone back in the app is caught up calmly
+
+**The Remote Agent service says which version it runs.** A phone or browser you linked can ask this computer which CLI its
+Remote Agent service runs, and shows it; when that version is behind the one on npm, it shows the command to run here
+(`npx -y worktrust@latest update`). Nothing is updated from a phone or a browser. The version is sealed for your own
+devices only; an older phone or browser is never sent it.
+
+**A restart is announced.** Before the service moves to a newer version, and when `update` restarts it, it tells your
+linked phone and browser that it is restarting and on which version, so they show that instead of a dropped connection.
+Stopping the service, `remote disable` and shutting the computer down say nothing, as before.
+
+**Python installations move without cutting a task.** A service installed with the Python package is now asked by `update`
+to move when nothing is at work, like the npm one, instead of being restarted at once. It moves only to an installation
+it has checked: the signed engine, every installed file, the launcher's own text and the folder's name.
+
+**A phone back in the app no longer loses its connection.** Everything this computer sends to the relay now goes through
+one queue that stays under the relay's limits (and slows down for ten seconds when the relay says so), so a phone that
+comes back and asks for what it missed is answered in small batches, one catch-up per phone at a time, the session it has
+open first. Under pressure a stale progress frame is left out; an event of a running session never is. Before, a long
+session could answer so fast that the relay closed the connection.
+
+**A session remembers what was said.** The Remote Agent journal on this computer now keeps, per session, the turns and what
+the agent said in them (thirty days, at most 500 per session), sealed for your own devices when they ask. Nothing new
+leaves this computer for WorkTrust: the relay still carries boxes it cannot open.
+
+**A prompt after an early stop starts the session instead of failing.** When you stopped a Claude Code session before its
+first turn and then sent a prompt, the CLI tried to resume a transcript that was never written and the session showed
+Failed. It now resumes only a session Claude Code wrote, and otherwise starts it under the same id.
+
 ## 0.11.15: the Remote Agent service follows CLI updates, and sealed notices for your phone's lock screen
 
 **Follow a session with the app closed.** When your phone turns on notifications for Remote Agent, it hands this computer

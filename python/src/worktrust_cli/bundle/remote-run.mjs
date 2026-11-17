@@ -37,7 +37,7 @@ import { createDaemonCore } from "./remote-daemon.mjs";
 import { createDesk } from "./remote-desk-sessions.mjs";
 import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
 import { createHealthMonitor, fixtureReaders, HEALTH_REFUSAL, healthLine, keepHealth } from "./remote-health.mjs";
-import { createHandover, daemonBusy, holdDuring } from "./remote-service.mjs";
+import { createHandover, daemonBusy, holdDuring, ownLauncher, restartAsked } from "./remote-service.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), kind, ...fields })}\n`);
@@ -142,7 +142,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // Continue a session on this computer (release 36): its own Claude Code sessions in the projects a phone may reach.
   const desk = createDesk({ projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), journal });
   let health = null; // the sampler below (remote-health.mjs): every 15 s, local numbers, no model
-  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, now: Date.now, random, log: logged, health: () => health?.latest() ?? null, send: (f) => transport?.send(f) ?? false, inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
+  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
@@ -173,7 +173,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   core.attach(registry, approvals, releases);
   // A NEWER RELEASE, TAKEN OVER WHEN NOTHING IS AT WORK (0.11.15, remote-service.mjs createHandover and daemonBusy); while it
   // hands over no command is taken (the phone resends it, unanswered, to the next daemon) and nothing new starts (hold).
-  handover = version ? createHandover({ version, log, own: join(HERE, "worktrust-launch.mjs"), busy: () => daemonBusy({ sessions, journal, pipelines, terminal, approvals, live, attachments }) }) : null;
+  handover = version ? createHandover({ version, log, own: ownLauncher(HERE), announce: (to) => core.announceRestart(to), busy: () => daemonBusy({ sessions, journal, pipelines, terminal, approvals, live, attachments }) }) : null;
 
   const dispatchFrame = async (frame) => {
     if (frame.frame === "hello") core.receiveHello(frame.hello);
@@ -207,9 +207,12 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
     onState: (state, info) => { log("gateway", { state, ...info }); if (state === "ready") registerCode(true); } });
   say(`  WorkTrust remote is running for ${identity.device_id} (gateway ${new URL(gateway).host}). Ctrl+C stops it.`);
   let stopping = false;
-  const stop = async (code = 0) => {
+  // `signal`: the service manager ends it. When an update asked for that (restartAsked: restart.json, or a newer installed
+  // release), the phones that read `cli` are told "restarting" first; a plain stop, a disable or a shutdown says nothing.
+  const stop = async (code = 0, signal = false) => {
     if (stopping) return;
     stopping = true;
+    if (signal && version) { try { const to = restartAsked(); if (to !== null) core.announceRestart(to); } catch { /* unsaid: the phone sees it offline */ } }
     approvals.close();
     health.stop();
     await pipelines.stopAll();
@@ -221,7 +224,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
     process.exit(code);
   };
   process.on("SIGINT", () => stop(0));
-  process.on("SIGTERM", () => stop(0));
+  process.on("SIGTERM", () => stop(0, true));
   // WHAT A PHONE MAY REACH, TOLD AT ONCE (0.11.12, owner 2026-11-15): a grant made at this keyboard (the access step after
   // "Phone linked", Remote Agent › Roots or › Projects) changes the lists another process wrote; the next tick sends the
   // inventory again, sealed, so a phone waiting on "Choose access at your computer" learns it from this computer, not a server.

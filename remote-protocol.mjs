@@ -2048,6 +2048,48 @@ export function deskRule(desk                                    , projects     
   return null;
 }
 
+// ---- packages/remote-protocol/src/cli.ts
+/**
+ * WHICH CLI THE COMPUTER'S SERVICE RUNS, AND THAT IT IS RESTARTING (CLI 0.11.16, owner 2026-11-16: the iMac's service ran
+ * 0.11.9 through three updates and no screen could say so). Sealed in device.inventory `cli`, only for a phone or browser
+ * that asked `inventory.get` `cli` (an older one refuses unknown keys and never receives it):
+ *
+ *   version      the release of the daemon itself (never the CLI the person last ran in a terminal: the two differed)
+ *   restarting   present only in the one inventory the daemon sends as it hands over to another release, or is restarted
+ *                by an update: `to` the release it moves to (null: not known), `at` its own clock. A phone shows
+ *                "restarting" for RESTART_SHOWN_MS at most and until the next inventory, which names the new version.
+ *
+ * It travels on the ordered device stream under the existing type, so the relay needs no change (the transient lane takes
+ * only the types the relay itself lists). Words only: nothing here starts an update; that stays at the computer (S0).
+ */
+
+export const CLI_RELEASE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+/** How long a `restarting` stays true on a screen without a newer inventory: a restart takes seconds, launchd throttles ten. */
+export const RESTART_SHOWN_MS = 120_000;
+
+export const CLI_SPEC = object({
+  version: text(14, 5),
+  restarting: optional(object({ to: nullable(text(14, 5)), at: int(0) })),
+});
+/** device.inventory's field (events.ts spreads it). */
+export const CLI_INVENTORY_FIELDS = { cli: optional(CLI_SPEC) }         ;
+
+/** The rules between fields: each version a release number. → null, or what is wrong. */
+export function cliRule(cli                       )                {
+  if (!cli) return null;
+  if (!CLI_RELEASE.test(cli.version)) return "version: a release number";
+  if (cli.restarting && cli.restarting.to !== null && !CLI_RELEASE.test(cli.restarting.to)) return "restarting.to: a release number";
+  return null;
+}
+
+/** Whether release `a` is older than `b` (both release numbers); false when either is not one. */
+export function cliOlder(a        , b        )          {
+  if (!CLI_RELEASE.test(a) || !CLI_RELEASE.test(b)) return false;
+  const x = a.split(".").map(Number), y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i]  < y[i] ;
+  return false;
+}
+
 // ---- packages/remote-protocol/src/state-machine.ts
 /**
  * DELIVERY AND EXECUTION, AS A PURE FUNCTION. One command's state, from the phone's draft to its end:
@@ -2808,7 +2850,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
      * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
      */
-    catch_up: optional(bool()),
+    catch_up: optional(bool()), cli: optional(bool()), // CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -2971,7 +3013,7 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended");
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended");
   }
   if (type === "session.attach") {
     const a = payload                                    ;
@@ -3244,7 +3286,7 @@ export const EVENT_BODY_SPECS = {
     agent_options: optional(list(AGENT_OPTIONS_SPEC, 16)),
     modes_allowed: optional(list(oneOf(AGENT_MODES), AGENT_MODES.length)),
     /** Part B (owner, 2026-11-12), only for an `extended` phone: the settings page's admin switch, folders, connections (crypto/admin.ts). */
-    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, // release 36: `desk_sessions`, only for a phone that asked (desk.ts)
+    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, ...CLI_INVENTORY_FIELDS, // release 36: `desk_sessions` (desk.ts); CLI 0.11.16: `cli`, the daemon's release and restart (cli.ts); each only for a phone that asked
     sessions: list(
       object({
         session_id: id("ses"),
@@ -3360,6 +3402,7 @@ export function validateEventBody                           (type   , value     
     // One report per (adapter, mode) since release 19: Claude Code structured and in a terminal are two reports.
     if (new Set(inv.adapters.map((a) => `${a.adapter}/${a.mode}`)).size !== inv.adapters.length) return refuse("payload", "$body.adapters: an adapter twice");
     { const desk = deskRule(inv.desk_sessions, inv.projects); if (desk) return refuse("payload", `$body.desk_sessions: ${desk}`); }
+    { const cli = cliRule(inv.cli); if (cli) return refuse("payload", `$body.cli.${cli}`); }
   }
   return checked;
 }

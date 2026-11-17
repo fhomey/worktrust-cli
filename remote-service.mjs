@@ -20,12 +20,18 @@
  *     under this release's pinned key is handed over only when idle: launchd through a one-shot job running the NEW
  *     launcher's `remote handover` (a job's own bootout would end the process that must bootstrap it again), systemd by a
  *     non-blocking restart. Identity, keys, phones, channels, grants and settings are files this never writes.
+ *
+ * THE RESTART IS SAID FIRST (CLI 0.11.16): `announce(to)` before a handover, `announce(false)` when it did not happen; the
+ * update's own re-install of a daemon that can hear it leaves restart.json for the seconds it takes (restartAsked), which
+ * the daemon reads when the service manager ends it. A stop, a disable or a shutdown says nothing.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { verifyPackage, writePrivateFile } from "./package-integrity.mjs";
+import { RELEASE, installedRelease, isHandoverLauncher, launcherFor, launcherVersion, newerRelease } from "./remote-launchers.mjs";
+export * from "./remote-launchers.mjs"; // which launcher a unit may be handed to (the npm copies, a Python installation)
 
 export const LABEL = "io.worktrust.remote";
 export const UNIT = "worktrust-remote.service";
@@ -170,31 +176,16 @@ export function daemonState(home = homedir()) {
   } catch { return null; }
 }
 export const writeDaemonState = (home, state) => writePrivateFile(remoteFile(home, DAEMON_FILE), `${JSON.stringify({ v: 1, ...state })}\n`);
-const RELEASE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
-export const newerRelease = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
-/** The release `update` installed last (~/.worktrust/installed-release.json), or null. */
-export function installedRelease(home = homedir()) {
-  try { const version = JSON.parse(readFileSync(join(home, ".worktrust", "installed-release.json"), "utf8"))?.version; return RELEASE.test(version ?? "") ? version : null; } catch { return null; }
-}
-const VERIFIED = /^[a-f0-9]{64}$/;
-/** True for ~/.worktrust/verified/<identity>/worktrust-launch.mjs, the only kind of launcher a daemon hands over to. */
-export const isVerifiedLauncher = (entry, home = homedir()) => typeof entry === "string" && entry.startsWith(join(home, ".worktrust", "verified") + "/") && VERIFIED.test(entry.split("/").at(-2) ?? "") && entry.endsWith("/worktrust-launch.mjs") && entry.split("/").length === join(home, ".worktrust", "verified").split("/").length + 2;
+const reinstalling = (home) => { try { return JSON.parse(readFileSync(remoteFile(home, RESTART_FILE), "utf8"))?.now === true; } catch { return false; } };
 /**
- * The verified copy of `version` in ~/.worktrust/verified, checked HERE under this release's pinned release key (the
- * signature, every file's hash, the identity its folder is named by), its launcher's path; null when none holds.
+ * THE RESTART AN UPDATE IS MAKING NOW (CLI 0.11.16), read by the daemon as the service manager ends it: restart.json naming
+ * a release, written in the last half minute (serviceOnRelease leaves it only while it re-installs). → that release, or null.
  */
-export function verifiedLauncher({ home = homedir(), version, verify = verifyPackage }) {
-  const store = join(home, ".worktrust", "verified");
-  let names = [];
-  try { names = readdirSync(store).filter((name) => VERIFIED.test(name)); } catch { return null; }
-  for (const name of names) {
-    const dir = join(store, name);
-    let own = null;
-    try { own = /const CLI_VERSION = "([^"]+)";/.exec(readFileSync(join(dir, "worktrust.mjs"), "utf8"))?.[1] ?? null; } catch { continue; }
-    if (own !== version) continue;
-    try { if (verify(dir)?.identity === name) return join(dir, "worktrust-launch.mjs"); } catch { /* not this one */ }
-  }
-  return null;
+export function restartAsked({ home = homedir(), now = Date.now() } = {}) {
+  try {
+    const asked = JSON.parse(readFileSync(remoteFile(home, RESTART_FILE), "utf8"));
+    return asked?.now === true && RELEASE.test(asked.version ?? "") && Number.isSafeInteger(asked.at) && Math.abs(now - asked.at) < 30_000 ? asked.version : null;
+  } catch { return null; }
 }
 
 /**
@@ -211,24 +202,22 @@ export async function serviceOnRelease({ program, version, platform = process.pl
   const daemon = direct ? null : daemonState(home);
   if (entryOf(installed.program) === entryOf(program) && (!daemon || daemon.version === version)) return null;
   const reinstall = () => {
-    const done = installService({ program, path: installed.path ?? process.env.PATH ?? "", platform, home, runner, fromHandover: direct });
+    // A daemon that can hear it (daemon.json) is told why the service manager ends it: it says "restarting" to its phones.
+    if (daemon) { try { writePrivateFile(remoteFile(home, RESTART_FILE), `${JSON.stringify({ v: 1, version, at: Date.now(), now: true })}\n`); } catch { /* unsaid */ } }
+    let done;
+    try { done = installService({ program, path: installed.path ?? process.env.PATH ?? "", platform, home, runner, fromHandover: direct }); } finally { if (daemon) rmSync(remoteFile(home, RESTART_FILE), { force: true }); }
     return done.started ? `✓ Remote Agent restarted on ${version}.` : `! Remote Agent could not move to ${version}: its service was written (${done.file}) but did not start; npx worktrust remote run shows why.`;
   };
-  if (!daemon || !isVerifiedLauncher(entryOf(program), home)) return reinstall();
+  if (!daemon || !isHandoverLauncher(entryOf(program), home)) return reinstall();
   writePrivateFile(remoteFile(home, RESTART_FILE), `${JSON.stringify({ v: 1, version, at: Date.now() })}\n`);
   for (const end = Date.now() + waitMs; Date.now() < end;) { await sleep(500); if (daemonState(home)?.version === version) return `✓ Remote Agent restarted on ${version}.`; }
   const now = daemonState(home);
   if (now?.version === version) return `✓ Remote Agent restarted on ${version}.`;
   if (now?.busy) return `Remote Agent still runs ${now.version}: a task is running. It moves to ${version} when the task finishes, or at the next npx worktrust update.`;
   if (!now && entryOf(installedProgram({ platform, home })?.program ?? []) === entryOf(program)) return `Remote Agent is starting on ${version}.`; // the handover job loaded it
-  rmSync(remoteFile(home, RESTART_FILE), { force: true });
   return reinstall();
 }
 
-/** The version a unit's launcher belongs to (its worktrust.mjs beside it), or null. */
-export function launcherVersion(entry) {
-  try { const own = /const CLI_VERSION = "([^"]+)";/.exec(readFileSync(join(entry, "..", "worktrust.mjs"), "utf8"))?.[1]; return RELEASE.test(own ?? "") ? own : null; } catch { return null; }
-}
 /**
  * `remote handover` (internal): the one-shot job's program, run by the NEW launcher. It moves the service only when this is
  * the installed release, newer than the one the unit runs, and the daemon says no task runs (review P3-1); its job file
@@ -274,7 +263,8 @@ export const holdDuring = (holding) => ({
  * `own`: the launcher beside this release's modules (the launcher sets process.argv[1] to worktrust.mjs, so it is named, not
  * read); only the daemon the installed unit started (its entry) hands over, never one run by hand in a terminal. → { start, tick, stop, handing }.
  */
-export function createHandover({ version, busy, own = null, log = () => {}, home = homedir(), platform = process.platform, runner = run, verify = verifyPackage, now = Date.now, everyMs = 10 * 60_000, giveUpMs = 60_000 }) {
+export function createHandover({ version, busy, own = null, log = () => {}, announce = () => {}, home = homedir(), platform = process.platform, runner = run, verify = verifyPackage, now = Date.now, everyMs = 10 * 60_000, giveUpMs = 60_000 }) {
+  const said = (to) => { try { announce(to); } catch { /* unsaid: the phones see it offline, then its new version */ } };
   let checked = -Infinity, handing = 0, saidBusy = null, lastBusy = null, waiting = null;
   const ours = () => { const current = installedProgram({ platform, home }); return current && entryOf(current.program) === own ? current : null; };
   const say = (b) => { try { writeDaemonState(home, { pid: process.pid, version, busy: b, handover: Boolean(ours()), at: now() }); } catch { /* the update then asks nothing: it re-installs */ } };
@@ -295,8 +285,9 @@ export function createHandover({ version, busy, own = null, log = () => {}, home
       const why = busy(), b = Boolean(why);
       if (b !== lastBusy) { lastBusy = b; say(b); }
       if (handing > 0 && now() - handing < giveUpMs) return null;
-      if (handing > 0) { handing = 0; log("handover_failed", { to: waiting }); } // still here: the new launcher did not take over; tried again later
-      const asked = existsSync(remoteFile(home, RESTART_FILE));
+      if (handing > 0) { handing = 0; log("handover_failed", { to: waiting }); said(false); } // still here: the new launcher did not take over; tried again later
+      // An update that is re-installing the service itself right now (`now`, serviceOnRelease) asks nothing of this daemon.
+      const asked = existsSync(remoteFile(home, RESTART_FILE)) && !reinstalling(home);
       if (!asked && now() - checked < everyMs) return null;
       checked = now();
       const target = installedRelease(home);
@@ -305,12 +296,13 @@ export function createHandover({ version, busy, own = null, log = () => {}, home
       const current = ours();
       unmark();
       if (!current) return null; // a daemon run by hand, or no service: the next `remote app` or update moves the service
-      const launcher = verifiedLauncher({ home, version: target, verify });
+      const launcher = launcherFor(own, { home, version: target, verify, platform });
       if (!launcher) { log("handover_refused", { to: target }); return null; }
       waiting = target; handing = Math.max(1, now());
+      said(target); // before the service manager is asked: the phones show "restarting", then the new version
       const started = handOver(current, launcher);
       log("handover", { from: version, to: target, started });
-      if (!started) handing = 0;
+      if (!started) { handing = 0; said(false); }
       return started;
     },
   };

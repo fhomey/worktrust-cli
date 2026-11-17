@@ -246,7 +246,7 @@ export function createTerminalSessions(ctx) {
       if (type === "session.rename") { if (!s && !ctx.journal.session(env.session_id)) return "not_found"; if (s) s.name = payload.name; ctx.journal.recordSession({ session_id: env.session_id, name: payload.name }); ctx.onSessionsChanged?.(); return "taken"; }
       if (!s && type === "session.attach" && on()) { const d = desk.find((x) => x.session_id === env.session_id); if (d) s = adopt(d); }
       if (!s) return "not_found";
-      if (type === "session.attach") { ctx.replay(s.session_id, 0); return "taken"; }
+      if (type === "session.attach") { await ctx.replay(s.session_id, 0, env.sender_device_id); return "taken"; } // the asker only, paced (remote-catch-up.mjs)
       if (type === "screen.read") {
         push.follow(s, env.sender_device_id, payload.follow, payload.lines); // remote-screen-push.mjs
         const cap = await ctx.tmux.capture(s.tmux, payload.lines);

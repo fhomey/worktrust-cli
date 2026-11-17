@@ -12,8 +12,15 @@
  * (protocol) stop the reconnects: the person acts at the keyboard. The production gateway also wants a five-minute
  * assertion from the issuer with every answer to a challenge, and challenges again before it ends (`authorize`).
  * Node 22.4 or later has the WebSocket this uses; older Node refuses plainly (`webSocketAvailable`).
+ *
+ * EVERY FRAME GOES THROUGH THE PACER (2026-11-16, remote-pace.mjs): `send` queues it in order under the gateway limits
+ * (40 frames and 1 MiB a second), the answer to a challenge and the heartbeat go at once and are counted, the gateway
+ * `rate_limited` slows it, a closed socket empties it. The one write to the socket is the pacer callback below
+ * (check-remote-cli rule N; `pacer` is the test seam for another pacer over that same write). `room()` is what a
+ * catch-up awaits between its batches.
  */
 import * as P from "./remote-protocol.mjs";
+import { createPacer } from "./remote-pace.mjs";
 
 export const MAX_FRAME = 2 * 1024 * 1024;
 const PING_MS = 20_000, SILENCE_MS = 45_000, BASE_MS = 1000, CAP_MS = 30_000;
@@ -26,15 +33,16 @@ export function authFrame({ deviceId, binding, signingSecret, nonce, origin, ass
   return { frame: "auth", device_id: deviceId, binding, nonce, signature: P.toBase64Url(P.ed25519Sign(relayAuthBytes(deviceId, nonce, origin), signingSecret)), ...(assertion ? { assertion } : {}) };
 }
 
-export function connectGateway({ url, identity, signingSecret, onFrame, onState = () => {}, log = () => {}, authorize = async () => null, WebSocketImpl = globalThis.WebSocket }) {
+export function connectGateway({ url, identity, signingSecret, onFrame, onState = () => {}, log = () => {}, authorize = async () => null, WebSocketImpl = globalThis.WebSocket, pacer = null }) {
   const origin = new URL(url).origin.replace(/^http/, "ws");
   let socket = null, attempt = 0, stopped = false, ready = false, lastHeard = 0, ping = null, retry = null, hint = null;
-  const send = (frame) => {
+  const pace = (pacer ?? createPacer)({ write: (text) => { if (socket?.readyState === 1) socket.send(text); }, log });
+  /** `replayed`: a journal event sealed again for one phone (the depth rule may drop it; never a live event). */
+  const send = (frame, { replayed = false } = {}) => {
     if (!ready || socket?.readyState !== 1) return false;
     const text = JSON.stringify(frame);
     if (text.length > MAX_FRAME) { log("frame_too_large", { frame: frame.frame }); return false; }
-    socket.send(text);
-    return true;
+    return pace.push(text, frame.frame !== "event" ? "control" : frame.envelope?.lane === "transient" ? "transient" : replayed ? "replay" : "live");
   };
   const schedule = () => {
     if (stopped) return;
@@ -59,17 +67,19 @@ export function connectGateway({ url, identity, signingSecret, onFrame, onState 
         const asked = socket;
         authorize().catch(() => null).then((assertion) => {
           if (asked !== socket || asked.readyState !== 1) return;
-          asked.send(JSON.stringify(authFrame({ deviceId: identity.device_id, binding: identity.binding, signingSecret, nonce: frame.nonce, origin, assertion })));
+          pace.urgent(JSON.stringify(authFrame({ deviceId: identity.device_id, binding: identity.binding, signingSecret, nonce: frame.nonce, origin, assertion })));
         });
         return;
       }
       if (frame.frame === "closing" && Number.isSafeInteger(frame.retry_after_ms)) { hint = Math.min(frame.retry_after_ms, 3_600_000); return; }
       if (frame.frame === "ready") { ready = true; attempt = 0; onState("ready"); }
       if (frame.frame === "pong") return;
+      if (frame.frame === "error" && frame.reason === "rate_limited") pace.slow();
       onFrame(frame);
     };
     socket.onclose = (event) => {
       ready = false;
+      pace.clear();
       clearInterval(ping);
       onState("closed", { code: event?.code ?? null });
       if (STOP_CODES.has(event?.code)) { stopped = true; onState("stopped", { code: event.code }); return; }
@@ -79,10 +89,10 @@ export function connectGateway({ url, identity, signingSecret, onFrame, onState 
     clearInterval(ping);
     ping = setInterval(() => {
       if (Date.now() - lastHeard > SILENCE_MS) { try { socket.close(); } catch { /* closed */ } return; }
-      if (socket.readyState === 1) socket.send(JSON.stringify({ frame: "ping" }));
+      if (socket.readyState === 1) pace.urgent(JSON.stringify({ frame: "ping" }));
     }, PING_MS);
     ping.unref?.();
   }
   open();
-  return { send, ready: () => ready, close() { stopped = true; clearTimeout(retry); clearInterval(ping); try { socket?.close(1000, "bye"); } catch { /* closed */ } } };
+  return { send, room: () => pace.room(), ready: () => ready, close() { stopped = true; pace.clear(); clearTimeout(retry); clearInterval(ping); try { socket?.close(1000, "bye"); } catch { /* closed */ } } };
 }

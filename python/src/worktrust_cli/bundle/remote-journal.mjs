@@ -19,6 +19,14 @@
  *      each written whole on every change, the latest record winning: a task is journaled `running` before its agent is
  *      started, so a restart closes it `interrupted` and never starts it twice. Compaction keeps every release (the
  *      backlog the phone scrolls back through) and the last 200 pipeline runs. The file is mode 0600, not encrypted.
+ *   7. What was said and each turn (2026-11-16, CLI 0.11.16; docs/remote-agents/CHAT-HISTORY.md §4.2), so the history of a
+ *      session can be read back from this computer, the truth, instead of from a phone: `said` (the words of a start, a
+ *      prompt, a steer or an answer as they were queued for the agent: who sent them, under which command, cut at
+ *      SAID_MAX_TEXT) and `turn` (one closed turn: its number, its command, the agent session it ran in, the first and
+ *      last event_seq, its times and how it ended). The session record names every agent session it ran in (`agent_refs`;
+ *      a forked resume used to overwrite the one ref) and whether Claude Code ever wrote its transcript
+ *      (`transcript_seen`, at its first init line). Kept 30 days and at most 500 per session at a compaction. These are
+ *      the words of the person on their own computer, in this 0600 file, beside the event bodies it always held.
  *
  * A torn last line (a crash mid-write) is skipped and counted; the journal is compacted above 8 MB to the last 500 events
  * per stream and a week of commands.
@@ -30,6 +38,7 @@ const MAX_BYTES = 8 * 1024 * 1024;
 const KEEP_EVENTS = 500;
 const KEEP_COMMANDS_MS = 7 * 24 * 3600_000;
 const KEEP_PIPELINES = 200;
+export const KEEP_WORDS = 500, KEEP_WORDS_MS = 30 * 24 * 3600_000, SAID_MAX_TEXT = 16_384;
 export const DEVICE_STREAM = "device";
 
 function appendLine(file, record) {
@@ -48,6 +57,8 @@ export function openJournal(file) {
   const pipelines = new Map(); // pipeline_run_id -> its latest body
   let releaseOrder = [];
   const pipelinePids = new Map(); // pipeline_run_id -> { pid, file } of its running stage
+  const said = new Map(), turns = new Map(); // session_id -> [record], oldest first, the last KEEP_WORDS
+  const keep = (map, r) => { const list = map.get(r.session_id) ?? []; list.push(r); if (list.length > KEEP_WORDS) list.splice(0, list.length - KEEP_WORDS); map.set(r.session_id, list); };
   let unreadable = 0;
 
   const apply = (r) => {
@@ -70,6 +81,8 @@ export function openJournal(file) {
     else if (r.t === "release" && r.release?.release_id) releases.set(r.release.release_id, structuredClone(r.release)); // what was written, not the caller's live object
     else if (r.t === "pipeline" && r.pipeline?.pipeline_run_id) { pipelines.delete(r.pipeline.pipeline_run_id); pipelines.set(r.pipeline.pipeline_run_id, structuredClone(r.pipeline)); }
     else if (r.t === "release_order" && Array.isArray(r.ids)) releaseOrder = r.ids;
+    else if (r.t === "said" && typeof r.session_id === "string") keep(said, r);
+    else if (r.t === "turn" && typeof r.session_id === "string") keep(turns, r);
     else if (r.t === "pipeline_pid" && r.pipeline_run_id) pipelinePids.set(r.pipeline_run_id, { pid: r.pid, file: r.file });
   };
 
@@ -119,6 +132,11 @@ export function openJournal(file) {
     spend: (approvalId, now) => { if (!decided.has(approvalId)) write({ t: "decided", approval_id: approvalId, at: now }); },
     recordSession: (record) => write({ t: "session", ...record }),
     session: (sessionId) => sessions.get(sessionId) ?? null,
+    /** Rule 7: the words as queued, on disk when this returns; a text over the cap is cut and says so. */
+    recordSaid: ({ session_id, command_id = null, sender_device_id = null, kind, at, text }) => write({ t: "said", session_id, command_id, sender_device_id, kind, at, text: text.slice(0, SAID_MAX_TEXT), ...(text.length > SAID_MAX_TEXT ? { cut: true } : {}) }),
+    saidOf: (sessionId) => [...(said.get(sessionId) ?? [])],
+    recordTurn: (turn) => write({ t: "turn", ...turn }),
+    turnsOf: (sessionId) => [...(turns.get(sessionId) ?? [])],
     sessions: () => [...sessions.values()],
     /** Rule 6: on disk when this returns. */
     recordRelease: (release) => write({ t: "release", release }),
@@ -139,6 +157,7 @@ export function openJournal(file) {
       for (const s of sessions.values()) lines.push({ t: "session", ...s });
       for (const id of decided) lines.push({ t: "decided", approval_id: id, at: now });
       for (const list of events.values()) for (const e of list.slice(-KEEP_EVENTS)) lines.push(e);
+      for (const map of [said, turns]) for (const [id, list] of map) { const fresh = list.filter((r) => now - (r.at ?? r.ended_at ?? 0) < KEEP_WORDS_MS); map.set(id, fresh); lines.push(...fresh); }
       for (const release of releases.values()) lines.push({ t: "release", release });
       for (const pipeline of journal.pipelines().slice(-KEEP_PIPELINES)) lines.push({ t: "pipeline", pipeline });
       if (releaseOrder.length > 0) lines.push({ t: "release_order", ids: releaseOrder });

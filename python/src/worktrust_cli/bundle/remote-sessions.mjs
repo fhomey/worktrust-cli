@@ -26,6 +26,7 @@ import { createCoalescer } from "./remote-coalesce.mjs";
 import { accept, announceQueue, claudeReplay, codexLanded, dropWaiting, interruptedEnd, interruptOf, modelRefusal, steerLive, steerModeOf, switchModel } from "./remote-steering.mjs";
 import { classifyAction } from "./remote-policy.mjs";
 import { activeRows, listSessions, statusReport } from "./remote-session-list.mjs";
+import { claudeHeard, claudeResume, closeTurn, openTurn, otherWay, refs, said, withActive } from "./remote-turns.mjs"; // what was said, each turn, the active time, and how Claude Code is started again
 
 export const DEFAULT_MAX_SESSIONS = 4;
 const LEDGER_EVERY_MS = 10 * 60_000;
@@ -61,26 +62,10 @@ export function createSessions(ctx) {
   /** A release's task ends with its turn (remote-releases.mjs), once. */
   const taskEnded = (s, outcome) => { if (s.task && !s.taskEnded) { s.taskEnded = true; ctx.onTaskEnded?.(s.session_id, outcome); } };
 
-  /**
-   * THE SESSION'S ACTIVE TIME (owner, 2026-11-08: Hours in the phone's session details): each turn's span from its start
-   * (turnStartedAt, the clock the turn's own duration_ms is read from) to its end, summed over the session's turns, counted
-   * once per turn and kept with the session in the journal. A turn that ended without a measured start makes the sum
-   * unknown (null) from then on, and the field is left out: a part is never sent as the whole.
-   */
-  function withActive(s, body) {
-    if (s.active !== null && s.countedTurn !== s.turnStartedAt) {
-      const span = typeof body.duration_ms === "number" ? body.duration_ms : s.turnStartedAt !== null ? Math.max(0, ctx.now() - s.turnStartedAt) : s.turnOpen ? null : 0;
-      s.active = span === null ? null : s.active + span;
-      s.countedTurn = s.turnStartedAt;
-      ctx.journal.recordSession({ session_id: s.session_id, active_ms: s.active });
-    }
-    return s.active === null ? body : { ...body, session_active_ms: s.active };
-  }
-
   function send(s, event) {
     event = interruptedEnd(ctx, s, event); // a turn the person interrupted was stopped, not failed
     if (event.type === "agent.stopped" && s.stopping) return; // stop() sends its own
-    if (event.type === "agent.completed" || event.type === "agent.failed" || event.type === "agent.stopped") event = { ...event, body: withActive(s, event.body) };
+    if (event.type === "agent.completed" || event.type === "agent.failed" || event.type === "agent.stopped") event = { ...event, body: withActive(ctx, s, event.body) };
     if (event.type === "agent.stopped") taskEnded(s, "stopped");
     if (event.type === "agent.usage") s.tokens = event.body.session;
     if (event.type === "agent.subagent") s.subagents.set(event.body.subagent_id, { subagent_id: event.body.subagent_id, parent_id: event.body.parent_id, label: event.body.label, state: event.body.state, tokens_total: event.body.tokens.total });
@@ -113,6 +98,7 @@ export function createSessions(ctx) {
   }
 
   function onLine(s, line) {
+    if (claudeHeard(ctx, s, line)) return; // its refusal to resume a session it never wrote: onExit starts it fresh (remote-turns.mjs)
     claudeReplay(ctx, s, line); // a live steer Claude Code read: accepted now
     // Background jobs the agent reports (2026-11-08): a change in the count re-sends the project tree, nothing else.
     const jobs = backgroundJobs(s.jobs ?? null, line);
@@ -121,7 +107,7 @@ export function createSessions(ctx) {
     s.state = mapped.state;
     // Claude Code wrote under another id than the ledger names (a forked resume, a new version): the ledger names that one
     // too before the turn is accepted, so its log is never read as the person's (review 2026-11-07, P2-c).
-    if (mapped.state.sessionRef && mapped.state.sessionRef !== s.agent_ref) { s.agent_ref = mapped.state.sessionRef; mark(s); ctx.journal.recordSession({ session_id: s.session_id, agent_session_ref: s.agent_ref }); }
+    if (mapped.state.sessionRef && mapped.state.sessionRef !== s.agent_ref) { s.agent_ref = mapped.state.sessionRef; mark(s); ctx.journal.recordSession({ session_id: s.session_id, ...refs(ctx, s) }); }
     if (line.type === "assistant") for (const b of line.message?.content ?? []) if (b?.type === "tool_use" && /^(Edit|MultiEdit|Write|NotebookEdit)$/.test(b.name) && typeof (b.input?.file_path ?? b.input?.notebook_path) === "string") s.agentFiles.push(b.input.file_path ?? b.input.notebook_path);
     afterMapped(s, mapped);
   }
@@ -143,7 +129,7 @@ export function createSessions(ctx) {
   }
 
   function afterMapped(s, mapped) {
-    if (mapped.turn === "started") s.ownTurn = Boolean(s.waiting);
+    if (mapped.turn === "started") { s.ownTurn = Boolean(s.waiting); openTurn(ctx, s, mapped.state.turnStartedAt ?? null); }
     if (mapped.turn === "started" && !s.waiting && s.adapter === "codex" && s.steers.length > 0) { const item = s.steers.shift(); s.command_id = item.command_id; accept(ctx, s, item, "new_turn"); }
     if (mapped.turn === "started" && s.waiting) {
       const item = s.waiting;
@@ -154,7 +140,7 @@ export function createSessions(ctx) {
     if (mapped.turn === "started") { s.turnOpen = true; s.snapshot = snapshotChanges(s.projectPath); s.agentFiles = []; s.turnStartedAt = mapped.state.turnStartedAt ?? ctx.now(); }
     for (const event of mapped.events) deliver(s, event);
     if (mapped.turn === "ended") {
-      s.interrupting = false;
+      s.interrupting = false; closeTurn(ctx, s);
       s.turnOpen = false;
       if (s.jobs?.size) ctx.onSessionsChanged?.(); // "ready, but a job is still running": the tree hears the turn ended
       mark(s);
@@ -170,7 +156,10 @@ export function createSessions(ctx) {
     ctx.journal.recordSession({ session_id: s.session_id, pid: null });
     ctx.approvals.unregister(s.token);
     removeQuietly(s.mcpFile);
+    // Claude Code only refused the START (a resume of a session it never wrote, or the reverse): the other way, once, the words kept.
+    if (otherWay(s, how)) { s.run = null; s.turnOpen = false; if (s.waiting) { s.queue.unshift(s.waiting); s.waiting = null; } try { spawnAgent(s, s.agent_ref); return nextTurn(s); } catch { /* it did not come back: what waited is settled below, never left hanging */ } }
     if (s.turnOpen && !s.stopping) { advance(s, "failed"); ctx.emit(s.session_id, "agent.failed", { reason: "agent_exited", message: how.code === null ? null : `Claude Code exited (${how.code}).` }, s.command_id); taskEnded(s, "failed"); }
+    if (!s.stopping) closeTurn(ctx, s);
     if (!s.stopping) taskEnded(s, "failed"); // an agent that exits before its task's turn ended did not do the task
     s.turnOpen = false;
     s.run = null;
@@ -187,7 +176,7 @@ export function createSessions(ctx) {
     const plans = ctx.bridgePath && ctx.socket ? { node: ctx.node, bridge: ctx.bridgePath, session: s.mcpFile = writeBridgeSession(join(ctx.runDir, `${s.session_id}.codex.json`), { socket: ctx.socket(), token: s.token }) } : null;
     s.run = startCodex({ file: ctx.inventory().files.codex, cwd: s.projectPath, env: ctx.agentEnv(), model: s.model, mode: s.mode, resume, plans,
       onMessage: (msg) => onCodex(s, msg), onExit: (how) => onExit(s, how),
-      onThread: (id) => { s.agent_ref = id; mark(s); ctx.journal.recordSession({ session_id: s.session_id, agent_session_ref: id }); },
+      onThread: (id) => { s.agent_ref = id; mark(s); ctx.journal.recordSession({ session_id: s.session_id, ...refs(ctx, s) }); },
       approve: async (tool, input) => (await ctx.approvals.request(s, tool, input))?.behavior === "allow" });
     ctx.journal.recordSession({ session_id: s.session_id, pid: s.run.pid ?? null });
     s.ledgerTimer = setInterval(() => { if (s.turnOpen) mark(s); }, LEDGER_EVERY_MS); s.ledgerTimer.unref?.();
@@ -199,10 +188,10 @@ export function createSessions(ctx) {
     const features = ctx.inventory().features["claude-code"];
     s.token = ctx.approvals.register(s);
     s.mcpFile = writeMcpConfig(join(ctx.runDir, `${s.session_id}.mcp.json`), { node: ctx.node, bridge: ctx.bridgePath, socket: ctx.socket(), token: s.token });
-    const args = claudeArgs({ features, mode: s.agentMode ?? s.mode, model: s.model, resume, sessionRef: s.agent_ref, mcpConfig: s.mcpFile, effort: s.effort ?? null, addDirs: s.extraPaths ?? [] });
+    const args = claudeArgs({ features, mode: s.agentMode ?? s.mode, model: s.model, resume: claudeResume(ctx, s, resume), sessionRef: s.agent_ref, mcpConfig: s.mcpFile, effort: s.effort ?? null, addDirs: s.extraPaths ?? [] });
     mark(s); // the ledger names the session before the agent writes a line
     s.run = startClaude({ file: ctx.inventory().files["claude-code"], cwd: s.projectPath, env: ctx.agentEnv(), args, onLine: (line) => onLine(s, line), onExit: (how) => onExit(s, how) });
-    ctx.journal.recordSession({ session_id: s.session_id, pid: s.run.pid ?? null, agent_session_ref: s.agent_ref }); // a later daemon ends it if this one dies (P2-b)
+    ctx.journal.recordSession({ session_id: s.session_id, pid: s.run.pid ?? null, ...refs(ctx, s) }); // a later daemon ends it if this one dies (P2-b)
     s.ledgerTimer = setInterval(() => { if (s.turnOpen) mark(s); }, LEDGER_EVERY_MS); s.ledgerTimer.unref?.();
   }
 
@@ -222,10 +211,10 @@ export function createSessions(ctx) {
       coalesce: createCoalescer({ now: ctx.now }), attention: null, command_id: null, waiting: null, turnOpen: false, run: null, steers: [], interrupting: false, ownTurn: null, task: env.task === true, tokens: P.NO_TOKENS, subagents: new Map(), turnStartedAt: null, name: payload.name ?? null, active: 0, countedTurn: null,
       agentMode: payload.agent_mode ?? null, effort: choice.effort, extraIds: choice.extraProjectIds, extraPaths: choice.extras.map((p) => p.path) };
     live.set(s.session_id, s);
-    ctx.journal.recordSession({ session_id: s.session_id, adapter: s.adapter, project_id: s.project_id, agent_session_ref: s.agent_ref, model: s.model, mode: s.mode, at: ctx.now(), name: s.name, active_ms: 0, ...(s.agentMode ? { agent_mode: s.agentMode } : {}), ...(s.effort ? { effort: s.effort } : {}), ...(s.extraIds.length ? { extra_project_ids: s.extraIds } : {}) });
+    ctx.journal.recordSession({ session_id: s.session_id, adapter: s.adapter, project_id: s.project_id, ...refs(ctx, s), ...(payload.resume !== null ? { transcript_seen: true } : {}), model: s.model, mode: s.mode, at: ctx.now(), name: s.name, active_ms: 0, ...(s.agentMode ? { agent_mode: s.agentMode } : {}), ...(s.effort ? { effort: s.effort } : {}), ...(s.extraIds.length ? { extra_project_ids: s.extraIds } : {}) });
     ctx.emit(s.session_id, "session.created", { adapter: s.adapter, model: s.model, origin: "phone", title: null, project_label: basename(project.path).slice(0, 256) || null, name: s.name }, env.command_id);
     spawnAgent(s, payload.resume);
-    if (payload.prompt) s.queue.push({ text: payload.prompt, command_id: env.command_id, received_at: ctx.now() });
+    if (payload.prompt) s.queue.push(said(ctx, s, "start", { text: payload.prompt, command_id: env.command_id, received_at: ctx.now() }, env.sender_device_id));
     else { ctx.journal.advance(env.command_id, { kind: "agent_accepted" }, ctx.now()); ctx.emit(s.session_id, "command.agent_accepted", {}, env.command_id); attention(s, "idle"); }
     nextTurn(s);
     return null;
@@ -258,7 +247,8 @@ export function createSessions(ctx) {
     endRun(s);
     s.stopping = false;
     if (command) ctx.journal.advance(command, { kind: "cancelled" }, ctx.now());
-    ctx.emit(s.session_id, "agent.stopped", withActive(s, {}), command);
+    ctx.emit(s.session_id, "agent.stopped", withActive(ctx, s, {}), command);
+    closeTurn(ctx, s);
     taskEnded(s, "stopped");
     ctx.emit(s.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: "Stopped. What the agent changed before the stop stays in the project: review it at the computer." }, command);
     dropWaiting(ctx, s);
@@ -315,10 +305,10 @@ export function createSessions(ctx) {
       }
       const s = type === "agent.prompt" || type === "agent.steer" ? revive(env.session_id) : live.get(env.session_id);
       if (!s) return "not_found";
-      if (type === "agent.prompt" || type === "agent.steer") return words(s, type, payload, env.command_id);
+      if (type === "agent.prompt" || type === "agent.steer") { const refused = await words(s, type, payload, env.command_id); if (refused === null) said(ctx, s, type === "agent.steer" ? "steer" : "prompt", { command_id: env.command_id }, env.sender_device_id, payload.text, payload.attachments?.length ?? 0); return refused; }
       if (type === "agent.stop") { await stop(s); return "taken"; }
       if (type === "status.get") { ctx.emit(s.session_id, "status.report", statusOf(s), env.command_id); return "taken"; }
-      if (type === "session.attach") { ctx.replay(s.session_id, 0); return "taken"; }
+      if (type === "session.attach") { await ctx.replay(s.session_id, 0, env.sender_device_id); return "taken"; } // the asker only, paced (remote-catch-up.mjs)
       if (type === "session.rename") { s.name = payload.name; ctx.journal.recordSession({ session_id: s.session_id, name: s.name }); ctx.onSessionsChanged?.(); return "taken"; }
       if (type === "session.close") { await stop(s); s.closed = true; live.delete(s.session_id); ctx.journal.recordSession({ session_id: s.session_id, closed: true }); return "taken"; }
       return "unsupported";

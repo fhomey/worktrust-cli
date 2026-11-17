@@ -20,6 +20,7 @@ import { allowedModes, applySettingsChange } from "./remote-settings.mjs";
 import { adminInventory } from "./remote-admin.mjs";
 import { deskBodyFor } from "./remote-desk-sessions.mjs";
 import { createNotices, projectNameOf } from "./remote-notices.mjs";
+import { createCatchUp } from "./remote-catch-up.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
 const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
@@ -29,7 +30,7 @@ const KEEP_REMOVED = 20;
 const MAX_PENDING_PHONES = 10;
 
 export function createDaemonCore(o) {
-  // o: { local, issuerKeys, journal, now, random, send(frame), inventory(refresh), log(kind, fields), sessions?, approvals?, health?() }
+  // o: { local, issuerKeys, journal, now, random, send(frame, { replayed }), room?() (the pacer, remote-pace.mjs), inventory(refresh), log(kind, fields), sessions?, approvals?, health?(), version? (this release: device.inventory `cli`) }
   const channels = new Map(loadChannels().map((c) => [c.channel_id, c]));
   const confirmed = () => confirmedFingerprints(loadPhones());
   const self = o.local.claims.device_id;
@@ -43,11 +44,18 @@ export function createDaemonCore(o) {
    */
   const extendedPeers = new Set(), switchPeers = new Set(); // release 33: `model_switch` only for a phone that asked for it
   const deskPeers = new Set(); // release 36: `desk_sessions` (and the `in_use` refusal) only for a phone that asked for them
-  const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections", "desk_sessions"];
+  // CLI 0.11.16: `cli` (this daemon's own release, and that it is restarting; protocol cli.ts) only for a phone that asked for it.
+  const cliPeers = new Set();
+  const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections", "desk_sessions", "cli"];
   const withoutSwitch = (body) => (body.agent_options ? { ...body, agent_options: body.agent_options.map(({ model_switch: _drop, ...o }) => o) } : body);
-  const bodyFor = (channel, record) => deskBodyFor(deskPeers.has(channel.peer_device_id), record.type, record.type !== "device.inventory" ? record.body
+  const withoutCli = ({ cli: _drop, ...body }) => body;
+  const cliBodyFor = (peer, type, body) => (type === "device.inventory" && body.cli && !cliPeers.has(peer) ? withoutCli(body) : body);
+  const bodyFor = (channel, record) => deskBodyFor(deskPeers.has(channel.peer_device_id), record.type, cliBodyFor(channel.peer_device_id, record.type, record.type !== "device.inventory" ? record.body
     : extendedPeers.has(channel.peer_device_id) ? (switchPeers.has(channel.peer_device_id) ? record.body : withoutSwitch(record.body))
-    : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key))));
+    : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key)))));
+  // THE RESTART, SAID BEFORE IT HAPPENS (remote-service.mjs createHandover, remote-run.mjs stop): one ordinary inventory naming
+  // `cli.restarting` (the relay lists what may be transient, and an inventory is not). announceRestart(false) withdraws it.
+  let restarting = null;
 
   /**
    * THE SEALED NOTICE (release 38, remote-notices.mjs): a milestone of a session, sealed per channel under that phone's own
@@ -67,7 +75,7 @@ export function createDaemonCore(o) {
       const sealed = P.sealEvent(channel, draft, bodyFor(channel, record), o.random);
       if (!sealed.ok) { o.log("seal_refused", { type: record.type, code: sealed.code }); continue; }
       channels.set(id, sealed.value.channel);
-      o.send({ frame: "event", envelope: sealed.value.envelope });
+      o.send({ frame: "event", envelope: sealed.value.envelope }, { replayed });
     }
     persist();
   }
@@ -97,29 +105,13 @@ export function createDaemonCore(o) {
     sealAll(record);
   }
 
-  /** Re-seal what the journal holds for a session after `after` (session.attach): same event_seq, so the phone dedups. */
-  const replay = (sessionId, after) => { for (const record of o.journal.eventsAfter(sessionId, after)) sealAll(record, { replayed: true }); };
-
   /**
-   * THE CATCH-UP (release 37, CLI 0.11.14; PROTOCOL.md §Catch-up): session.attach with `after`, `max_events` and `max_bytes`
-   * re-seals, for the asking phone alone, the journaled events after `after`, in order, at most max_events of them and
-   * at most max_bytes of their canonical records (one always, so every page moves; both capped by the protocol's own
-   * bounds whatever was asked). A session this computer never ran or journaled is `not_found`. Reading only: it runs no
-   * agent, writes no event of its own, and is answered while the computer is paused, like status.get.
+   * THE JOURNAL AGAIN (remote-catch-up.mjs; PROTOCOL.md §Catch-up): a page after a sequence (session.attach `after`) and
+   * the older whole attach, each sealed again with its own event_seq (the phone dedups) for the ASKING phone alone, never
+   * as a milestone, in batches that wait for the pacer (`o.room`), one per phone at a time.
    */
-  function catchUp(sessionId, payload, phone) {
-    if (!sessions?.get?.(sessionId) && !o.journal.session(sessionId)) return "not_found";
-    const most = Math.min(payload.max_events, P.CATCH_UP_MAX_EVENTS), room = Math.min(payload.max_bytes, P.CATCH_UP_MAX_BYTES);
-    let sent = 0, bytes = 0;
-    for (const record of o.journal.eventsAfter(sessionId, payload.after)) {
-      const weight = P.canonicalJson(record).length;
-      if (sent >= most || (sent > 0 && bytes + weight > room)) break;
-      sealAll(record, { replayed: true, only: phone });
-      sent += 1; bytes += weight;
-    }
-    o.log("catch_up", { sent });
-    return "taken";
-  }
+  const { catchUp, replay } = createCatchUp({ journal: o.journal, known: (id) => Boolean(sessions?.get?.(id) || o.journal.session(id)), room: () => o.room?.(), log: o.log,
+    sealFor: (record, phone) => sealAll(record, { replayed: true, only: phone }) });
 
   function inventoryBody(refresh) {
     const settings = loadSettings();
@@ -141,6 +133,7 @@ export function createDaemonCore(o) {
       // Part B, also only for an `extended` phone: the admin switch, the folders this computer suggests (by its own ids),
       // and the phones and browsers linked to it (remote-admin.mjs).
       ...adminInventory({ projectSecret: o.projectSecret, settings }),
+      ...(P.CLI_RELEASE.test(o.version ?? "") ? { cli: { version: o.version, ...(restarting ? { restarting } : {}) } } : {}),
       // Every session this computer knows, live or in the journal, newest activity first, with its name and its release task.
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };
@@ -244,6 +237,7 @@ export function createDaemonCore(o) {
       if (payload.extended === true && env.sender_device_id) extendedPeers.add(env.sender_device_id);
       if (payload.extended === true && payload.model_switch === true && env.sender_device_id) switchPeers.add(env.sender_device_id); // kept, as extendedPeers
       if (payload.extended === true && payload.desk_sessions === true && env.sender_device_id) deskPeers.add(env.sender_device_id);
+      if (payload.extended === true && payload.cli === true && env.sender_device_id) cliPeers.add(env.sender_device_id);
       if (payload.device_name && env.sender_device_id) rememberName(env.sender_device_id, payload.device_name);
       emit(null, "device.inventory", inventoryBody(payload.refresh_models));
       return "taken";
@@ -336,6 +330,14 @@ export function createDaemonCore(o) {
 
   return {
     emit, replay, receiveCommand, receiveHello, inventoryBody,
+    /** `to`: the release it moves to, or null. → whether a phone was told (none reads `cli`, or nothing changed: nothing sent). */
+    announceRestart(to) {
+      const next = to === false ? null : { to: P.CLI_RELEASE.test(to ?? "") ? to : null, at: o.now() };
+      if ((next === null) === (restarting === null) && next?.to === restarting?.to) return false;
+      restarting = next;
+      if (cliPeers.size === 0 || channels.size === 0 || !P.CLI_RELEASE.test(o.version ?? "")) return false;
+      return emit(null, "device.inventory", inventoryBody(false)), true;
+    },
     /** The computer's health (remote-health.mjs): device-wide on the transient lane, to every open channel, never journaled. */
     emitHealth(body) { if (channels.size > 0) emit(null, "device.health", body, null, "none", { transient: true }); },
     /** The gateway's device.revoked: a phone this computer will no longer hear from. */

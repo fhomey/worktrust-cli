@@ -33,7 +33,7 @@ const UUIDS = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 /** Claude Code's name for a project's folder in its store: every character that is not a letter or a digit becomes "-". */
 export const encodeProjectDir = (path) => path.replace(/[^A-Za-z0-9]/g, "-");
 const real = (path) => { try { return realpathSync(path); } catch { return path; } };
-const samePath = (a, b) => typeof a === "string" && typeof b === "string" && (a === b || real(a) === real(b));
+export const samePath = (a, b) => typeof a === "string" && typeof b === "string" && (a === b || real(a) === real(b));
 
 /** The first and the last 64 KB of a file, as whole JSON lines (a line cut at a slice's edge is left out). */
 function headAndTail(file) {
@@ -172,6 +172,8 @@ export function createDesk({ projects, journal, now = Date.now, home = homedir()
   const scan = () => deskSessions({ home, projects: projects(), exclude: own(), cache });
   return {
     list: () => (platform === "win32" ? [] : scan().map(deskRow)), // Windows: no process list without a shell, so none is shown free
+    /** For the history (remote-history.mjs): the transcript of a session of this list under that project, or null. Kept on this computer. */
+    find(ref, projectId) { const d = platform === "win32" || typeof ref !== "string" ? null : scan().find((x) => x.session_ref === ref && x.project_id === projectId); return d ? { file: d.file, projectPath: d.projectPath, last_activity_at: d.last_activity_at } : null; },
     resumable(ref, projectId) {
       const found = typeof ref === "string" ? scan().find((d) => d.session_ref === ref) : null;
       if (!found || found.project_id !== projectId) return "not_found";

@@ -21,6 +21,7 @@ import { adminInventory } from "./remote-admin.mjs";
 import { deskBodyFor } from "./remote-desk-sessions.mjs";
 import { createNotices, projectNameOf } from "./remote-notices.mjs";
 import { createCatchUp } from "./remote-catch-up.mjs";
+import { createHistory } from "./remote-history.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
 const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
@@ -37,15 +38,11 @@ export function createDaemonCore(o) {
   const persist = () => saveChannels([...channels.values()]);
   let sessions = null, approvals = o.approvals ?? null, releases = null;
 
-  /**
-   * THE 0.11.7 INVENTORY FIELDS REACH ONLY A PHONE THAT ASKED FOR THEM (inventory.get `extended`): an older phone refuses
-   * unknown keys, so every other channel gets the inventory without them. Kept per phone for the daemon's life; a phone
-   * asks again on every inventory.get.
-   */
+  // THE 0.11.7 INVENTORY FIELDS REACH ONLY A PHONE THAT ASKED FOR THEM (inventory.get `extended`): an older phone refuses unknown
+  // keys, so every other channel gets the inventory without them. Kept per phone for the daemon's life; a phone asks again on every inventory.get.
   const extendedPeers = new Set(), switchPeers = new Set(); // release 33: `model_switch` only for a phone that asked for it
   const deskPeers = new Set(); // release 36: `desk_sessions` (and the `in_use` refusal) only for a phone that asked for them
-  // CLI 0.11.16: `cli` (this daemon's own release, and that it is restarting; protocol cli.ts) only for a phone that asked for it.
-  const cliPeers = new Set();
+  const cliPeers = new Set(); // CLI 0.11.16: `cli` (this daemon's own release, its restart; protocol cli.ts): only for a phone that asked
   const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections", "desk_sessions", "cli"];
   const withoutSwitch = (body) => (body.agent_options ? { ...body, agent_options: body.agent_options.map(({ model_switch: _drop, ...o }) => o) } : body);
   const withoutCli = ({ cli: _drop, ...body }) => body;
@@ -80,13 +77,10 @@ export function createDaemonCore(o) {
     persist();
   }
 
-  /**
-   * `transient` (release 19; a pushed terminal screen, remote-screen-push.mjs): the session's TRANSIENT LANE
-   * (envelopes.ts), sealed for the phones and never journaled, so a replay never brings back a stale screen and the
-   * session's own sequence has no number missing. Its numbers rise per session from this computer's clock.
-   */
+  // `transient` (release 19; a pushed terminal screen, remote-screen-push.mjs): the session's TRANSIENT LANE (envelopes.ts), sealed for the phones and never
+  // journaled, so a replay never brings back a stale screen and the session's own sequence has no number missing. Its numbers rise per session from this computer's clock.
   const laneSeq = new Map();
-  function emit(sessionId, type, body, commandId = null, notify = "none", { transient = false } = {}) {
+  function emit(sessionId, type, body, commandId = null, notify = "none", { transient = false, only = null } = {}) {
     let shaped = P.validateEventBody(type, body);
     if (!shaped.ok && type === "agent.completed" && body.result) {
       // A result over its caps keeps the reply and names the files; the diffs are said to be cut.
@@ -98,20 +92,21 @@ export function createDaemonCore(o) {
     if (transient) {
       const seq = Math.max((laneSeq.get(sessionId) ?? 0) + 1, o.now());
       laneSeq.set(sessionId, seq);
-      return sealAll({ session_id: sessionId, event_seq: seq, type, occurred_at: o.now(), command_id: null, notify: "none", lane: "transient", body });
+      return sealAll({ session_id: sessionId, event_seq: seq, type, occurred_at: o.now(), command_id: null, notify: "none", lane: "transient", body }, { replayed: only !== null, only });
     }
     const record = { session_id: sessionId, event_seq: o.journal.nextSeq(sessionId), type, occurred_at: o.now(), command_id: commandId, notify, body };
     o.journal.recordEvent(record);
     sealAll(record);
   }
 
-  /**
-   * THE JOURNAL AGAIN (remote-catch-up.mjs; PROTOCOL.md §Catch-up): a page after a sequence (session.attach `after`) and
-   * the older whole attach, each sealed again with its own event_seq (the phone dedups) for the ASKING phone alone, never
-   * as a milestone, in batches that wait for the pacer (`o.room`), one per phone at a time.
-   */
+  // THE JOURNAL AGAIN (remote-catch-up.mjs; PROTOCOL.md §Catch-up): a page after a sequence (session.attach `after`) and the older whole attach, each sealed again
+  // with its own event_seq (the phone dedups) for the ASKING phone alone, never as a milestone, in batches that wait for the pacer (`o.room`), one per phone at a time.
   const { catchUp, replay } = createCatchUp({ journal: o.journal, known: (id) => Boolean(sessions?.get?.(id) || o.journal.session(id)), room: () => o.room?.(), log: o.log,
     sealFor: (record, phone) => sealAll(record, { replayed: true, only: phone }) });
+  // A PAGE OF HISTORY (remote-history.mjs; PROTOCOL.md §History): read here, sealed for the phone that asked ALONE, on the transient lane, journaled nowhere.
+  const history = createHistory({ journal: o.journal, sessions: () => sessions, desk: o.desk, settings: loadSettings, agentEnv: o.agentEnv, now: o.now, room: () => o.room?.(), log: o.log,
+    projects: () => (o.projectSecret ? sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: o.projectSecret }) : loadProjects()),
+    sealPage: (body, phone) => { if (phone) emit(null, "history.page", body, null, "none", { transient: true, only: phone }); } }); // the guard is `only` and confirmed() in sealAll: one channel, of a phone the keyboard still confirms
 
   function inventoryBody(refresh) {
     const settings = loadSettings();
@@ -232,6 +227,7 @@ export function createDaemonCore(o) {
     const settings = loadSettings();
     if (!settings.enabled) return "remote_paused";
     if (env.type === "session.attach" && payload.after !== undefined) return catchUp(env.session_id, payload, env.sender_device_id); // reading, also while paused
+    if (env.type === "history.get") { if (settings.paused !== null) return "remote_paused"; return history.get(payload, env.sender_device_id, env.command_id); } // a paused computer reads no transcript and no journal for anyone (review 2026-11-17, F3)
     if (settings.paused !== null && !DEVICE_COMMANDS.has(env.type)) return "remote_paused";
     if (env.type === "inventory.get") {
       if (payload.extended === true && env.sender_device_id) extendedPeers.add(env.sender_device_id);

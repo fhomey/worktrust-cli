@@ -26,7 +26,7 @@ import { createCoalescer } from "./remote-coalesce.mjs";
 import { accept, announceQueue, claudeReplay, codexLanded, dropWaiting, interruptedEnd, interruptOf, modelRefusal, steerLive, steerModeOf, switchModel } from "./remote-steering.mjs";
 import { classifyAction } from "./remote-policy.mjs";
 import { activeRows, listSessions, statusReport } from "./remote-session-list.mjs";
-import { claudeHeard, claudeResume, closeTurn, openTurn, otherWay, refs, said, withActive } from "./remote-turns.mjs"; // what was said, each turn, the active time, and how Claude Code is started again
+import { claudeHeard, claudeResume, closeTurn, openTurn, otherWay, refs, said, withActive, transcriptMark } from "./remote-turns.mjs"; // what was said, each turn, the active time, and how Claude Code is started again
 
 export const DEFAULT_MAX_SESSIONS = 4;
 const LEDGER_EVERY_MS = 10 * 60_000;
@@ -54,7 +54,7 @@ export function createSessions(ctx) {
     if (s.queue[0].model !== undefined && s.queue[0].model !== s.model && switchModel(ctx, s, s.queue[0].model, { respawn: () => spawnAgent(s, s.agent_ref), resumeTurns: () => nextTurn(s) }) === "later") return;
     const item = s.queue.shift();
     s.waiting = item;
-    s.turnOpen = true;
+    s.turnOpen = true; s.turnMark = { ...(s.adapter === "claude-code" ? transcriptMark(ctx.agentEnv(), s.projectPath, s.agent_ref) : null), at: ctx.now() }; // when these words were handed over, and where the closed turns end in its transcript
     s.run.write(item.text);
     announceQueue(ctx, s); // the ones still waiting moved up
   }

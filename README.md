@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.16
+  WorkTrust CLI 0.11.17
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.16
+  WorkTrust CLI 0.11.17
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.16)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.17)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -196,6 +196,15 @@ grant an "always allow". Those are decided at this keyboard or not at all.
 here with `remote modes allow`, in the menu under Remote Agent › Modes, or when a phone links: after what it may reach,
 the CLI asks which modes a phone may start and whether your confirmed phones may add a browser (Ctrl+C or Esc changes
 neither). The computer refuses a mode above what you allowed.
+
+**Earlier messages, read only.** When you scroll up in a chat on your phone or in the browser, this computer reads the
+session's own Claude Code transcript and sends what happened before, a page at a time: what you wrote, what the agent
+answered, and its steps with a short preview of what went in and came out. It is the first Remote Agent command that
+reads a file on this computer, and it only reads: it starts nothing and writes nothing. A step is named and its content
+is not shown when it uses a connector's tool or a tool the CLI does not know, names a secret file or folder or a path
+outside the project, runs a command that prints credentials, or carries something shaped like a key; thinking and images
+are never sent. A paused computer answers no history. Sessions you started at this keyboard and never continued from a
+phone stay unread unless you say so here: `npx worktrust remote desk-history on` (off by default; `off` turns it back).
 
 **Sealed end to end.** The computer holds one outbound connection and opens no port. Messages are sealed between your
 phone and this computer; the relay passes them on and cannot read a prompt, a file, a path, an output or a model name.

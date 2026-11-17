@@ -102,6 +102,13 @@ function applyRules(change, fromApp) {
     saveSettings({ ...settings, allow_endorse: change.on });
     return { ok: true, message: change.on ? "Your confirmed phones may add a browser. Each one is listed here with the phone that added it." : "No phone may add a browser. Browsers already added stay until you remove them." };
   }
+  if (change?.what === "desk_history") {
+    // May a phone READ a session of this computer's own desk list that it never continued (remote-history.mjs)? This keyboard only.
+    if (fromApp) return refused("reading this computer's own sessions changes at this keyboard only");
+    if (typeof change.on !== "boolean") return refused("on or off");
+    saveSettings({ ...settings, desk_history: change.on });
+    return { ok: true, message: change.on ? "Your paired phones and browsers may read the sessions you ran at this computer, in the folders you granted. Nothing is stored on a server." : "Sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
+  }
   if (change?.what === "admin") {
     if (fromApp) return refused("the admin switch changes at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
@@ -160,6 +167,12 @@ export function modesCommand(io, rest) {
   const WORDS = { manual: "Manual (asks for every change)", edit: "Edit automatically (edits inside the project without asking)", plan: "Plan (read-only)", auto: "Auto (the agent's own automatic mode)" };
   io.say("  Agent modes a phone may start on this computer:");
   for (const m of ORDER) io.say(`    ${allowed.includes(m) ? "✓" : "·"} ${WORDS[m]}${allowed.includes(m) || m === "manual" || m === "plan" ? "" : `   allow: npx worktrust remote modes allow ${m}`}`);
+}
+
+/** `remote desk-history on|off | status`: whether a paired phone or browser may read this computer's own sessions (CHAT-HISTORY.md §7.2). */
+export function deskHistoryCommand(io, rest) {
+  if (rest[0] === "on" || rest[0] === "off") return io.say(`  ✓ ${applySettingsChange({ what: "desk_history", on: rest[0] === "on" }, { kind: "keyboard" }).message}`);
+  io.say(`  Reading this computer's own sessions from a phone or a browser: ${loadSettings().desk_history === true ? "on" : "off"} (npx worktrust remote desk-history on|off)`);
 }
 
 /** `remote admin on|off | status`: whether a change approved in the app or on the web (with the authenticator) is honoured here. */

@@ -35,7 +35,7 @@ import { SETTING_WORDS } from "./remote-admin.mjs";
 import { appendPipelineMark } from "./remote-steered.mjs";
 import { createDaemonCore } from "./remote-daemon.mjs";
 import { createDesk } from "./remote-desk-sessions.mjs";
-import { connectGateway, webSocketAvailable } from "./remote-transport.mjs";
+import { connectGateway, gatewayLine, keepGatewayState, keptGatewayState, webSocketAvailable } from "./remote-transport.mjs";
 import { createHealthMonitor, fixtureReaders, HEALTH_REFUSAL, healthLine, keepHealth } from "./remote-health.mjs";
 import { createHandover, daemonBusy, holdDuring, ownLauncher, restartAsked } from "./remote-service.mjs";
 
@@ -142,7 +142,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // Continue a session on this computer (release 36): its own Claude Code sessions in the projects a phone may reach.
   const desk = createDesk({ projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), journal });
   let health = null; // the sampler below (remote-health.mjs): every 15 s, local numbers, no model
-  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
+  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, agentEnv: () => agentEnv(loadSettings()), now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
@@ -204,7 +204,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   const { requestAssertion } = await import("./remote-pairing.mjs");
   const authorize = () => (identity.origin ? requestAssertion({ origin: identity.origin, deviceId: identity.device_id, secret: keys.secret }) : Promise.resolve(null));
   transport = connectGateway({ url: gateway, identity, signingSecret: keys.secret.ed25519, log, authorize, onFrame: (f) => { dispatchFrame(f).catch((e) => log("frame_failed", { name: e?.name ?? "Error" })); },
-    onState: (state, info) => { log("gateway", { state, ...info }); if (state === "ready") registerCode(true); } });
+    onState: (state, info) => { log("gateway", { state, ...info }); keepGatewayState(state, info); if (state === "held" || state === "stopped") process.stderr.write(`${gatewayLine(keptGatewayState())}\n`); if (state === "ready") registerCode(true); } });
   say(`  WorkTrust remote is running for ${identity.device_id} (gateway ${new URL(gateway).host}). Ctrl+C stops it.`);
   let stopping = false;
   // `signal`: the service manager ends it. When an update asked for that (restartAsked: restart.json, or a newer installed

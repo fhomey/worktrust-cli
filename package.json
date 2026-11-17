@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.11.16",
+  "version": "0.11.17",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -90,6 +90,10 @@
     "remote-daemon.mjs",
     "remote-notices.mjs",
     "remote-pace.mjs",
+    "remote-history.mjs",
+    "remote-history-file.mjs",
+    "remote-history-claude.mjs",
+    "remote-history-journal.mjs",
     "remote-catch-up.mjs",
     "remote-turns.mjs",
     "remote-transport.mjs",

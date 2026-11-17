@@ -75,6 +75,16 @@ export function transcriptExists(env, projectPath, ref, home = homedir()) {
   try { return lstatSync(join(env?.CLAUDE_CONFIG_DIR || join(env?.HOME || home, ".claude"), "projects", encodeProjectDir(projectPath), `${ref}.jsonl`)).isFile(); } catch { return false; }
 }
 
+/**
+ * WHERE THE TRANSCRIPT STOOD WHEN A TURN'S WORDS WERE HANDED TO THE AGENT (CLI 0.11.17, remote-history.mjs): the agent
+ * session and its file's size at that moment, so the history knows exactly where what is closed ends, however long the
+ * running turn becomes. Size 0 where no transcript exists yet; null where the agent session is not known. Nothing is read.
+ */
+export function transcriptMark(env, projectPath, ref, home = homedir()) {
+  if (typeof ref !== "string" || !ref) return null;
+  try { const st = lstatSync(join(env?.CLAUDE_CONFIG_DIR || join(env?.HOME || home, ".claude"), "projects", encodeProjectDir(projectPath), `${ref}.jsonl`)); return st.isFile() ? { ref, size: st.size } : null; } catch { return { ref, size: 0 }; }
+}
+
 /** Claude Code answering a resume of a session it never wrote (measured, see the head of this file). */
 export const noConversation = (line) => line?.type === "result" && line.is_error === true && Array.isArray(line.errors) && line.errors.some((e) => typeof e === "string" && e.startsWith("No conversation found with session ID"));
 

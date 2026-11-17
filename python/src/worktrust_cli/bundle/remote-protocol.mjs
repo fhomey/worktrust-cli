@@ -464,6 +464,7 @@ export const ID_PREFIXES = {
   usr: "an account, as the remote system knows it (never the Passport owner id)",
   jti: "a token's single-use id",
   nky: "a phone's notice key for one computer (notice.ts): which key opens a sealed notice, nothing more",
+  hit: "an item of a session's history (history.ts): derived from its source, the same on every read and device, only ever inside a sealed body",
 }         ;
 
 const ID_BYTES = 16;
@@ -2048,6 +2049,170 @@ export function deskRule(desk                                    , projects     
   return null;
 }
 
+// ---- packages/remote-protocol/src/history.ts
+/**
+ * THE HISTORY OF A SESSION, ASKED PAGE BY PAGE (docs/remote-agents/CHAT-HISTORY.md §3; owner, 2026-11-16: "scroll up and
+ * see what happened before, with the steps in between"). The computer is the truth: its journal and, for Claude Code, the
+ * agent's own transcript. A phone or a browser asks `history.get` and the computer answers with ONE sealed `history.page`,
+ * for the asker alone, on the TRANSIENT LANE (envelopes.ts): beside the ordered streams, never in one, kept by nobody.
+ *
+ *   history.get   a device command (the relay never learns which session): the remote session (`session_id`) or a session
+ *                 of the computer's own desk list (`session_ref` under `project_id`), a cursor (`before`; null: the newest
+ *                 page), a byte budget, and optionally `known` (the head mark the asker holds: unchanged answers
+ *                 `not_modified` without items), `item` (one step's full detail) or `parent` (a subagent's own items;
+ *                 for both, `before` is the cursor the item's page was asked with: where the computer looks from).
+ *   history.page  the answer, naming its ask in the body (`request`: a transient event carries no command id). Items oldest
+ *                 first; `next_before` the cursor of the page before this one; `older` says what lies there (more, the
+ *                 start, or trimmed: no longer on this computer); `head` marks the newest closed item; `open_turn` names
+ *                 the running turn, which is never in a page (its events are the live stream's).
+ *
+ * READING ONLY: no field here starts, revives or resumes an agent, and none names a path; the computer resolves the file
+ * from its own records. Thinking is never sent (a `thinking` item is a marker with a duration at most). A step carries
+ * PREVIEWS, cut; the whole input and output only for one item asked by id (`detail`), cut again at their own cap.
+ *
+ * Everything is asked for (inventory.get `history`, a probe of its own) and protocol_version stays 1: an older computer
+ * drops the unknown command (`unknown_type`), an older phone is never sent a page.
+ */
+
+export const HISTORY_PAGE_MIN_BYTES = 4_096, HISTORY_PAGE_DEFAULT_BYTES = 98_304, HISTORY_PAGE_MAX_BYTES = 196_608;
+export const HISTORY_MAX_ITEMS = 120, HISTORY_MAX_CURSOR = 160, HISTORY_MAX_HEAD = 64;
+export const HISTORY_MAX_TEXT = 16_384, HISTORY_MAX_PREVIEW = 2_000, HISTORY_MAX_DETAIL = 131_072, HISTORY_MAX_LABEL = 500;
+
+export const HISTORY_ITEM_KINDS = ["user", "text", "thinking", "step", "subagent", "answer", "end", "notice"]         ;
+
+/** The same kinds a live step reports (events.ts STEP_KINDS; rule I holds the two lists equal). */
+export const HISTORY_STEP_KINDS = ["read", "edit", "command", "test", "search", "think", "tool", "other"]         ;
+/** `unknown`: the page could not see how the step ended (its result lies past the read's bounds). Never drawn as ok. */
+export const HISTORY_STEP_STATES = ["ok", "failed", "interrupted", "unknown"]         ;
+export const HISTORY_SENDERS = ["this_device", "other_device", "computer"]         ;
+export const HISTORY_WITHHELD = ["secret_path", "too_large", "binary"]         ;
+export const HISTORY_ENDS = ["completed", "failed", "stopped", "interrupted"]         ;
+export const HISTORY_END_REASONS = ["agent_exited", "adapter_error", "not_ready", "timeout", "internal"]         ;
+export const HISTORY_NOTICES = ["compacted", "model_changed", "approved", "denied", "continued_from_desk"]         ;
+export const HISTORY_STATUSES = ["ok", "not_modified", "stale"]         ;
+export const HISTORY_SOURCES = ["transcript", "journal"]         ;
+export const HISTORY_OLDER = ["more", "start", "trimmed"]         ;
+
+const CLAUDE_REF = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** One item of a session's history. Flat, every field but the first three optional: historyItemRule says which a kind carries. */
+export const HISTORY_ITEM_SPEC = object({
+  id: id("hit"),
+  kind: oneOf(HISTORY_ITEM_KINDS),
+  /** The computer's clock, or null where the source recorded none. */
+  at: nullable(int(0)),
+  /** user, text, answer: the words, cut at HISTORY_MAX_TEXT (`cut` says so). */
+  text: optional(text(HISTORY_MAX_TEXT)), cut: optional(bool()),
+  /** user: who sent it (the asker, another paired device, or typed at the computer), its command and how many files it carried. */
+  from: optional(oneOf(HISTORY_SENDERS)), command_id: optional(id("cmd")), attachments: optional(int(0, 99)),
+  /** step, subagent: the label a live step would carry, how it ended and its measured time. */
+  label: optional(text(HISTORY_MAX_LABEL, 1)), step: optional(oneOf(HISTORY_STEP_KINDS)), state: optional(oneOf(HISTORY_STEP_STATES)), duration_ms: optional(int(0)),
+  /** step: previews of what went in and came out, `more` when either was cut, `withheld` when nothing of it is sent. */
+  input: optional(text(HISTORY_MAX_PREVIEW)), output: optional(text(HISTORY_MAX_PREVIEW)), more: optional(bool()), withheld: optional(oneOf(HISTORY_WITHHELD)),
+  /** step: the subagent item it ran under (only in a `parent` page). subagent: its type and how many steps it took. */
+  subagent: optional(id("hit")), agent_type: optional(text(64, 1)), steps: optional(int(0, 100_000)),
+  /** thinking: how long, when recorded. Never the thinking. */
+  thinking_ms: optional(int(0)),
+  /** answer, notice model_changed: the model the agent named. */
+  model: optional(text(128, 1)),
+  /** end: how the turn ended, and why it failed. */
+  outcome: optional(oneOf(HISTORY_ENDS)), reason: optional(oneOf(HISTORY_END_REASONS)),
+  notice: optional(oneOf(HISTORY_NOTICES)),
+});
+
+/** Per kind: the fields it must carry, and those it may. Anything else on an item is refused (a thinking item has no text). */
+export const HISTORY_ITEM_FIELDS                                                                                                           = {
+  user: { must: ["text", "from"], may: ["cut", "command_id", "attachments"] },
+  text: { must: ["text"], may: ["cut"] },
+  thinking: { must: [], may: ["thinking_ms"] },
+  step: { must: ["label", "step", "state"], may: ["duration_ms", "input", "output", "more", "withheld", "subagent"] },
+  subagent: { must: ["label", "state"], may: ["agent_type", "steps", "duration_ms"] },
+  answer: { must: ["text"], may: ["cut", "model", "duration_ms"] },
+  end: { must: ["outcome"], may: ["reason"] },
+  notice: { must: ["notice"], may: ["model"] },
+};
+const ALWAYS = new Set(["id", "kind", "at"]);
+
+/** The rules between an item's fields. → null, or what is wrong. */
+export function historyItemRule(item             )                {
+  const fields = HISTORY_ITEM_FIELDS[item.kind];
+  const allowed = new Set([...fields.must, ...fields.may]);
+  for (const key of Object.keys(item)) if (!ALWAYS.has(key) && !allowed.has(key)) return `a ${item.kind} item carries no ${key}`;
+  for (const key of fields.must) if (!(key in item)) return `a ${item.kind} item carries its ${key}`;
+  if (item.withheld !== undefined && (item.input !== undefined || item.output !== undefined)) return "a withheld step carries no preview";
+  if (item.reason !== undefined && item.outcome !== "failed") return "a reason only on a failed end";
+  if (item.kind === "notice" && item.model !== undefined && item.notice !== "model_changed") return "a model only on model_changed";
+  return null;
+}
+
+export const HISTORY_COMMAND_SPECS = {
+  "history.get": object({
+    session_id: optional(id("ses")),
+    session_ref: optional(text(36, 36)), project_id: optional(id("prj")),
+    before: nullable(token(HISTORY_MAX_CURSOR)),
+    max_bytes: int(HISTORY_PAGE_MIN_BYTES, HISTORY_PAGE_MAX_BYTES),
+    known: optional(token(HISTORY_MAX_HEAD)),
+    item: optional(id("hit")),
+    parent: optional(id("hit")),
+  }),
+}         ;
+
+/** The rules between an ask's fields. → null, or what is wrong. */
+export function historyGetRule(get            )                {
+  const remote = get.session_id !== undefined, desk = get.session_ref !== undefined || get.project_id !== undefined;
+  if (remote === desk) return "session_id, or session_ref with project_id, exactly one";
+  if (desk && (get.session_ref === undefined || get.project_id === undefined || !CLAUDE_REF.test(get.session_ref))) return "session_ref: Claude Code's own uuid, under its project_id";
+  if (get.item !== undefined && get.parent !== undefined) return "item or parent, never both";
+  if (get.known !== undefined && (get.before !== null || get.parent !== undefined || get.item !== undefined)) return "known: only for the newest page";
+  return null;
+}
+
+export const HISTORY_EVENT_SPECS = {
+  "history.page": object({
+    /** The history.get this answers (a transient event names no command on the outside). */
+    request: id("cmd"),
+    session_id: optional(id("ses")), session_ref: optional(text(36, 36)), project_id: optional(id("prj")),
+    status: oneOf(HISTORY_STATUSES),
+    source: oneOf(HISTORY_SOURCES),
+    items: list(HISTORY_ITEM_SPEC, HISTORY_MAX_ITEMS),
+    next_before: nullable(token(HISTORY_MAX_CURSOR)),
+    older: oneOf(HISTORY_OLDER),
+    head: token(HISTORY_MAX_HEAD),
+    /** The session stream's last event_seq when the page was read (0 for a desk session). */
+    live_seq: int(0),
+    open_turn: nullable(object({ from_seq: int(1), started_at: int(0), command_id: nullable(id("cmd")) })),
+    item: optional(id("hit")), parent: optional(id("hit")),
+    detail: optional(object({ input: nullable(text(HISTORY_MAX_DETAIL)), output: nullable(text(HISTORY_MAX_DETAIL)), input_cut: bool(), output_cut: bool() })),
+  }),
+}         ;
+
+/** The rules between a page's fields, after the schema (events.ts validateEventBody). → null, or what is wrong. */
+export function historyPageRule(page             )                {
+  const remote = page.session_id !== undefined, desk = page.session_ref !== undefined || page.project_id !== undefined;
+  if (remote === desk) return "session_id, or session_ref with project_id, exactly one";
+  if (desk && (page.session_ref === undefined || page.project_id === undefined || !CLAUDE_REF.test(page.session_ref))) return "session_ref: Claude Code's own uuid, under its project_id";
+  for (const item of page.items) { const bad = historyItemRule(item); if (bad) return `items: ${bad}`; }
+  if (new Set(page.items.map((i) => i.id)).size !== page.items.length) return "items: an id twice";
+  if (page.status === "not_modified" && (page.items.length > 0 || page.detail !== undefined)) return "not_modified carries no items";
+  if (page.older !== "more" && page.next_before !== null) return "next_before: only where more lies before";
+  if (page.older === "more" && page.next_before === null && page.status !== "not_modified" && page.parent === undefined) return "next_before: the cursor of what lies before";
+  if ((page.detail !== undefined) !== (page.item !== undefined)) return "detail: exactly for an item asked by id";
+  if (page.item !== undefined && (page.items.length > 1 || (page.items.length === 1 && page.items[0] .id !== page.item))) return "item: that item alone";
+  if (page.parent !== undefined && page.items.some((i) => i.kind === "step" && i.subagent !== page.parent)) return "parent: a subagent's page holds its own steps";
+  if (page.parent === undefined && page.items.some((i) => i.subagent !== undefined)) return "items: a subagent's steps only in its own page";
+  return null;
+}
+
+/**
+ * AN ITEM'S ID IS DERIVED, NEVER MINTED: the first 16 bytes of SHA-256 over the domain, the agent session (or the remote
+ * session for a journal item), the source's own key (a transcript line's uuid, a tool_use id, a command or step id) and the
+ * block's index. The same item has the same id on every read, every page size and every device, so a page folds
+ * idempotently and a row keeps its place.
+ */
+export function historyItemId(scope        , key        , index = 0)         {
+  return `hit_${toBase64Url(sha256(utf8Encode(`worktrust-history/v1\n${scope}\n${key}\n${index}`)).subarray(0, 16))}`;
+}
+
 // ---- packages/remote-protocol/src/cli.ts
 /**
  * WHICH CLI THE COMPUTER'S SERVICE RUNS, AND THAT IT IS RESTARTING (CLI 0.11.16, owner 2026-11-16: the iMac's service ran
@@ -2704,8 +2869,8 @@ export const ADMIN_INVENTORY_FIELDS = {
 /**
  * THE COMMANDS A PHONE MAY SEND, AND NOTHING ELSE. A fixed list, each with a sealed payload schema. A computer refuses
  * a type it does not know (command.rejected, `unknown_type`), so a type can be added behind a version bump without
- * an older computer guessing at it. There is no command that runs a shell line, reads a file, or switches an agent's
- * approvals off, and none that sends raw keystrokes: the phone steers an agent; it does not operate the computer.
+ * an older computer guessing at it. There is no command that runs a shell line, reads a file a phone names (history.get
+ * reads a session's own history, resolved by the computer), or switches an agent's approvals off, and none that sends raw keystrokes.
  *
  * SCOPE. A session command names an agent session (`session_id`); a device command names none (`session_id: null`)
  * and acts on the computer as a whole: its inventory, its settings.
@@ -2721,9 +2886,7 @@ export const MAX_PROMPT_CHARS = 65_536;
  * exactly that one empty folder inside a root the person added at the keyboard, and nothing else.
  */
 export const PROJECT_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/;
-export const projectNameOk = (name         )          => typeof name === "string" && PROJECT_NAME.test(name);
-export const MAX_SESSION_NAME = 100;
-export const MAX_DEVICE_NAME = 64; // a phone's or a browser's own name, as it tells a computer (inventory.get `device_name`)
+export const projectNameOk = (name         )          => typeof name === "string" && PROJECT_NAME.test(name); export const MAX_SESSION_NAME = 100; export const MAX_DEVICE_NAME = 64; // a phone's or a browser's own name, as it tells a computer (inventory.get `device_name`)
 /** One catch-up page (session.attach `after`, release 37): at most this many events, and this many characters of them. */
 export const CATCH_UP_MAX_EVENTS = 200, CATCH_UP_MAX_BYTES = 1_048_576;
 
@@ -2850,7 +3013,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
      * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
      */
-    catch_up: optional(bool()), cli: optional(bool()), // CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
+    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), // `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -2870,8 +3033,8 @@ export const COMMAND_PAYLOAD_SPECS = {
    * confirmed list and its channels, as `worktrust remote phones remove` does at the keyboard. Sent sealed and signed
    * just before the phone's `unpair` frame, whose relay event (device.revoked) reaches a computer that was offline. */
   "pairing.revoke": object({}),
-  /** The notice key (release 38, notice.ts): a phone's key for the sealed notices of this computer's sessions. */
-  ...NOTICE_COMMAND_SPECS,
+  /** The notice key (release 38, notice.ts): a phone's key for the sealed notices of this computer's sessions. `history.get` (history.ts): one page of a session's history. */
+  ...NOTICE_COMMAND_SPECS, ...HISTORY_COMMAND_SPECS,
   /** Files from the phone and a local preview back (transfer.ts, 2026-11-07). */
   ...TRANSFER_COMMAND_SPECS,
   /** The live preview (release 19, live-preview.ts): session commands. */
@@ -2931,7 +3094,7 @@ export const COMMAND_PAYLOAD_SPECS = {
 export const COMMAND_TYPES = Object.keys(COMMAND_PAYLOAD_SPECS)                          ;
 
 export const RELEASE_COMMANDS                           = new Set             (["release.create", "release.add_task", "release.reorder", "release.cancel_task", "release.start", "release.list", "pipeline.start", "pipeline.cancel"]);
-export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "notice.key", "project.create", "browser.endorse", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
+export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "notice.key", "history.get", "project.create", "browser.endorse", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
 export const commandScope = (type             )                       => (DEVICE_COMMANDS.has(type) ? "device" : "session");
 
 /** Commands whose acceptance starts a run with steps, approvals and an end (state-machine.ts follows those through
@@ -2970,7 +3133,7 @@ export const COMMAND_TTL_MS                                        = {
   "inventory.get": 5 * MINUTE,
   "device.configure": 10 * MINUTE,
   "pairing.revoke": 24 * 60 * MINUTE,
-  "notice.key": 10 * MINUTE,
+  "notice.key": 10 * MINUTE, "history.get": 2 * MINUTE,
   "release.create": 60 * MINUTE,
   "release.add_task": 60 * MINUTE,
   "release.reorder": 5 * MINUTE,
@@ -3013,13 +3176,14 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended");
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended");
   }
   if (type === "session.attach") {
     const a = payload                                    ;
     const given = [a.after, a.max_events, a.max_bytes].filter((v) => v !== undefined).length;
     if (given !== 0 && given !== 3) return refuse("payload", "$payload: after, max_events and max_bytes together, or none");
   }
+  if (type === "history.get") { const bad = historyGetRule(payload              ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.live_start") { const bad = liveStartRule(payload             ); if (bad) return refuse("payload", `$payload: ${bad}`); }
@@ -3326,12 +3490,13 @@ export const EVENT_BODY_SPECS = {
   ...LIVE_EVENT_SPECS,
   /** The computer's health (health.ts), every 15 s on the transient lane, device-wide: passed on, kept by nobody. */
   "device.health": HEALTH_BODY_SPEC,
+  ...HISTORY_EVENT_SPECS, // `history.page` (history.ts): one page of a session's history, transient, for the asker alone
 }                                                  ;
 
 export const DEVICE_EVENT_TYPES = Object.keys(EVENT_BODY_SPECS)                              ;
 
 /** The one device event about the computer as a whole; every other names a session. */
-export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active", "device.health"]);
+export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active", "device.health", "history.page"]);
 /** Events that answer one command, so their envelope names it (command_id is required). */
 export const COMMAND_RECEIPT_EVENTS                               = new Set                 (["command.device_received", "command.agent_accepted", "command.rejected", "command.queued"]);
 
@@ -3385,10 +3550,8 @@ export function validateEventBody                           (type   , value     
     const bad = agentsActiveRule(checked.value                );
     if (bad) return refuse("payload", `$body: ${bad}`);
   }
-  if (type === "device.health") {
-    const bad = healthRule(checked.value              );
-    if (bad) return refuse("payload", `$body: ${bad}`);
-  }
+  if (type === "device.health") { const bad = healthRule(checked.value              ); if (bad) return refuse("payload", `$body: ${bad}`); }
+  if (type === "history.page") { const bad = historyPageRule(checked.value               ); if (bad) return refuse("payload", `$body: ${bad}`); }
   if (type === "agent.attention") {
     const a = validateAttention(value, "$body");
     if (!a.ok) return refuse("payload", a.detail);
@@ -3487,12 +3650,13 @@ export const COMMAND_ENVELOPE_SPEC = object({
  * So the stream stays gap-free for every phone, whoever followed. Only the types below may take the lane.
  */
 export const EVENT_LANES = ["transient"]         ;
-export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame", "device.health"]);
+export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame", "device.health", "history.page"]);
 /**
  * Types that may ONLY travel on the transient lane (a live preview's frames: never journaled, never replayed), and the
  * computer's health (health.ts, 2026-11-15): device-wide, so its lane is the device stream's, with its own rising number.
+ * A page of a session's history (history.ts) is device-wide too, so the relay never learns which session was read.
  */
-export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame", "device.health"]);
+export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame", "device.health", "history.page"]);
 export const isTransientEvent = (e                            )          => e.lane === "transient";
 
 export const EVENT_ENVELOPE_SPEC = object({
@@ -3642,7 +3806,7 @@ export function validateEventEnvelope(value         )                         {
   // A session's screen or frame names its session; the computer's health names none (DEVICE_SCOPED_EVENTS, checked above).
   if (isTransientEvent(e) && (!TRANSIENT_EVENT_TYPES.has(type) || e.command_id !== null || (e.session_id === null) !== DEVICE_SCOPED_EVENTS.has(type) || e.notify !== "none"))
     return refuse("shape", "$event.lane: only a pushed screen or frame of a session, or the computer's health, without a command or a push hint, is transient");
-  if (TRANSIENT_ONLY_TYPES.has(type) && !isTransientEvent(e)) return refuse("shape", "$event.lane: a live preview's frame and the computer's health travel on the transient lane only");
+  if (TRANSIENT_ONLY_TYPES.has(type) && !isTransientEvent(e)) return refuse("shape", "$event.lane: a live preview's frame, the computer's health and a page of history travel on the transient lane only");
   if (e.notice !== undefined && (e.session_id === null || isTransientEvent(e) || e.notice.seq !== e.event_seq))
     return refuse("shape", "$event.notice: only on a session's ordered stream, numbered as its event");
   return checked;
@@ -4896,7 +5060,11 @@ export const GATEWAY_ERRORS = [
 ]         ;
 export const CLOSING_REASONS = ["shutdown", "revoked", "reauth", "replaced", "rate_limited", "unavailable"]         ;
 
-/** WebSocket close codes. REVOKED and PROTOCOL stop a device's reconnects: the person acts at the keyboard. */
+/**
+ * WebSocket close codes. REVOKED stops a device's reconnects: the person acts at the keyboard. PROTOCOL holds them
+ * (CLI 0.11.17): the device tries again after five minutes, then hourly, and says so, because a failure inside the gateway
+ * closed with this code too (until release 41's gateway, which says 1012) and a daemon that stopped for good on it stayed away in silence (2026-11-16).
+ */
 export const GATEWAY_CLOSE = {
   NORMAL: 1000,
   GOING_AWAY: 1001,
@@ -4909,7 +5077,8 @@ export const GATEWAY_CLOSE = {
   TOO_LARGE: 4009,
   RATE_LIMITED: 4029,
 }         ;
-export const GATEWAY_STOP_CODES                      = new Set([GATEWAY_CLOSE.REVOKED, GATEWAY_CLOSE.PROTOCOL]);
+export const GATEWAY_STOP_CODES                      = new Set([GATEWAY_CLOSE.REVOKED]);
+export const GATEWAY_HOLD_CODES                      = new Set([GATEWAY_CLOSE.PROTOCOL]);
 
 const gwWord =                         (w   ) => oneOf([w]         );
 const gwDev = id("dev");

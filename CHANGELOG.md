@@ -2,6 +2,37 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.17: earlier messages of a session, read on this computer for your own devices; a connection the relay closed comes back
+
+**A phone or browser can ask for what happened before.** Scroll up in a chat and this computer sends the session's
+earlier turns, a page at a time: your words, the agent's answers, and its steps with a short preview of what went in
+and what came out (the whole of one step only when you ask for it). For a Claude Code session it reads that session's
+own transcript; for Codex, OpenCode, or a transcript that is gone, it answers from the Remote Agent journal. **This is the
+first Remote Agent command that reads a file on this computer.** It only reads: it starts, resumes and writes nothing,
+and a page goes sealed to the one device that asked. The relay carries a box it cannot open. It needs WorkTrust's relay
+and your phone app to be on the release that carries it; until then nothing changes.
+
+**What is never shown.** A step keeps its name and its outcome, and its input and output are withheld, when it uses a
+connector's tool or a tool this CLI does not know, when it names a secret file or folder (keys, `.env`, credentials,
+the folders where command line tools keep their tokens) or a path outside the project, when its command prints
+credentials or reads the environment, or when what went in or came out is shaped like a key. Anything the CLI cannot
+judge is withheld. The agent's thinking and images are never sent. Your phone then says "Not shown: this step may hold
+private data."
+
+**Sessions you started at this keyboard stay unread by default.** A session you never continued from a phone is not read
+for one unless you say so here: `npx worktrust remote desk-history on`. It is off by default, `off` turns it back, and
+without a word it says which it is.
+
+**A paused computer answers no history.** While Remote Agent is paused (here or from a phone) or off, every ask for
+earlier messages is refused, like every command.
+
+**A connection the relay closed is no longer lost in silence.** When the relay closed the connection with its code for
+a protocol fault (4003), the service stopped reconnecting for good, stayed running and said so only in its log; your
+phone showed the computer as not connected until someone restarted it. It now tries again after five minutes and then
+every hour, logs each try, and `npx worktrust remote status` says so plainly: "Connection: stopped by the gateway since
+…" with the time of the next try. A computer whose link was revoked (4001) still stops, and the status now says that
+and what to do.
+
 ## 0.11.16: the Remote Agent service names its version and says its restart, and a phone back in the app is caught up calmly
 
 **The Remote Agent service says which version it runs.** A phone or browser you linked can ask this computer which CLI its

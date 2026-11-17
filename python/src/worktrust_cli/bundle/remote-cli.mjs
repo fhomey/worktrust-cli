@@ -25,7 +25,7 @@
  *                                                     (project.create); --git-init runs `git init` in it
  *   remote modes allow|deny edit|auto | status        the ceiling of agent modes a phone may start (0.11.7; default manual
  *                                                     and plan), remote-settings.mjs
- *   remote admin on|off                               RESERVED: managing this computer from the app or the web (part B)
+ *   remote admin on|off · desk-history on|off         managing this computer from the app or the web (part B) · may a phone READ this computer's own sessions (default off)
  *   remote preview allow|deny <port|file> <folder> | list   what a phone may preview: a dev-server port on 127.0.0.1 or a
  *                                                     built HTML file, per granted folder (rendered with your Chrome)
  *   remote codex on | off                             offer Codex to a phone (off by default): Codex runs the reads it
@@ -48,7 +48,7 @@ import { startCountdown, waitKey } from "./remote-countdown.mjs";
 import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSummary, linkPhone, reachStep, removePhones, withName } from "./remote-connections.mjs";
 import { handoverCommand, installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { terminalQr } from "./remote-qr.mjs";
-import { webSocketAvailable } from "./remote-transport.mjs";
+import { gatewayLine, keptGatewayState, webSocketAvailable } from "./remote-transport.mjs";
 import { healthLine, keptHealth } from "./remote-health.mjs";
 import { guideToNode, remoteStopsHere } from "./node-guide.mjs";
 import { inventory } from "./remote-inventory.mjs";
@@ -58,7 +58,7 @@ import { openJournal } from "./remote-journal.mjs";
 import { loadPreviewGrants, savePreviewGrants } from "./remote-store.mjs";
 import { loadDeskMarks, loadPipelineReviews, loadRoots, remotePath, saveDeskMarks, savePipelineReviews } from "./remote-store.mjs";
 import { rootLabel } from "./remote-projects.mjs";
-import { adminCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
+import { adminCommand, deskHistoryCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
 
 const fingerprintOf = (keys) => P.deviceFingerprint(keys.public);
 /** A question only a person at this keyboard answers: a terminal, a typed "yes"; --yes and Enter are No. */
@@ -283,10 +283,10 @@ function status(io) {
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
     gateway: gatewayOf(settings), gateway_default: settings.gateway === null || settings.gateway === undefined, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false,
-    agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false), health: keptHealth() };
+    agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false), health: keptHealth(), connection: keptGatewayState() };
   if (io.has("json")) { io.say(JSON.stringify(summary, null, 2)); return; }
   io.say(`  Remote: ${settings.enabled ? (settings.paused ? `paused (${settings.paused === "desk" ? "here" : "from a phone"})` : "on") : "off"}`);
-  io.say(healthLine(summary.health)); // the remote service's newest sample, a minute old at most (remote-health.mjs)
+  io.say(healthLine(summary.health)); if (summary.connection) io.say(gatewayLine(summary.connection)); // the newest sample, a minute old at most (remote-health.mjs); 0.11.17: stopped by the gateway, since when, the next try
   io.say(`  Paired: ${identity ? `${identity.device_id} · key ${summary.fingerprint}` : "no"}`);
   io.say(`  Gateway: ${summary.gateway === PRODUCTION_GATEWAY ? `${new URL(PRODUCTION_GATEWAY).host} (WorkTrust's)` : `${summary.gateway}${isLoopbackGateway(summary.gateway) ? " (this computer: dev relay)" : " (chosen here)"}`}`);
   io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);
@@ -318,7 +318,7 @@ export async function remoteCommand(args, io) {
   if (sub === "run") return (await import("./remote-run.mjs")).runDaemon({ say: io.say, version: io.version ?? null });
   if (sub === "pipeline") return pipeline(io, rest);
   if (sub === "roots") return roots(io, rest);
-  if (sub === "modes") return modesCommand(io, rest); if (sub === "admin") return adminCommand(io, rest);
+  if (sub === "modes") return modesCommand(io, rest); if (sub === "admin") return adminCommand(io, rest); if (sub === "desk-history") return deskHistoryCommand(io, rest);
   if (sub === "folder-check") return folderCheck(); // internal: the one-shot launchd job of askMacFolderAccess
   if (sub === "handover") return handoverCommand(io); // internal (0.11.15): the one-shot job a daemon hands over through, run by the NEW launcher
   if (sub === "preview") {
@@ -346,5 +346,5 @@ export async function remoteCommand(args, io) {
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
   if (sub !== "help") { io.say(sub === "enable" ? "  Unknown command: remote enable. Use `npx worktrust remote app` (approve with your phone) or `npx worktrust remote web` (approve in the browser)." : `  Unknown command: remote ${sub}. The remote commands are below.`); process.exitCode = 1; }
-  io.say("  npx worktrust remote app | web | pair | access | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | modes allow|deny edit|auto|status | admin on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote app | web | pair | access | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | modes allow|deny edit|auto|status | admin on|off | desk-history on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

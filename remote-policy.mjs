@@ -26,12 +26,12 @@ function realpathOr(path) { try { return realpathSync(path); } catch { return re
 export const isInside = (root, path) => { const rel = relative(root, path); return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)); };
 
 /** Folders that hold secrets or another program's private state, relative to the home folder. */
-const SECRET_DIRS = [".ssh", ".gnupg", ".aws", ".azure", ".config/gcloud", ".kube", ".docker", ".password-store", ".worktrust",
+export const SECRET_DIRS = [".ssh", ".gnupg", ".aws", ".azure", ".config/gcloud", ".kube", ".docker", ".password-store", ".worktrust",
   "Library/Keychains", "Library/Application Support/Google/Chrome", "Library/Application Support/Firefox", "Library/Application Support/BraveSoftware",
   "Library/Application Support/Microsoft Edge", "Library/Safari", "Library/Cookies", ".mozilla", ".config/google-chrome", ".config/chromium",
   ".config/BraveSoftware", ".local/share/keyrings", ".electrum", ".bitcoin", ".ethereum", "Library/Ethereum", "Library/Application Support/Exodus", ".config/solana"];
 /** File names that are secrets wherever they lie. `.env` and its variants, keys, credentials, token stores. */
-const SECRET_FILE = /^(\.env(\..*)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.git-credentials|id_(rsa|ecdsa|ed25519|dsa)(\.pub)?|.*\.(pem|key|p12|pfx|keystore|jks|kdbx|ovpn)|credentials(\.json)?|secrets?\.(json|ya?ml|toml)|service-account.*\.json|wallet\.dat|keystore)$/i;
+export const SECRET_FILE = /^(\.env(\..*)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.git-credentials|id_(rsa|ecdsa|ed25519|dsa)(\.pub)?|.*\.(pem|key|p12|pfx|keystore|jks|kdbx|ovpn)|credentials(\.json)?|secrets?\.(json|ya?ml|toml)|service-account.*\.json|wallet\.dat|keystore)$/i;
 /** Files that change what an agent may do by itself: permission rules, hooks, MCP servers. Editing one is an "always allow". */
 /** Files that change what an agent or a tool may do by itself: permission rules, hooks, MCP servers, the repository's own
  * configuration (core.fsmonitor and sshCommand run code), editor tasks. Editing one is an "always allow". Case-insensitive:

@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.17
+  WorkTrust CLI 0.11.18
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.17
+  WorkTrust CLI 0.11.18
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.17)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.18)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -205,6 +205,13 @@ is not shown when it uses a connector's tool or a tool the CLI does not know, na
 outside the project, runs a command that prints credentials, or carries something shaped like a key; thinking and images
 are never sent. A paused computer answers no history. Sessions you started at this keyboard and never continued from a
 phone stay unread unless you say so here: `npx worktrust remote desk-history on` (off by default; `off` turns it back).
+
+**Files from your phone.** A file or photo you send with a prompt lands in the session's project, in
+`.worktrust/inbox/<session>/`, also for a project this computer reaches inside a granted root. The inbox keeps itself out
+of the project's git (it writes its own `.gitignore` there, never over one of yours), so an agent's `git add -A` does not
+stage it. A HEIC photo becomes a JPEG under a name nothing holds, so it never replaces a file already there. A file that
+did not go is cleared by itself: what arrived of it, and nothing else. Caps: 25 MB a file, 100 MB a session; nothing in
+the inbox is ever run, and the files stay until you remove them.
 
 **Sealed end to end.** The computer holds one outbound connection and opens no port. Messages are sealed between your
 phone and this computer; the relay passes them on and cannot read a prompt, a file, a path, an output or a model name.

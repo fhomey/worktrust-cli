@@ -80,7 +80,9 @@ export function createDaemonCore(o) {
   // `transient` (release 19; a pushed terminal screen, remote-screen-push.mjs): the session's TRANSIENT LANE (envelopes.ts), sealed for the phones and never
   // journaled, so a replay never brings back a stale screen and the session's own sequence has no number missing. Its numbers rise per session from this computer's clock.
   const laneSeq = new Map();
-  function emit(sessionId, type, body, commandId = null, notify = "none", { transient = false, only = null } = {}) {
+  // `local` (CLI 0.11.18): fields for THIS computer's journal record alone, beside the body and never sealed (sealAll seals
+  // the body through bodyFor), so a fact the computer reads back after a restart never reaches a phone that would refuse it.
+  function emit(sessionId, type, body, commandId = null, notify = "none", { transient = false, only = null, local = null } = {}) {
     let shaped = P.validateEventBody(type, body);
     if (!shaped.ok && type === "agent.completed" && body.result) {
       // A result over its caps keeps the reply and names the files; the diffs are said to be cut.
@@ -94,7 +96,7 @@ export function createDaemonCore(o) {
       laneSeq.set(sessionId, seq);
       return sealAll({ session_id: sessionId, event_seq: seq, type, occurred_at: o.now(), command_id: null, notify: "none", lane: "transient", body }, { replayed: only !== null, only });
     }
-    const record = { session_id: sessionId, event_seq: o.journal.nextSeq(sessionId), type, occurred_at: o.now(), command_id: commandId, notify, body };
+    const record = { session_id: sessionId, event_seq: o.journal.nextSeq(sessionId), type, occurred_at: o.now(), command_id: commandId, notify, body, ...(local ? { local } : {}) };
     o.journal.recordEvent(record);
     sealAll(record);
   }

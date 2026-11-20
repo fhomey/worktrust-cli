@@ -27,7 +27,7 @@ import { probeFolders } from "./remote-service.mjs";
 import { checkRoot, MAX_ROOTS, rootIdOf } from "./remote-projects.mjs";
 import { agentOptionsOf } from "./remote-inventory.mjs";
 import * as P from "./remote-protocol.mjs";
-import { ensureRemoteDir, loadKeys, loadProjects, loadRoots, loadSettings, projectIdOf, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
+import { ensureRemoteDir, loadKeys, loadPreviewGrants, loadProjects, loadRoots, loadSettings, projectIdOf, savePreviewGrants, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
 
 export const RAISABLE_MODES = Object.freeze(["edit", "auto"]);
 const ORDER = ["manual", "edit", "plan", "auto"];
@@ -148,6 +148,9 @@ function applyRules(change, fromApp) {
     const kept = list.filter((p) => p.project_id !== key && p.path !== key && !(canonical.ok && p.path === canonical.path));
     if (kept.length === list.length) return refused("no granted folder by that path or id");
     saveProjects(kept);
+    // Its preview grants go with it: a grant left behind would stand again the day the folder is granted or reached anew.
+    const grants = loadPreviewGrants(), gone = list.filter((p) => !kept.includes(p)).map((p) => p.project_id);
+    if (gone.some((id) => id in grants)) savePreviewGrants(Object.fromEntries(Object.entries(grants).filter(([id]) => !gone.includes(id))));
     return { ok: true, message: "Removed." };
   }
   return refused("not a setting this computer knows");

@@ -801,7 +801,7 @@ export function isModelReported(report               , model               )    
  * session's project at `.worktrust/inbox/<session_id>/<safe name>` (mode 0600, never executable). `attachment.stored`
  * answers every chunk with the count received (a measured progress) and, once whole, the file's path relative to the
  * project, which a later `agent.start` / `agent.prompt` names by its id (`attachments`), so the agent is told to read it.
- * Caps: 25 MB a file, 100 MB a session. `attachment.clear` deletes the session's inbox.
+ * Caps: 25 MB a file, 100 MB a session. `attachment.clear` deletes the session's inbox, or with `attachment_id` one file.
  *
  * LOCAL PREVIEW. The phone's "Deploy" segment is a LOCAL preview, never a production deploy: `preview.render` asks the
  * computer to render a page of a dev server on 127.0.0.1 at a port the person granted for that project at the keyboard
@@ -842,7 +842,9 @@ export const TRANSFER_COMMAND_SPECS = {
     chunks: int(1, MAX_ATTACHMENT_CHUNKS),
     data: b64({ max: ATTACHMENT_CHUNK_BYTES }),
   }),
-  "attachment.clear": object({}),
+  // `attachment_id` (CLI 0.11.18): only what arrived of that ONE file. An older computer refuses a payload with a field it
+  // does not know, before its journal and without a receipt, so it can never take this for "clear the whole inbox".
+  "attachment.clear": object({ attachment_id: optional(id("att")) }),
   "preview.targets": object({ project_id: id("prj") }),
   "preview.render": object({
     preview_id: id("pvw"),
@@ -866,6 +868,9 @@ export const TRANSFER_EVENT_SPECS = {
     size: int(1, MAX_ATTACHMENT_BYTES),
     content_type: oneOf(ATTACHMENT_TYPES),
   }),
+  // EXACTLY `{ removed }`, as every client since release 18 knows it: the schema refuses an unknown key, and a phone that
+  // refuses an event holds its whole session behind the hole. The clear of ONE file (CLI 0.11.18) names its id in the
+  // computer's journal record only (`local`, remote-daemon.mjs emit), which is all the computer reads back after a restart.
   "attachment.cleared": object({ removed: int(0) }),
   "preview.targets": object({
     project_id: id("prj"),

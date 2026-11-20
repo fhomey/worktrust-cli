@@ -132,15 +132,21 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   const runDir = remotePath("run");
   let transport = null;
   const local = { secret: keys.secret, binding: identity.binding, claims: claims.value };
+  // A session's project, as sessions themselves resolve it (0.11.18): a granted project or an existing git project inside a
+  // root, by the inventory's id. The files looked among the granted ones only, so a session in a root project (0.11.7) was
+  // refused every file from the phone, and the prompt that named it.
+  const reachable = () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret });
+  const sessionProject = (id) => { const s = journal.session(id); return s ? reachable().find((p) => p.project_id === s.project_id) ?? null : null; };
+  // A preview needs its OWN grant at the keyboard, on a project granted by itself: one reachable only through a root has none
+  // to give (a grant left behind by a project since un-granted must not come back to life through its root).
+  const grantedProject = (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; };
   // Files from the phone (into the session's project inbox) and the local preview (2026-11-07).
-  const attachments = createAttachments({ journal, now: Date.now, emit: (...a) => core.emit(...a), log,
-    sessionProject: (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; } });
+  const attachments = createAttachments({ journal, now: Date.now, emit: (...a) => core.emit(...a), log, sessionProject });
   const preview = createPreview({ emit: (...a) => core.emit(...a), projects: loadProjects, grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log });
   // The live preview (release 19): the session's granted page, live, over the browser's pipe; one per computer.
-  const live = createLivePreview({ emit: (...a) => core.emit(...a), grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log, now: Date.now,
-    sessionProject: (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; } });
+  const live = createLivePreview({ emit: (...a) => core.emit(...a), grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log, now: Date.now, sessionProject: grantedProject });
   // Continue a session on this computer (release 36): its own Claude Code sessions in the projects a phone may reach.
-  const desk = createDesk({ projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), journal });
+  const desk = createDesk({ projects: reachable, journal });
   let health = null; // the sampler below (remote-health.mjs): every 15 s, local numbers, no model
   const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, agentEnv: () => agentEnv(loadSettings()), now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
@@ -150,7 +156,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   let handover = null; const hold = holdDuring(() => Boolean(handover?.handing)); // 0.11.15: nothing new starts while it hands over
   const sessions = createSessions({ ...ctx, approvals, runDir, node: process.execPath, bridgePath: join(HERE, "remote-approval-bridge.mjs"), socket: () => socket,
     // A session runs in a granted project or in an existing project inside a root (0.11.7), each by the inventory's id.
-    settings: loadSettings, projects: () => sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: keys.projectSecret }), inventory: () => inventory({ env: agentEnv(loadSettings()) }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
+    settings: loadSettings, projects: reachable, inventory: () => inventory({ env: agentEnv(loadSettings()) }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
     onTaskEnded: (id, outcome) => releases.taskEnded(id, outcome), onActivity: () => releases?.activity(),
     onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)), attachments, desk });
   ctx.onApprovalOpened = sessions.onApprovalOpened; ctx.onApprovalSettled = sessions.onApprovalSettled;

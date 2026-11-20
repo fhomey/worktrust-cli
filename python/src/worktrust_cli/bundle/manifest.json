@@ -1,5 +1,5 @@
 {
-  "version": "0.11.17",
+  "version": "0.11.18",
   "files": {
     "chat-exports.mjs": "f026c5a063f62c22ba6f25474a9d9fdbb6074beebbfe1faff2a876c437a1a000",
     "claude-mod.mjs": "02d86b0cdddf39879efc5194c0a5be6b41456faedec28963dc123a4e88dc3942",
@@ -38,7 +38,7 @@
     "remote-agent-switch.mjs": "7ff5448f29f05a47d7298d730b21243a1bcf8a215b434a0c7fbf5f3cb0889041",
     "remote-approval-bridge.mjs": "092f17b7969e4f35bea064315d04dcde1faa6a3fd3e737dcc05aece82c7a37c4",
     "remote-approvals.mjs": "c1d4205e027de951d652fb1b9a42def26a166cf131c79b31f39717dd4b9d0771",
-    "remote-attachments.mjs": "56601565d7da4768f07e7f64adc4672d9a899101be9ac65cc83082f2e3a4a9cd",
+    "remote-attachments.mjs": "9798111d5a979dec1d0ae17e139a5eb8bbe22eb0ef4897c1ab7d03547b1a2a7e",
     "remote-catch-up.mjs": "b8891572cb01955d23387d8149d1456bb5699f22f75ef61dbcd43ed4b807e102",
     "remote-cdp.mjs": "70e333a1ebe845e872cc3a703a0a507391f8ce59640bdbd662bdad55eeff216b",
     "remote-changes.mjs": "2141fece4961a5bc1bb1b046f78222812617457b1ba6452275eac6a897e62e19",
@@ -49,7 +49,7 @@
     "remote-codex-events.mjs": "58657d6070a50c837737cb85f5a1eaf9c2cbc4e1adfe3e970748ab3b2af94631",
     "remote-connections.mjs": "b2bf8bbdecfb095d0b620aa3e5fcb62df75388a6b0d82d460e807a9e1d196d17",
     "remote-countdown.mjs": "b1020c59fcae3cbf6c355976b2a5ef80a3476ffadcd9949e8e884bedfd1efa06",
-    "remote-daemon.mjs": "49bd824692d92725b812039dbf5bf6482eebe310403e364e924a2c00f8f124d7",
+    "remote-daemon.mjs": "d5fdd0829c4fc8f966f67c1e114e49418c252ba9515419ce0b02e0dd8aad8f20",
     "remote-desk-sessions.mjs": "531954c5037da2ea404332beedc346feabad66a25caad15d3575a16b4f3b0208",
     "remote-endorse.mjs": "89eda4883567176703e01e44d83e987271bc2a6134e108f517b3b213719a21f9",
     "remote-health.mjs": "0f37d08f97fc6e08c69792cf3d22201b3103a28bdb19613b5abb02b80eb91983",
@@ -72,18 +72,18 @@
     "remote-policy.mjs": "e17b89fc4f3874ef785ef067a21aabde25278903eb204b2253f80d329f523e89",
     "remote-preview.mjs": "fe504ad6f83dcb4a4ebdcc018686a9a5a900c47cdf8c45b75e7d02e2f3056155",
     "remote-projects.mjs": "ec8c530ad3e880bca21a4d4078ecd68b6aaafcc442b50087127868d952034d5f",
-    "remote-protocol.mjs": "81f173f716338b2dda800a7349c9604778fe330ab9374619c6485e132e6b7780",
+    "remote-protocol.mjs": "121278f5e72b4ad262ebd83cfe796b9339ff242cc049301ad316f0ddeb17021d",
     "remote-qr.mjs": "a0f4044f0afe8a636be14cf5afe10f53404b57262c23fea37f8cf30b6d0a5220",
     "remote-release-plans.mjs": "11884a62b7d6dcccb5e154a26603bdf650f7b40f946329fb174d8c13729bec74",
     "remote-releases.mjs": "fb08b72593ea00013c8b679e0c0d7dee95b0fd7cc5fd31b80ac575d0e340927d",
-    "remote-run.mjs": "a1b293dc05d8b45261814fd357865aa0cbc53c25b1a1a1fd777b1a51bb44ef17",
+    "remote-run.mjs": "e3f913ecaef916863f115c247e5a4ee176c3f86e6ac422be560169147c75e8d5",
     "remote-screen-approvals.mjs": "c43ab286d36a38d17639d155782ffa017f1a9b6806a09b82ed0142a1290b6000",
     "remote-screen-push.mjs": "4ee8bd48d24b2c87581e9f33d8354a86381f7febd82f89ed509a7a87c1442608",
     "remote-screen-states.mjs": "7c3c86a584bebf52461f3cab39c05ea2a13910061704d48fc622956e842940f7",
     "remote-service.mjs": "647f5627e74992005931cee957c84080660a18e0407302aeb59fc2b0178f6175",
     "remote-session-list.mjs": "494fdbe20f0542806ac6c42ad149c52e2d3ace23a3a7567f96dc7e80d092c727",
     "remote-sessions.mjs": "575e2551b9d5833ecef993411996e556f38dc0003f499a39fd82bd5bdf32be9e",
-    "remote-settings.mjs": "ae2106a62873509d052ac62f7cea8f56342ef745175f82405209aa86e3ada708",
+    "remote-settings.mjs": "9f954a0cb3f99d3c48facc151215c139ab667f29350a32de1eb73cb4b65a0711",
     "remote-steered.mjs": "d7afde92c62c87abbdb84b0cfea2eea4752e90a2e453e52a54812c4fe0395190",
     "remote-steering.mjs": "593447f3b7abbf3b91237d6d8a1aebcce9fbddc5ea5874341241ee45d83e5196",
     "remote-store.mjs": "64696449df920b612a73729a293e7ac6e2c0a4a39ce9cc5e18f09aad6b88d7bb",
@@ -101,6 +101,6 @@
     "stretch-evidence.mjs": "5f5667b92adf11b1a5a6330a0f26dd6db73d56fe60823d9a5246dab71d27d380",
     "transcript-readers.mjs": "3dfdd9d2189063f24dbd5c2abec6bb21e2bb36f22b89d0d84282e12216022670",
     "worktrust-launch.mjs": "84801bd29d472d48188c126b9ebe3989a3132b54e13cc4fe534ff7c383a294ee",
-    "worktrust.mjs": "0fd69446b609228efff8b6d472f7ad10842325afddae77ab1411b6c6018bd5e7"
+    "worktrust.mjs": "953e2f275171ac4f77c891276181526492480adf00067627b2d76263c90ee877"
   }
 }

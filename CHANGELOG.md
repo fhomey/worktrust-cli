@@ -2,6 +2,39 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.18: files from your phone reach projects inside a granted root, stay out of git, and can be cleared one by one
+
+**Files from the phone arrive in every project a session can run in.** A session in a project this computer reaches
+inside a granted root (since 0.11.7) was refused every file you sent from your phone, and the prompt that named it. The
+files now follow the session's project the way the session itself does: a granted project, or a git project inside a
+granted root.
+
+**A received file is never an untracked file of your project's git.** Files from the phone land in
+`<project>/.worktrust/inbox/<session>/`. That inbox now carries its own `.gitignore`, so an agent's `git add -A` never
+stages a photo or document you sent. It is written once and only where nothing stands: a `.gitignore` of your own there
+is left as it is. `.worktrust/pipeline.json` stays committable.
+
+**A HEIC photo never replaces a file.** A photo from an iPhone becomes a JPEG under a name nothing in the inbox holds,
+neither the `.heic` nor the `.jpg` one, and is placed without replacing or following anything. If the conversion fails,
+the photo is kept as it arrived.
+
+**One file can be cleared.** When a file did not go (your phone or browser gave up on it, or its message was not sent),
+it asks this computer to clear that one file: what arrived of it, and the file itself when it was stored whole. The
+other files of the session stay, after a restart too: the computer reads back from its own journal which file was
+which, and the clear of one file is never taken for the clear of the inbox.
+
+**Your phone always gets an answer.** A read-only project or a full disk refuses a file, or a clear, instead of leaving
+the phone waiting. A clear of a session that received nothing removes nothing and creates no folder, and nothing is
+ever removed through a link planted in the inbox. A preview grant on a project you un-granted does not come back through
+a root that still reaches it.
+
+A single file is cleared once your phone app and WorkTrust are on the release that asks for it; until then a file that
+did not go stays in the inbox, as before. The other way round, a phone or browser on the new release talking to this
+computer before you update to 0.11.18 has its clear of one file dropped without an answer (0.11.17 knows only the clear
+of the whole inbox, and never takes this for it): the file stays in the inbox and counts against the session's 100 MB.
+What this computer answers to a clear is unchanged, so an older phone or browser keeps working. The inbox is kept until you remove it; how long it should be kept is an open
+decision. Nothing changes in what is measured: the measure rules stay 4.
+
 ## 0.11.17: earlier messages of a session, read on this computer for your own devices; a connection the relay closed comes back
 
 **A phone or browser can ask for what happened before.** Scroll up in a chat and this computer sends the session's

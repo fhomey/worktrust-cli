@@ -20,14 +20,21 @@
  *   one line  one read per phone at a time, in the order asked, each waiting for the pacer's room; more than MAX_WAITING
  *             behind it is `busy`, and so is more than 30 asks a minute, both before anything is looked up. The subject is resolved after that wait, right before the read: what the keyboard took
  *             back meanwhile (a grant, the desk switch, a pause) refuses the ask.
+ *   live      CLI 0.11.19 (owner, 2026-11-21): reading ALONG with a session of this computer's own desk, when the keyboard
+ *             said `worktrust remote read-along on` and for a phone that asked to read it. A `follow` ask is resolved here as
+ *             any other and then handed to remote-history-follow.mjs, which answers it (the newest page read to the END
+ *             of the transcript, whole lines only) and pushes what is written after it. While a phone follows a session,
+ *             its other asks for that session read to the end too. Prose of a desk session is masked for keys on every
+ *             page (remote-history-mask.mjs). Still reading only: nothing is sent INTO the session at the desk.
  */
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import * as P from "./remote-protocol.mjs";
 import { encodeProjectDir, HELD_WINDOW_MS, samePath } from "./remote-desk-sessions.mjs";
-import { atLineStart, closePlain, cursorAt, cursorHolds, openPlainUnder, parseCursor, PEEK, readBack, readForward } from "./remote-history-file.mjs";
+import { atLineStart, closePlain, cursorAt, cursorHolds, identOf, lineEnd, openPlainUnder, parseCursor, PEEK, readBack, readForward } from "./remote-history-file.mjs";
 import { cutTo, detailOf, itemBytes, mapTranscript, typedWords } from "./remote-history-claude.mjs";
 import { journalHistory } from "./remote-history-journal.mjs";
+import { createFollow } from "./remote-history-follow.mjs";
 
 export const MAX_WAITING = 4, ROOM_ITEMS = 110, ASKS_A_MINUTE = 30;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -50,7 +57,8 @@ function fit(entries, bytes, most = ROOM_ITEMS) {
 }
 
 export function createHistory(o) {
-  // o: { journal, sessions() (live, or null), projects(), desk, settings(), agentEnv(), sealPage(body, phone), room(), now(), log(kind, fields), home? }
+  // o: { journal, sessions() (live, or null), projects(), desk, settings(), agentEnv(), sealPage(body, phone), room(), now(), log(kind, fields), home?,
+  //      readsLive?(phone) (it asked `desk_live`), confirmed?(phone), every?(run, ms) (the follow's timer) }
   const lines = new Map(); // phone -> { end, waiting }
   const inLine = (phone, work) => {
     const line = lines.get(phone) ?? { end: Promise.resolve(), waiting: 0 };
@@ -77,6 +85,7 @@ export function createHistory(o) {
     if ((o.settings().paused ?? null) !== null) return "remote_paused";
     if (payload.session_ref !== undefined) {
       if (o.settings().desk_history !== true) return "not_allowed"; // anything but the keyboard's own yes is off
+      if (payload.follow === true && o.settings().desk_live !== true) return "not_allowed"; // reading along has the keyboard's own yes of its own
       if (!o.projects().some((p) => p.project_id === payload.project_id)) return "not_allowed";
       const found = o.desk?.find?.(payload.session_ref, payload.project_id) ?? null;
       if (!found) return "not_found";
@@ -177,13 +186,17 @@ export function createHistory(o) {
     return out;
   }
 
-  /** One page from the transcripts, or null when none can be read (the journal answers then). */
-  async function fromTranscript(subject, payload, phone, base) {
+  /**
+   * One page from the transcripts, or null when none can be read (the journal answers then). `live` (reading along, a desk
+   * session): the page is read to the END of the transcript, whole lines only, and nothing is called closed that was not
+   * seen to end; the follow gets back where it ended and what was sent (`live.end`, `.entries`, `.id`, `.size`).
+   */
+  async function fromTranscript(subject, payload, phone, base, live = null) {
     const last = subject.files.length - 1;
     let opened = last >= 0 ? openTranscript(subject, last) : null;
     if (!opened) return null;
     try {
-      const open = openTurn(subject), newest = await closedEnd(subject, opened, open);
+      const open = openTurn(subject), newest = live ? lineEnd(opened.fd, opened.size) : await closedEnd(subject, opened, open);
       if (newest === null) return null;
       const head = `t.${subject.files.length}.${newest}.${subject.kind === "remote" ? o.journal.turnsOf(subject.scope).length : 0}`;
       const common = { ...base, source: "transcript", head, open_turn: open };
@@ -199,8 +212,8 @@ export function createHistory(o) {
         }
         if (held) { index = cursor.index; end = cursor.offset; } else status = "stale";
       }
-      const limit = index === last ? newest : opened.size, peek = readForward(opened.fd, end, limit, PEEK), closed = peek.ended;
-      const map = (read, side = null) => mapTranscript(read, { scope: subject.scope, cwd: subject.projectPath, after: peek.lines, closed, side });
+      const limit = index === last ? newest : opened.size, peek = readForward(opened.fd, end, limit, PEEK), closed = peek.ended && !live;
+      const map = (read, side = null) => mapTranscript(read, { scope: subject.scope, cwd: subject.projectPath, mask: subject.kind === "desk", after: peek.lines, closed, side });
       const want = payload.item || payload.parent ? Infinity : Math.min(payload.max_bytes, P.HISTORY_PAGE_MAX_BYTES), wanted = payload.item ?? payload.parent ?? null;
       let entries = [], read = [];
       const scan = await readBack(opened.fd, end, { enough: (so) => { read = so; entries = map(so); return wanted ? entries.some((e) => e.item.id === wanted) : entries.length > ROOM_ITEMS || entries.reduce((n, e) => n + itemBytes(e.item), 0) > want; } });
@@ -208,7 +221,7 @@ export function createHistory(o) {
         const entry = entries.find((e) => e.item.id === wanted);
         if (!entry) return "not_found";
         if (payload.item) return { ...common, status, items: [entry.item], next_before: null, older: "start", item: wanted, detail: detailOf(entry) };
-        return { ...common, status, ...sidePage(subject, opened, entry, limit, payload, index), parent: wanted };
+        return { ...common, status, ...sidePage(subject, opened, entry, limit, payload, index, live), parent: wanted };
       }
       const merged = withJournal(subject, entries, read, peek.lines, phone, index, scan.start, end);
       const from = fit(merged, want), start = from === 0 ? scan.start : merged[from].line;
@@ -220,19 +233,20 @@ export function createHistory(o) {
         if (before) { if (firstUuid(before) !== firstUuid(opened)) { next = cursorAt(before.fd, index - 1, before.size, before.size); older = "more"; } closePlain(before); }
         else older = "trimmed";
       }
+      if (live) Object.assign(live, { end: newest, entries: merged.slice(from), id: identOf(opened), size: opened.size });
       return { ...common, status, items: merged.slice(from).map((e) => e.item), next_before: next, older };
     } finally { closePlain(opened); }
   }
 
   /** A subagent's own items: its file beside the transcript when Claude Code keeps one, else its lines inside the transcript. */
-  function sidePage(subject, opened, entry, limit, payload, index) {
+  function sidePage(subject, opened, entry, limit, payload, index, live) {
     if (entry.item.kind !== "subagent") return { items: [], next_before: null, older: "start" };
     if (!entry.raw?.agentId) return { items: [], next_before: null, older: "start" }; // Claude Code named no agent for it: nothing is guessed
     const agentId = entry.raw.agentId, ref = subject.files[index].file.replace(/\.jsonl$/, "");
     const beside = openPlainUnder(subject.store, join(ref, "subagents", `agent-${agentId}.jsonl`));
     let read;
     try { read = beside ? readForward(beside.fd, Math.max(0, beside.size - PEEK * 8), beside.size, PEEK * 8).lines : readForward(opened.fd, entry.line, limit, PEEK * 8).lines; } finally { closePlain(beside); }
-    const steps = mapTranscript(read, { scope: subject.scope, cwd: subject.projectPath, closed: true, side: { parent: entry.item.id, agentId: beside ? null : agentId } });
+    const steps = mapTranscript(read, { scope: subject.scope, cwd: subject.projectPath, mask: subject.kind === "desk", closed: !live, side: { parent: entry.item.id, agentId: beside ? null : agentId } });
     const from = fit(steps, Math.min(payload.max_bytes, P.HISTORY_PAGE_MAX_BYTES), P.HISTORY_MAX_ITEMS);
     return { items: steps.slice(from).map((e) => e.item), next_before: null, older: from > 0 ? "more" : "start" };
   }
@@ -252,8 +266,12 @@ export function createHistory(o) {
     return { ...common, status, items: window.slice(from).map((e) => e.item), next_before: from > 0 ? `v1.j.${from}.${mark(items[from - 1].id)}` : null, older: from > 0 ? "more" : older };
   }
 
+  // READING ALONG (remote-history-follow.mjs): it resolves, opens and reads only through what this module hands it, in the phone's own line.
+  const follow = createFollow({ settings: o.settings, projects: o.projects, now: o.now, log: o.log, room: o.room, sealPage: o.sealPage, confirmed: o.confirmed, every: o.every, resolve, inLine, fit, page: fromTranscript, open: (subject) => openTranscript(subject, subject.files.length - 1) });
+
   /** One ask. → "taken" once its page was sealed for `phone`, or the reason it is refused. Never for a phone not named. */
   function get(payload, phone, commandId) {
+    if (phone && payload.follow === false) return follow.stop(phone, payload); // taking away costs nothing and waits for nothing
     if (!phone) return "not_allowed";
     // Busy is said BEFORE anything is looked up: an ask that is refused for load scans no folder and reads no record.
     if ((lines.get(phone)?.waiting ?? 0) >= MAX_WAITING || !mayAsk(phone)) return "busy";
@@ -263,9 +281,11 @@ export function createHistory(o) {
       // turned off or a pause while the ask stood in line refuses it, and nothing is read on an answer that no longer holds.
       const subject = resolve(payload);
       if (typeof subject === "string") return subject;
+      // A follow, or its renewal: only for a phone that asked to read `desk_live` (it knows the page's `follow`); anything else is refused.
+      if (payload.follow === true) return o.readsLive?.(phone) === true ? follow.ask(subject, payload, phone, commandId) : "not_allowed";
       const base = { request: commandId, ...subject.name, live_seq: subject.kind === "remote" ? o.journal.lastSeq(subject.scope) : 0 };
       let page = null;
-      try { page = await fromTranscript(subject, payload, phone, base); } catch { o.log("history_unreadable", {}); page = null; }
+      try { page = await fromTranscript(subject, payload, phone, base, follow.reads(phone, subject) ? {} : null); } catch { o.log("history_unreadable", {}); page = null; }
       if (page === null) page = subject.kind === "remote" ? fromJournal(subject, payload, phone, base) : "not_found";
       if (typeof page === "string") return page;
       // A page the protocol would refuse is never sealed and its ask never "taken" (review 2026-11-17, F7): the daemon would drop
@@ -277,5 +297,5 @@ export function createHistory(o) {
       return "taken";
     });
   }
-  return { get, waiting: () => lines.size };
+  return { get, waiting: () => lines.size, following: follow.count };
 }

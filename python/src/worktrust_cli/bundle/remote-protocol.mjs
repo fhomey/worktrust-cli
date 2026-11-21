@@ -2042,8 +2042,19 @@ export const DESK_SESSION_SPEC = object({
   model: nullable(text(128, 1)),
 });
 
-/** device.inventory's field (events.ts spreads it): sealed only for a phone that asked `inventory.get` `desk_sessions`. */
-export const DESK_INVENTORY_FIELDS = { desk_sessions: optional(list(DESK_SESSION_SPEC, MAX_DESK_SESSIONS)) }         ;
+/**
+ * READ ALONG (CLI 0.11.19, owner 2026-11-21; history.ts `follow`). What a paired phone may read of this computer's own
+ * sessions, as its keyboard set it: `off` nothing, `history` their closed turns, `live` also the turn that runs, as it is
+ * written. Read-only, and never changed from a phone. Sealed in device.inventory `desk_read`, only for a phone that asked
+ * `inventory.get` `desk_live` (a probe of its own, with `extended`): an older phone never receives the key it would refuse.
+ */
+export const DESK_READS = ["off", "history", "live"]         ;
+
+/** inventory.get's field (commands.ts spreads it): this phone reads `desk_read` and may follow a desk session. Only with `extended`. */
+export const DESK_GET_FIELDS = { desk_live: optional(bool()) }         ;
+
+/** device.inventory's fields (events.ts spreads them): `desk_sessions` only for a phone that asked `inventory.get` `desk_sessions`, `desk_read` only for one that asked `desk_live`. */
+export const DESK_INVENTORY_FIELDS = { desk_sessions: optional(list(DESK_SESSION_SPEC, MAX_DESK_SESSIONS)), desk_read: optional(oneOf(DESK_READS)) }         ;
 
 /** The rules between fields: a uuid each, each once, each under a project the same inventory lists. → null, or what is wrong. */
 export function deskRule(desk                                    , projects                                            )                {
@@ -2097,6 +2108,17 @@ export const HISTORY_NOTICES = ["compacted", "model_changed", "approved", "denie
 export const HISTORY_STATUSES = ["ok", "not_modified", "stale"]         ;
 export const HISTORY_SOURCES = ["transcript", "journal"]         ;
 export const HISTORY_OLDER = ["more", "start", "trimmed"]         ;
+/**
+ * READ ALONG WITH A DESK SESSION (CLI 0.11.19; owner, 2026-11-21; docs/remote-agents/DESK-SESSIONS.md §Read along). An ask
+ * with `follow: true` is answered with the newest page read to the END of the transcript, and for HISTORY_FOLLOW_MS after
+ * it the computer pushes what was written since as further pages on the same transient lane, for that phone alone. The
+ * phone asks again every HISTORY_FOLLOW_RENEW_MS (the same ask with `known`), and `follow: false` stops at once. The
+ * window is these two constants, never a field (a duration is not a clock reading). Why a follow ended, said once in its
+ * last page: the keyboard's switch went off, the computer was paused, the session can no longer be read, or the computer
+ * follows as many as it will.
+ */
+export const HISTORY_FOLLOW_MS = 120_000, HISTORY_FOLLOW_RENEW_MS = 80_000;
+export const HISTORY_FOLLOW_ENDS = ["off", "paused", "gone", "busy"]         ;
 
 const CLAUDE_REF = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -2159,6 +2181,8 @@ export const HISTORY_COMMAND_SPECS = {
     known: optional(token(HISTORY_MAX_HEAD)),
     item: optional(id("hit")),
     parent: optional(id("hit")),
+    /** Read along (above): true follows the subject or renews the follow, false stops it. Sent only to a computer whose probe read `desk_live`. */
+    follow: optional(bool()),
   }),
 }         ;
 
@@ -2169,6 +2193,7 @@ export function historyGetRule(get            )                {
   if (desk && (get.session_ref === undefined || get.project_id === undefined || !CLAUDE_REF.test(get.session_ref))) return "session_ref: Claude Code's own uuid, under its project_id";
   if (get.item !== undefined && get.parent !== undefined) return "item or parent, never both";
   if (get.known !== undefined && (get.before !== null || get.parent !== undefined || get.item !== undefined)) return "known: only for the newest page";
+  if (get.follow !== undefined && (get.session_ref === undefined || get.before !== null || get.item !== undefined || get.parent !== undefined)) return "follow: only the newest page of a desk session";
   return null;
 }
 
@@ -2188,6 +2213,12 @@ export const HISTORY_EVENT_SPECS = {
     open_turn: nullable(object({ from_seq: int(1), started_at: int(0), command_id: nullable(id("cmd")) })),
     item: optional(id("hit")), parent: optional(id("hit")),
     detail: optional(object({ input: nullable(text(HISTORY_MAX_DETAIL)), output: nullable(text(HISTORY_MAX_DETAIL)), input_cut: bool(), output_cut: bool() })),
+    /**
+     * Only on the answers and the pushes of a follow, sealed for the phone that follows: `after` the head this page builds on
+     * (null: a whole newest page, which replaces what is held; a phone that holds another head asks the newest page again),
+     * `end` why the follow is over (the page then carries nothing else).
+     */
+    follow: optional(object({ after: nullable(token(HISTORY_MAX_HEAD)), end: optional(oneOf(HISTORY_FOLLOW_ENDS)) })),
   }),
 }         ;
 
@@ -2205,6 +2236,8 @@ export function historyPageRule(page             )                {
   if (page.item !== undefined && (page.items.length > 1 || (page.items.length === 1 && page.items[0] .id !== page.item))) return "item: that item alone";
   if (page.parent !== undefined && page.items.some((i) => i.kind === "step" && i.subagent !== page.parent)) return "parent: a subagent's page holds its own steps";
   if (page.parent === undefined && page.items.some((i) => i.subagent !== undefined)) return "items: a subagent's steps only in its own page";
+  if (page.follow !== undefined && (page.session_ref === undefined || page.item !== undefined || page.parent !== undefined)) return "follow: only on a desk session's own page";
+  if (page.follow?.end !== undefined && page.status !== "not_modified") return "follow.end: the page that ends a follow carries nothing else";
   return null;
 }
 
@@ -2988,9 +3021,8 @@ export const COMMAND_PAYLOAD_SPECS = {
    * coalesced) for a while (the computer's limit, renewed by every read that follows), false stops it. Absent: one read.
    */
   "screen.read": object({ lines: int(1, 2000), follow: optional(bool()) }),
-  /** Ask for a device.inventory; `refresh_models` runs the agents' own model listers first. */
   /**
-   * `extended` (CLI 0.11.7): this phone reads the inventory's optional 0.11.7 fields (`agent_options`, `modes_allowed`);
+   * Ask for a device.inventory; `refresh_models` runs the agents' own model listers first. `extended` (CLI 0.11.7): this phone reads the inventory's optional 0.11.7 fields (`agent_options`, `modes_allowed`);
    * the computer then sends them on every inventory sealed for this phone, and to no other. An older computer refuses
    * the unknown field (command.rejected), which tells the phone to ask again without it.
    */
@@ -3018,7 +3050,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
      * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
      */
-    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), // `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
+    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, // `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -3181,7 +3213,7 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended");
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended");
   }
   if (type === "session.attach") {
     const a = payload                                    ;

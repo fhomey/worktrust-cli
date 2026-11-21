@@ -25,7 +25,7 @@
  *                                                     (project.create); --git-init runs `git init` in it
  *   remote modes allow|deny edit|auto | status        the ceiling of agent modes a phone may start (0.11.7; default manual
  *                                                     and plan), remote-settings.mjs
- *   remote admin on|off · desk-history on|off         managing this computer from the app or the web (part B) · may a phone READ this computer's own sessions (default off)
+ *   remote admin on|off · read-along on|off           managing this computer from the app or the web (part B) · may a phone READ ALONG, live and read-only, with this computer's own sessions (off until you say yes here: asked once after a pairing, Enter is yes; `desk-history on|off`: their closed turns only)
  *   remote preview allow|deny <port|file> <folder> | list   what a phone may preview: a dev-server port on 127.0.0.1 or a
  *                                                     built HTML file, per granted folder (rendered with your Chrome)
  *   remote codex on | off                             offer Codex to a phone (off by default): Codex runs the reads it
@@ -37,8 +37,7 @@
  *                                                     in tmux on WorkTrust's own socket, seen on the phone, attached here
  *                                                     (remote-terminal-cli.mjs; off by default)
  */
-import { basename } from "node:path";
-import { hostname } from "node:os";
+import { basename } from "node:path"; import { hostname } from "node:os";
 import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
 import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, PRODUCTION_GATEWAY, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveSettings, writeJson } from "./remote-store.mjs";
@@ -55,10 +54,10 @@ import { inventory } from "./remote-inventory.mjs";
 import { allowCommand, parsePipelineConfig, PIPELINE_FILE } from "./remote-pipeline-config.mjs";
 import { pipelineState, projectReviewHash, readProjectFile } from "./remote-pipeline.mjs";
 import { openJournal } from "./remote-journal.mjs";
-import { loadPreviewGrants, savePreviewGrants } from "./remote-store.mjs";
-import { loadDeskMarks, loadPipelineReviews, loadRoots, remotePath, saveDeskMarks, savePipelineReviews } from "./remote-store.mjs";
+import { deskReadOf, loadPreviewGrants, savePreviewGrants, loadDeskMarks, loadPipelineReviews, loadRoots, remotePath, saveDeskMarks, savePipelineReviews } from "./remote-store.mjs";
+import { offerAfter, offerReadAlong } from "./remote-read-along.mjs";
 import { rootLabel } from "./remote-projects.mjs";
-import { adminCommand, deskHistoryCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
+import { adminCommand, deskHistoryCommand, deskReadLine, keptReaders, readAlongCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
 
 const fingerprintOf = (keys) => P.deviceFingerprint(keys.public);
 /** A question only a person at this keyboard answers: a terminal, a typed "yes"; --yes and Enter are No. */
@@ -143,7 +142,7 @@ async function linkAndGrant(io, ready = null) {
   const phone = await linkPhone(io, ready);
   if (!phone) return;
   for (const line of linkedSummary(await withName(phone))) io.say(line);
-  await reachStep(io, keyboardApply(io));
+  await reachStep(io, keyboardApply(io)); await offerReadAlong(io); // 0.11.19 (owner, 2026-11-21): a phone was linked: read along is asked once, yes by default (remote-read-along.mjs)
 }
 /** The keyboard's one door for the access step: applySettingsChange, then the macOS folder question; a refusal is said, not fatal. */
 const keyboardApply = (io) => async (change) => {
@@ -167,7 +166,7 @@ async function phones(io, rest) {
     if (!(await askTyped(`Is ${phone.fingerprint} the fingerprint your phone shows?`))) { io.say("  Not confirmed."); return; }
     savePhones({ ...list, pending: list.pending.filter((p) => p !== phone), confirmed: [...list.confirmed.filter((p) => p.fingerprint !== phone.fingerprint), { ...phone, how: "keyboard", confirmed_at: Date.now() }] });
     io.say(`  ✓ Confirmed: phone · ${phone.fingerprint}`);
-    return;
+    return void (await offerReadAlong(io)); // a phone confirmed at this keyboard: the same question, once
   }
   if (rest[0] === "allow-endorse") {
     // At this keyboard only (2026-11-09, remote-endorse.mjs): a phone confirmed here may then add a browser it scanned.
@@ -282,7 +281,7 @@ function status(io) {
   const settings = loadSettings(), identity = loadIdentity(), keys = identity ? loadKeys() : null, phonesList = loadPhones(), service = serviceState();
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
-    gateway: gatewayOf(settings), gateway_default: settings.gateway === null || settings.gateway === undefined, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false,
+    gateway: gatewayOf(settings), gateway_default: settings.gateway === null || settings.gateway === undefined, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false, desk_read: deskReadOf(settings), readers: keptReaders(),
     agents: agents.map((a) => ({ adapter: a.adapter, version: a.version, adapter_ready: a.capabilities.start, switched_off: a.capabilities.start && (a.adapter === "codex" || a.adapter === "opencode") && settings[a.adapter] !== true, models: a.models === null ? "not listed" : a.models.length })), invite_open: Boolean(readJson("invite.json")?.used === false), health: keptHealth(), connection: keptGatewayState() };
   if (io.has("json")) { io.say(JSON.stringify(summary, null, 2)); return; }
   io.say(`  Remote: ${settings.enabled ? (settings.paused ? `paused (${settings.paused === "desk" ? "here" : "from a phone"})` : "on") : "off"}`);
@@ -291,12 +290,13 @@ function status(io) {
   io.say(`  Gateway: ${summary.gateway === PRODUCTION_GATEWAY ? `${new URL(PRODUCTION_GATEWAY).host} (WorkTrust's)` : `${summary.gateway}${isLoopbackGateway(summary.gateway) ? " (this computer: dev relay)" : " (chosen here)"}`}`);
   io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);
   io.say(`  Phones: ${summary.phones.confirmed} confirmed (${summary.phones.browsers_added} browsers added by a phone), ${summary.phones.pending} pending · Folders granted: ${summary.projects}`);
-  io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`);
+  io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`); io.say(deskReadLine(settings));
   io.say(`  Agent modes a phone may start: ${allowedModes(settings).join(", ")} (npx worktrust remote modes)`);
   for (const a of summary.agents) io.say(`  Agent: ${a.adapter} ${a.version ?? ""} · ${a.switched_off ? `installed, switched off: npx worktrust remote ${a.adapter} on` : a.adapter_ready ? "remote adapter ready" : "installed, no adapter yet"} · models: ${a.models}`);
 }
 
-export async function remoteCommand(args, io) {
+export const remoteCommand = async (args, io) => { const out = await remoteDispatch(args, io); await offerAfter(io, args[0] ?? "help"); return out; }; // every `worktrust remote …`; at its end a computer paired before 0.11.19 is asked about reading along, once, by a person in a terminal (never the service, --json or an agent)
+async function remoteDispatch(args, io) {
   const [sub = "help", ...rest] = args;
   if (remoteStopsHere(sub)) return guideToNode(io, ["remote", ...args], { connected: io.connected?.() }); // Node before 22.4: node-guide.mjs
   if (sub === "app" || sub === "web") return approve(io, sub);
@@ -308,7 +308,7 @@ export async function remoteCommand(args, io) {
     const s = loadSettings();
     saveSettings({ ...s, enabled: false, paused: null });
     io.say(`  Off. The service is removed (${removeService()}); the daemon stops by itself within seconds.`);
-    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json", "notice-keys.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
+    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json", "readers.json", "read-along.json", "notice-keys.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
     return;
   }
   if (sub === "phones") return phones(io, rest);
@@ -318,7 +318,7 @@ export async function remoteCommand(args, io) {
   if (sub === "run") return (await import("./remote-run.mjs")).runDaemon({ say: io.say, version: io.version ?? null });
   if (sub === "pipeline") return pipeline(io, rest);
   if (sub === "roots") return roots(io, rest);
-  if (sub === "modes") return modesCommand(io, rest); if (sub === "admin") return adminCommand(io, rest); if (sub === "desk-history") return deskHistoryCommand(io, rest);
+  if (sub === "modes") return modesCommand(io, rest); if (sub === "admin") return adminCommand(io, rest); if (sub === "desk-history") return deskHistoryCommand(io, rest); if (sub === "read-along") return readAlongCommand(io, rest);
   if (sub === "folder-check") return folderCheck(); // internal: the one-shot launchd job of askMacFolderAccess
   if (sub === "handover") return handoverCommand(io); // internal (0.11.15): the one-shot job a daemon hands over through, run by the NEW launcher
   if (sub === "preview") {
@@ -346,5 +346,5 @@ export async function remoteCommand(args, io) {
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
   if (sub !== "help") { io.say(sub === "enable" ? "  Unknown command: remote enable. Use `npx worktrust remote app` (approve with your phone) or `npx worktrust remote web` (approve in the browser)." : `  Unknown command: remote ${sub}. The remote commands are below.`); process.exitCode = 1; }
-  io.say("  npx worktrust remote app | web | pair | access | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | modes allow|deny edit|auto|status | admin on|off | desk-history on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote app | web | pair | access | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list | modes allow|deny edit|auto|status | admin on|off | read-along on|off|status | desk-history on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

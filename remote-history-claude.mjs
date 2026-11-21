@@ -15,18 +15,26 @@
  *   meta lines, command echoes, a compact summary, sidechain lines in a main page, anything else: nothing
  *
  * A STEP'S STATE IS NEVER GUESSED: its result seen → ok or failed; no result and the end of what is closed was seen →
- * interrupted; no result and the look ahead ran out → unknown. PREVIEWS ONLY: input and output cut at the preview cap with
+ * interrupted; no result and the look ahead ran out → unknown, and an unknown step carries its label alone (its input is held until
+ * its output can be judged with it). PREVIEWS ONLY: input and output cut at the preview cap with
  * ANSI stripped, `more` when either was cut; a step `historyWithholds` names (a secret by name, by command or by shape, a
  * path outside the project, a connector's or an unknown tool) carries its label and `withheld`, nothing of its input or output; an output of images only is `binary`. The whole input and output
  * leave only through `detailOf`, for one item asked by id, cut at the detail cap, and never for a withheld step.
  *
  * AN ID IS DERIVED (protocol historyItemId): the subject, the line's own uuid (a tool call: its tool_use id) and the
  * block's index, so every read of the same line gives the same id.
+ *
+ * PROSE OF A DESK SESSION IS MASKED (CLI 0.11.19, `mask`; remote-history-mask.mjs): a key's shape in the words a person typed or in
+ * an agent's text is replaced in place, before the cut, on every page of a session of this computer's own desk, closed and
+ * live. Which items there are never changes.
  */
 import { isAbsolute, relative, resolve } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { stepOf } from "./remote-claude-events.mjs";
 import { SECRET_DIRS, SECRET_FILE } from "./remote-policy.mjs";
+import { keyShaped, maskKeys } from "./remote-history-mask.mjs";
+
+export { keyShaped }; // a key's shape: the step filter's rule and the prose mask's (remote-history-mask.mjs)
 
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
@@ -124,15 +132,6 @@ function printsCredentials(command) {
   }
   return false;
 }
-const KEY_SHAPES = [/-----BEGIN/, /\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}|npm_[A-Za-z0-9]{30,}|xox[abeprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{30,}|sbp_[A-Za-z0-9]{20,}|sb_secret_[A-Za-z0-9_-]{16,})/, /\bsk-[A-Za-z0-9_-]{16,}|\b[sr]k_(live|test)_[A-Za-z0-9]{10,}/, /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/, /\b(AKIA|ASIA)[0-9A-Z]{16}\b/,
-  /(^|\n)[ \t]*(export[ \t]+)?[A-Z][A-Z0-9_]+=[^\n]*\n[ \t]*(export[ \t]+)?[A-Z][A-Z0-9_]+=/, /(^|\n)[ \t]*(export[ \t]+)?[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_KEY|CREDENTIAL|DATABASE_URL|_DSN|_KEY)[A-Z0-9_]*=["']?[^\s"']{8,}/];
-/** Whether a text holds a key's shape. A user and a password in an address are looked for after each "://", so a long text costs one pass. */
-export function keyShaped(text) {
-  const t = String(text ?? "");
-  if (KEY_SHAPES.some((shape) => shape.test(t))) return true;
-  for (let at = t.indexOf("://"); at >= 0; at = t.indexOf("://", at + 3)) if (/^[^\s/:@]{1,128}:[^\s/@]{1,512}@/.test(t.slice(at + 3, at + 660))) return true;
-  return false;
-}
 /** → true: nothing of this step's input or output is sent. `project`: the granted folder, canonical; null: no path can be judged. */
 export function historyWithholds(name, input, output, project = null) {
   try {
@@ -169,9 +168,10 @@ const inChain = (value, side) => (side ? value?.isSidechain === true && (side.ag
  * `lines` and `after`: `{ at (byte offset), value }`, oldest first, `after` following `lines` directly. `closed`: `after`
  * reaches the end of what is closed (the end of the file, or the start of the running turn), so what has no result by then
  * has none. A step's input and output pass `historyWithholds` first, always: no caller can leave it out. `side`: `{ parent (the subagent's item id),
- * agentId }` for a subagent's own page. → entries `{ line, item, raw? }` oldest first; `raw` stays on this computer.
+ * agentId }` for a subagent's own page. `mask`: the page is a desk session's (above). → entries `{ line, item, raw? }` oldest first; `raw` stays on this computer.
  */
-export function mapTranscript(lines, { scope, cwd = null, after = [], closed = false, side = null }) {
+export function mapTranscript(lines, { scope, cwd = null, mask = false, after = [], closed = false, side = null }) {
+  const prose = (text) => (mask ? maskKeys(text) : text);
   const all = [...lines, ...after], results = resultsOf(all), entries = [], marks = []; // marks: what happened, in order, to tell a text from an answer
   const inPage = lines.length;
   for (let n = 0; n < all.length; n += 1) {
@@ -186,7 +186,7 @@ export function mapTranscript(lines, { scope, cwd = null, after = [], closed = f
     if (words) {
       marks.push({ kind: "user" });
       if (!mine || side) continue;
-      const t = cutTo(words.text, P.HISTORY_MAX_TEXT);
+      const t = cutTo(prose(words.text), P.HISTORY_MAX_TEXT);
       entries.push({ line: offset, item: { id: P.historyItemId(scope, key, 0), kind: "user", at, text: t.text, ...(t.cut ? { cut: true } : {}), from: "computer", ...(words.files > 0 ? { attachments: Math.min(99, words.files) } : {}) } });
       continue;
     }
@@ -199,7 +199,7 @@ export function mapTranscript(lines, { scope, cwd = null, after = [], closed = f
         const mark = { kind: "text", entry: null };
         marks.push(mark);
         if (!mine || !room()) return;
-        const t = cutTo(block.text.trim(), P.HISTORY_MAX_TEXT);
+        const t = cutTo(prose(block.text.trim()), P.HISTORY_MAX_TEXT);
         mark.entry = { line: offset, item: { id: P.historyItemId(scope, key, index), kind: "text", at, text: t.text, ...(t.cut ? { cut: true } : {}) }, model };
         entries.push(mark.entry);
       } else if (block?.type === "thinking" || block?.type === "redacted_thinking") {
@@ -223,6 +223,12 @@ export function mapTranscript(lines, { scope, cwd = null, after = [], closed = f
   return entries.map(({ model: _model, ...entry }) => entry);
 }
 
+/** A label that may leave: keys masked BEFORE it is cleaned and cut, and `generic` when what is left is still key-shaped or empty. */
+function safeLabel(words, generic) {
+  const label = cutTo(clean(maskKeys(words)).trim(), P.HISTORY_MAX_LABEL).text;
+  return label && !keyShaped(label) ? label : generic;
+}
+
 function stepEntry({ scope, cwd, offset, at, block, result, closed, side }) {
   const id = P.historyItemId(scope, block.id, 0), input = block.input && typeof block.input === "object" ? block.input : {};
   const state = result ? (result.failed ? "failed" : "ok") : closed ? "interrupted" : "unknown";
@@ -230,17 +236,23 @@ function stepEntry({ scope, cwd, offset, at, block, result, closed, side }) {
   const spent = Number.isSafeInteger(record?.totalDurationMs) && record.totalDurationMs >= 0 ? record.totalDurationMs : result && result.at !== null && at !== null && result.at >= at ? result.at - at : null;
   const duration = spent === null ? {} : { duration_ms: spent };
   if (SUBAGENT_TOOLS.has(block.name) && !side) {
-    const label = cutTo(clean(String(input.description ?? "")).trim(), P.HISTORY_MAX_LABEL).text || String(block.name);
+    const label = safeLabel(String(input.description ?? ""), "") || String(block.name);
     const type = typeof input.subagent_type === "string" ? cutTo(clean(input.subagent_type).trim(), 64).text || null : null; // cleaned as a label is
     const steps = Number.isSafeInteger(record?.totalToolUseCount) && record.totalToolUseCount >= 0 ? Math.min(100_000, record.totalToolUseCount) : null;
     const agentId = typeof record?.agentId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(record.agentId) ? record.agentId : null;
     return { line: offset, item: { id, kind: "subagent", at, label, state, ...(type ? { agent_type: type } : {}), ...(steps !== null ? { steps } : {}), ...duration }, raw: { tool_use_id: block.id, agentId, ended: result ? offset : null } };
   }
-  // A label is the live step's own (what the phone was shown while it ran), except one that holds a key's shape.
-  const step = stepOf(block.name, input, cwd), named = cutTo(clean(step.label), P.HISTORY_MAX_LABEL).text || "Use a tool", label = keyShaped(named) ? (block.name === "Bash" ? "Run a command" : "Use a tool") : named;
-  const base = { id, kind: "step", at, label, step: step.kind, state, ...duration, ...(side ? { subagent: side.parent } : {}) };
-  if (historyWithholds(block.name, input, result ? resultText(result.content) : null, cwd)) return { line: offset, item: { ...base, withheld: "secret_path" }, raw: { withheld: true } };
+  // A LABEL NEVER CARRIES WHAT THE STEP WITHHOLDS (security review 2026-11-21, P2-1; true of closed history since 0.11.17): a
+  // withheld step says only what kind of step it was (the command, the path or the tool's name was the secret's own place);
+  // any other label is the live step's own, with a key's shape masked, and generic when the mask cannot unpick it.
+  const step = stepOf(block.name, input, cwd), generic = block.name === "Bash" ? "Run a command" : "Use a tool";
+  const withheld = historyWithholds(block.name, input, result ? resultText(result.content) : null, cwd);
+  const base = { id, kind: "step", at, label: withheld ? generic : safeLabel(step.label, generic), step: step.kind, state, ...duration, ...(side ? { subagent: side.parent } : {}) };
+  if (withheld) return { line: offset, item: { ...base, withheld: "secret_path" }, raw: { withheld: true } };
   if (result && onlyBinary(result.content)) return { line: offset, item: { ...base, withheld: "binary" }, raw: { withheld: true } };
+  // A STEP WHOSE END WAS NOT SEEN CARRIES ITS LABEL ALONE (review 2026-11-21, P3-7): what it prints cannot be judged yet, so its input is
+  // not sent either (a running step while a phone reads along; a result past a page's look ahead), not in a preview and not as a detail.
+  if (state === "unknown") return { line: offset, item: base, raw: { withheld: true } };
   const whole = { input: clean(inputText(block.name, input)), output: result ? clean(resultText(result.content)) : null };
   const i = cutTo(whole.input, P.HISTORY_MAX_PREVIEW), o = whole.output === null ? null : cutTo(whole.output, P.HISTORY_MAX_PREVIEW);
   return { line: offset, item: { ...base, ...(i.text ? { input: i.text } : {}), ...(o && o.text ? { output: o.text } : {}), ...(i.cut || o?.cut ? { more: true } : {}) }, raw: whole };

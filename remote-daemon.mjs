@@ -12,13 +12,13 @@
  */
 import { basename } from "node:path";
 import * as P from "./remote-protocol.mjs";
-import { confirmedFingerprints, controllerKeys, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
+import { confirmedFingerprints, controllerKeys, deskReadOf, knownBrowser, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
 import { acceptEndorsement } from "./remote-endorse.mjs";
 import { createProject, rootLabel, sessionProjects, worktreeMain } from "./remote-projects.mjs";
 import { agentOptionsOf } from "./remote-inventory.mjs";
 import { allowedModes, applySettingsChange } from "./remote-settings.mjs";
 import { adminInventory } from "./remote-admin.mjs";
-import { deskBodyFor } from "./remote-desk-sessions.mjs";
+import { createPeers } from "./remote-peers.mjs";
 import { createNotices, projectNameOf } from "./remote-notices.mjs";
 import { createCatchUp } from "./remote-catch-up.mjs";
 import { createHistory } from "./remote-history.mjs";
@@ -38,18 +38,7 @@ export function createDaemonCore(o) {
   const persist = () => saveChannels([...channels.values()]);
   let sessions = null, approvals = o.approvals ?? null, releases = null;
 
-  // THE 0.11.7 INVENTORY FIELDS REACH ONLY A PHONE THAT ASKED FOR THEM (inventory.get `extended`): an older phone refuses unknown
-  // keys, so every other channel gets the inventory without them. Kept per phone for the daemon's life; a phone asks again on every inventory.get.
-  const extendedPeers = new Set(), switchPeers = new Set(); // release 33: `model_switch` only for a phone that asked for it
-  const deskPeers = new Set(); // release 36: `desk_sessions` (and the `in_use` refusal) only for a phone that asked for them
-  const cliPeers = new Set(); // CLI 0.11.16: `cli` (this daemon's own release, its restart; protocol cli.ts): only for a phone that asked
-  const EXTENDED_KEYS = ["agent_options", "modes_allowed", "admin", "folders", "connections", "desk_sessions", "cli"];
-  const withoutSwitch = (body) => (body.agent_options ? { ...body, agent_options: body.agent_options.map(({ model_switch: _drop, ...o }) => o) } : body);
-  const withoutCli = ({ cli: _drop, ...body }) => body;
-  const cliBodyFor = (peer, type, body) => (type === "device.inventory" && body.cli && !cliPeers.has(peer) ? withoutCli(body) : body);
-  const bodyFor = (channel, record) => deskBodyFor(deskPeers.has(channel.peer_device_id), record.type, cliBodyFor(channel.peer_device_id, record.type, record.type !== "device.inventory" ? record.body
-    : extendedPeers.has(channel.peer_device_id) ? (switchPeers.has(channel.peer_device_id) ? record.body : withoutSwitch(record.body))
-    : Object.fromEntries(Object.entries(record.body).filter(([key]) => !EXTENDED_KEYS.includes(key)))));
+  const peers = createPeers({ browser: (deviceId) => knownBrowser(deviceId) }); // what each phone asked to read, and what is sealed for it (remote-peers.mjs); a browser never reads along
   // THE RESTART, SAID BEFORE IT HAPPENS (remote-service.mjs createHandover, remote-run.mjs stop): one ordinary inventory naming
   // `cli.restarting` (the relay lists what may be transient, and an inventory is not). announceRestart(false) withdraws it.
   let restarting = null;
@@ -69,7 +58,7 @@ export function createDaemonCore(o) {
       if (only !== null && channel.peer_device_id !== only) continue;
       const notice = milestone ? notices.sealFor(channel.peer_device_id, record, milestone) : null;
       const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify, ...(record.lane ? { lane: record.lane } : {}), ...(notice ? { notice } : {}) };
-      const sealed = P.sealEvent(channel, draft, bodyFor(channel, record), o.random);
+      const sealed = P.sealEvent(channel, draft, peers.bodyFor(channel, record), o.random);
       if (!sealed.ok) { o.log("seal_refused", { type: record.type, code: sealed.code }); continue; }
       channels.set(id, sealed.value.channel);
       o.send({ frame: "event", envelope: sealed.value.envelope }, { replayed });
@@ -81,7 +70,7 @@ export function createDaemonCore(o) {
   // journaled, so a replay never brings back a stale screen and the session's own sequence has no number missing. Its numbers rise per session from this computer's clock.
   const laneSeq = new Map();
   // `local` (CLI 0.11.18): fields for THIS computer's journal record alone, beside the body and never sealed (sealAll seals
-  // the body through bodyFor), so a fact the computer reads back after a restart never reaches a phone that would refuse it.
+  // the body through peers.bodyFor), so a fact the computer reads back after a restart never reaches a phone that would refuse it.
   function emit(sessionId, type, body, commandId = null, notify = "none", { transient = false, only = null, local = null } = {}) {
     let shaped = P.validateEventBody(type, body);
     if (!shaped.ok && type === "agent.completed" && body.result) {
@@ -106,7 +95,9 @@ export function createDaemonCore(o) {
   const { catchUp, replay } = createCatchUp({ journal: o.journal, known: (id) => Boolean(sessions?.get?.(id) || o.journal.session(id)), room: () => o.room?.(), log: o.log,
     sealFor: (record, phone) => sealAll(record, { replayed: true, only: phone }) });
   // A PAGE OF HISTORY (remote-history.mjs; PROTOCOL.md §History): read here, sealed for the phone that asked ALONE, on the transient lane, journaled nowhere.
-  const history = createHistory({ journal: o.journal, sessions: () => sessions, desk: o.desk, settings: loadSettings, agentEnv: o.agentEnv, now: o.now, room: () => o.room?.(), log: o.log,
+  // READING ALONG (CLI 0.11.19, remote-history-follow.mjs): only for a phone that asked `desk_live` and that the keyboard still confirms; its pages leave through the same one seal.
+  const history = createHistory({ journal: o.journal, sessions: () => sessions, desk: o.desk, settings: loadSettings, agentEnv: o.agentEnv, now: o.now, room: () => o.room?.(), log: o.log, every: o.every,
+    readsLive: (phone) => peers.readsLive(phone), confirmed: (phone) => [...channels.values()].some((c) => c.peer_device_id === phone && confirmed().has(c.peer_fingerprint)),
     projects: () => (o.projectSecret ? sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: o.projectSecret }) : loadProjects()),
     sealPage: (body, phone) => { if (phone) emit(null, "history.page", body, null, "none", { transient: true, only: phone }); } }); // the guard is `only` and confirmed() in sealAll: one channel, of a phone the keyboard still confirms
 
@@ -125,17 +116,18 @@ export function createDaemonCore(o) {
         return { project_id: p.project_id, label: (basename(p.path) || p.path).slice(0, 256), path: p.path.slice(0, 4096), last_used_at: null, root_id: p.root_id ?? null, ...(main ? { main: main.slice(0, 4096) } : {}) };
       }),
       roots: loadRoots().slice(0, 20).map((r) => ({ root_id: r.root_id, label: rootLabel(r.path), git_init: r.git_init === true })),
-      // Sealed only for a phone that asked `extended` (bodyFor above): what each agent offers, and the keyboard's ceiling.
+      // Sealed only for a phone that asked `extended` (remote-peers.mjs bodyFor): what each agent offers, and the keyboard's ceiling.
       ...(inv.features ? { agent_options: agentOptionsOf(inv), modes_allowed: allowedModes(settings) } : {}),
       // Part B, also only for an `extended` phone: the admin switch, the folders this computer suggests (by its own ids),
       // and the phones and browsers linked to it (remote-admin.mjs).
       ...adminInventory({ projectSecret: o.projectSecret, settings }),
       ...(P.CLI_RELEASE.test(o.version ?? "") ? { cli: { version: o.version, ...(restarting ? { restarting } : {}) } } : {}),
+      ...(peers.readsLive() ? { desk_read: deskReadOf(settings) } : {}), // what the keyboard lets a phone read of the desk; sealed only for a phone that asked `desk_live`
       // Every session this computer knows, live or in the journal, newest activity first, with its name and its release task.
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };
     // Release 36, read only while a phone that asked is linked: this computer's own Claude Code sessions, under the projects above.
-    if (o.desk && deskPeers.size > 0) { try { body.desk_sessions = o.desk.list().filter((d) => body.projects.some((p) => p.project_id === d.project_id)); } catch { o.log("desk_unreadable", {}); } }
+    if (o.desk && peers.readsDesk()) { try { body.desk_sessions = o.desk.list().filter((d) => body.projects.some((p) => p.project_id === d.project_id)); } catch { o.log("desk_unreadable", {}); } }
     return body;
   }
 
@@ -232,10 +224,7 @@ export function createDaemonCore(o) {
     if (env.type === "history.get") { if (settings.paused !== null) return "remote_paused"; return history.get(payload, env.sender_device_id, env.command_id); } // a paused computer reads no transcript and no journal for anyone (review 2026-11-17, F3)
     if (settings.paused !== null && !DEVICE_COMMANDS.has(env.type)) return "remote_paused";
     if (env.type === "inventory.get") {
-      if (payload.extended === true && env.sender_device_id) extendedPeers.add(env.sender_device_id);
-      if (payload.extended === true && payload.model_switch === true && env.sender_device_id) switchPeers.add(env.sender_device_id); // kept, as extendedPeers
-      if (payload.extended === true && payload.desk_sessions === true && env.sender_device_id) deskPeers.add(env.sender_device_id);
-      if (payload.extended === true && payload.cli === true && env.sender_device_id) cliPeers.add(env.sender_device_id);
+      peers.note(payload, env);
       if (payload.device_name && env.sender_device_id) rememberName(env.sender_device_id, payload.device_name);
       emit(null, "device.inventory", inventoryBody(payload.refresh_models));
       return "taken";
@@ -333,7 +322,7 @@ export function createDaemonCore(o) {
       const next = to === false ? null : { to: P.CLI_RELEASE.test(to ?? "") ? to : null, at: o.now() };
       if ((next === null) === (restarting === null) && next?.to === restarting?.to) return false;
       restarting = next;
-      if (cliPeers.size === 0 || channels.size === 0 || !P.CLI_RELEASE.test(o.version ?? "")) return false;
+      if (!peers.readsCli() || channels.size === 0 || !P.CLI_RELEASE.test(o.version ?? "")) return false;
       return emit(null, "device.inventory", inventoryBody(false)), true;
     },
     /** The computer's health (remote-health.mjs): device-wide on the transient lane, to every open channel, never journaled. */

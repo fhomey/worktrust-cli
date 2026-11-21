@@ -57,6 +57,26 @@ export function openPlainUnder(root, file) {
   return openPlain(file);
 }
 export const closePlain = (opened) => { try { if (opened) closeSync(opened.fd); } catch { /* closed */ } };
+/**
+ * READING ALONG (CLI 0.11.19, remote-history-follow.mjs). `lookPlain`: what a name is NOW, without opening it: `{ size, id }` of
+ * a regular file that is no link, else null (the follow's tick: nothing is opened and nothing read while the size stands).
+ * `identOf`: the same id of an opened file, so a transcript that was replaced under its name is seen. `lineEnd`: where the
+ * last WHOLE line ends at or before `size` (a line still being written is never read), or null when no line ends within
+ * MAX_LINE of it.
+ */
+export function lookPlain(file) {
+  try { const st = lstatSync(file, { bigint: true }); return st.isSymbolicLink() || !st.isFile() ? null : { size: Number(st.size), id: `${st.dev}.${st.ino}` }; } catch { return null; }
+}
+export const identOf = (opened) => { const st = fstatSync(opened.fd, { bigint: true }); return `${st.dev}.${st.ino}`; };
+export function lineEnd(fd, size) {
+  for (let pos = size; pos > 0 && size - pos <= MAX_LINE;) {
+    const n = Math.min(65_536, pos), nl = read(fd, pos - n, n).lastIndexOf(10);
+    if (nl !== -1) return pos - n + nl + 1;
+    pos -= n;
+    if (pos === 0) return 0;
+  }
+  return size === 0 ? 0 : null;
+}
 
 const read = (fd, at, length) => { const buf = Buffer.alloc(length); const n = readSync(fd, buf, 0, length, at); return n === length ? buf : buf.subarray(0, n); };
 const parse = (buf) => { try { const v = JSON.parse(buf.toString("utf8")); return v && typeof v === "object" && !Array.isArray(v) ? v : null; } catch { return null; } };

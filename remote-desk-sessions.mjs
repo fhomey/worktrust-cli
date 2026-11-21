@@ -10,7 +10,8 @@
  *
  * WHAT IS SENT, sealed in device.inventory and only to a phone that asked `desk_sessions` (remote-daemon.mjs): per session
  * its uuid, its project's id, the last activity time, a title (Claude Code's own name or summary line when the transcript
- * has one, else the first line the person typed, cut to 80 characters) and the model when one is recorded. Never more of the
+ * has one, else the first line the person typed, cut to 80 characters; since 0.11.19 with a key's shape in it replaced by the
+ * history's mask, remote-history-mask.mjs) and the model when one is recorded. Never more of the
  * transcript. The last 20 by activity; sessions the remote already runs or ran (its journal) are its own rows.
  *
  * ONE OWNER PER CONVERSATION: a resume is refused (`in_use`) while the session is held on the computer: its transcript was
@@ -23,6 +24,8 @@ import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, readl
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as P from "./remote-protocol.mjs";
+import { maskKeys } from "./remote-history-mask.mjs";
+import { typedWords } from "./remote-history-claude.mjs";
 
 export const HELD_WINDOW_MS = 30_000;
 const SLICE = 64 * 1024;
@@ -51,13 +54,15 @@ function headAndTail(file) {
 
 const oneLine = (text) => text.replace(/\s+/g, " ").trim();
 const cut = (text, max) => { const t = oneLine(text); return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t; };
-/** The words of a person's own message: a string, or its text blocks; never a tool result, a command's output or a caveat. */
+/**
+ * The words of a person's own message, for a title: the history's OWN typed words (remote-history-claude.mjs typedWords; review
+ * 2026-11-21, P3-8: this had a filter of its own, which let an opened file, a selection, a paste and a notification through).
+ * A key's shape is masked before the lines are joined.
+ */
 function typed(line) {
-  if (line.type !== "user" || line.isMeta === true || line.isSidechain === true || line.message?.role !== "user") return null;
-  const c = line.message.content;
-  const text = typeof c === "string" ? c : Array.isArray(c) && c.every((b) => b?.type === "text") ? c.map((b) => b.text ?? "").join(" ") : null;
-  if (!text || /^\s*<(command-|local-command-|bash-|system-reminder)/.test(text) || /^\s*Caveat:/.test(text)) return null;
-  return oneLine(text) || null;
+  if (line.isSidechain === true) return null;
+  const words = typedWords(line);
+  return words && words.text ? oneLine(maskKeys(words.text)) || null : null;
 }
 
 /** What one transcript tells: its working folder, a title and the model. Nothing else is kept. */
@@ -68,7 +73,7 @@ export function transcriptFacts(file) {
   const named = all.filter((l) => l.type === "custom-title" && typeof l.customTitle === "string").at(-1)?.customTitle
     ?? all.filter((l) => l.type === "summary" && typeof l.summary === "string").at(-1)?.summary ?? null;
   const first = head.map(typed).find(Boolean) ?? null;
-  const title = named && oneLine(named) ? cut(named, P.MAX_DESK_TITLE) : first ? cut(first, P.MAX_DESK_TITLE) : null;
+  const title = named && oneLine(named) ? cut(maskKeys(named), P.MAX_DESK_TITLE) : first ? cut(first, P.MAX_DESK_TITLE) : null; // masked before the cut: a key the cut would split is not sent in part
   const models = all.filter((l) => l.type === "assistant" && typeof l.message?.model === "string" && /^[A-Za-z0-9._:@\[\]-]{1,128}$/.test(l.message.model) && l.message.model !== "<synthetic>");
   return { cwd, title, model: models.at(-1)?.message.model ?? null };
 }

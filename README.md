@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.18
+  WorkTrust CLI 0.11.19
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.18
+  WorkTrust CLI 0.11.19
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.18)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.19)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -205,6 +205,29 @@ is not shown when it uses a connector's tool or a tool the CLI does not know, na
 outside the project, runs a command that prints credentials, or carries something shaped like a key; thinking and images
 are never sent. A paused computer answers no history. Sessions you started at this keyboard and never continued from a
 phone stay unread unless you say so here: `npx worktrust remote desk-history on` (off by default; `off` turns it back).
+
+**Read along with a session at your desk (0.11.19).** With `npx worktrust remote read-along on` a phone you paired may
+read along, live, with a Claude Code session you run at this computer, in the VS Code extension or in a terminal, in a
+folder you granted. The switch covers every folder you granted and every project inside a root you added, also one added later
+(from this keyboard, or approved in the app while `remote admin` is on, the default): see them with
+`npx worktrust remote projects list` and `npx worktrust remote roots list`. It only reads, and it is off until you say yes at this keyboard: after you link or confirm a phone here the CLI asks
+once, `Turn read along on? [Y/n]`, and Enter is yes (a computer you paired before this release is asked once, at your
+next `npx worktrust remote` command in a terminal; without a terminal nothing is asked and nothing is turned on). Know
+what a yes does: the content of your sessions then leaves this computer live, sealed for your paired phones; nothing can be typed or sent into that session from the
+phone. This computer follows the session's own transcript for the phone that asked and sends what is written, sealed for
+that phone alone, with the same limits as earlier messages (previews, no thinking, no images, a withheld step named and
+not shown); a key in what you typed or in what the agent wrote is replaced by `[key hidden]`. That
+mask knows shapes only (a token by its prefix, a private key block, a password in an address or after a name such as
+`password=` or `api_key:`, an `Authorization` header): a password said in a sentence, or a customer's data, is sent as
+written. The terminal of
+`remote run` says which phone reads along and in which folder, and when it stops. `read-along off` ends it within a
+second and also turns `desk-history` off; `read-along status` and `remote status` say where it stands and who reads
+along now. One follow lasts an hour at most; then the phone opens the session again. Reading along is
+on the phone app only: WorkTrust in the browser never asks for it, and this computer refuses it for a browser one of
+your phones added. A browser you confirmed at this keyboard is recorded like a phone and cannot be told apart, so for
+it the switch is what decides. Two limits: a session in a git worktree is listed only when that worktree's
+folder is itself granted, and sessions are read from `~/.claude/projects` (a `CLAUDE_CONFIG_DIR` of your own is not
+followed).
 
 **Files from your phone.** A file or photo you send with a prompt lands in the session's project, in
 `.worktrust/inbox/<session>/`, also for a project this computer reaches inside a granted root. The inbox keeps itself out

@@ -2,6 +2,75 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.19: read along from your phone with a session at your desk, when you turn it on
+
+**Read along, live and read-only.** A phone you paired may read along with a Claude Code session you run at this
+computer, in the VS Code extension or in a terminal, in a folder you granted: what you type, what the agent answers and
+its steps, as they are written. It only reads. Nothing can be typed or sent into that session from the phone, and
+nothing is started, resumed or stopped by it.
+
+**You are asked once, at this keyboard, and Enter is yes.** After you link a phone (`remote app`, `remote web`, `remote
+pair`) or confirm one (`remote phones confirm`), the CLI explains reading along in three lines and asks `Turn read along
+on? [Y/n]`. Enter turns it on, exactly as `read-along on` does; `n` leaves it off; the answer is remembered and you are
+not asked again (`read-along status` says whether you were). If this computer was paired before this release, the
+update switches nothing: you are asked once, at the end of your next `npx worktrust remote` command in a terminal.
+Nobody but you at a terminal is asked: in a pipe, with `--yes` or `--json`, in an AI agent's shell or in the
+background service nothing is asked and nothing is turned on, and the pairing prints the one command instead. No
+answer (the input ends, or two minutes pass) is a no for now, and you are asked again another time. Know what a yes
+does: the content of your sessions then leaves this computer live, sealed for the phones you paired, for every folder
+this computer shares; the key mask knows shapes only.
+
+**Off until you say so, at this keyboard.** `npx worktrust remote read-along on` turns it on, `off` turns it off within
+a second for every phone that reads along, `status` says where it stands, and `remote status` carries the same line
+(`desk_read` in `--json`: off, history or live). The switch never changes from the app or the web. It covers every
+folder you granted and every project inside a root you added, also one added later (approved in the app too, while
+`remote admin` is on); `read-along on` says so and names how to see the list. `read-along on` also
+turns on reading the closed turns of those sessions (`desk-history`); `desk-history on` alone stays what it was in
+0.11.17 and 0.11.18, closed turns and never the running one, and `desk-history off` turns reading along off with it. If
+you had `desk-history` on before this release, nothing more is readable after the update than before. A connected phone
+hears the change of the switch within three seconds; a folder granted or a switch changed in the first seconds after
+the service started is now told too (until now a change before the service's first look went unsaid).
+
+**Your terminal says who reads.** While `remote run` is in a terminal it prints one line when a phone starts reading
+along and one when it stops: the phone's name and the folder's, never a word of the session.
+
+**What leaves, and what does not.** The same as for earlier messages: your words and the agent's text (cut at 16,384
+characters), each step with a short preview of what went in and came out, thinking as a marker only, images and pasted
+content counted and never sent, and a step named but not shown when it uses a connector's or an unknown tool, names a
+secret file or a path outside the project, prints credentials or carries something shaped like a key. New in this
+release, for every page of a session of your own desk, live or earlier: something shaped like a key in what you typed or
+in what the agent wrote (a token, a private key block, a password in an address, lines of NAME=value) is replaced in
+place by `[key hidden]`, and the words around it stay. The shapes it knows (and with them what makes a step withheld,
+also in earlier messages) now include an `Authorization` header and a bare `Bearer` token, a name that ends on a
+secret's word with its value anywhere in a line (`password=…`, `password: …`, `"apiKey": "…"`, `api_key: …`,
+`?token=…`), a password in an address without a user or with `/` or `@` in it, `mysql -p…`, and the tokens of Hugging
+Face, SendGrid, DigitalOcean, Twilio, Google and webhook secrets. It knows shapes only: a password said in a sentence,
+or a customer's data, is sent as written. The same holds for a session's title in the list of this
+computer's sessions (its first words, or Claude Code's own summary), for every phone and browser that gets that list. Everything is sealed for the one phone that asked; WorkTrust's
+relay cannot open it and keeps none of it, and this computer writes none of it anywhere.
+
+**A withheld step no longer names its secret in its label (also in earlier messages, since 0.11.17).** A step whose
+content is not shown still carried a label made from its command, path or tool name, so `NAME=secret command` or a
+secret file's name was readable there. A withheld step now says only "Run a command" or "Use a tool", and every other
+label, a sub-agent's too, has anything shaped like a key replaced by `[key hidden]`.
+
+**A step that still runs shows its label only.** What a step will print cannot be judged before it has printed it, so
+its input is not sent either until then (what a Write writes, what an Edit changes); a command's own line is its label
+and is shown, with anything shaped like a key masked.
+
+**Bounded.** One session per phone at a time, four phones at most, at most one update a second per phone, and an hour
+at most for one follow: after that the phone has to open the session again. `remote status` and `remote read-along
+status` say who reads along now, by the phone's name and the folder's, also when the service runs in the background. A phone that
+goes away is forgotten after two minutes. Nothing is read while nothing is written, and nothing at all while nobody
+reads along. A sub-agent's own steps are shown when you open it, once it has ended.
+
+**Limits you should know.** Reading along is in the phone app (once it is on the release that asks for it), not in the
+browser: WorkTrust in the browser never asks for it, and this computer refuses it for a browser one of your phones
+added. A browser you confirmed at this keyboard is recorded like a phone and cannot be told apart: for it the switch
+decides. A session in a git worktree is listed only when that worktree's folder is itself granted. Sessions are read
+from `~/.claude/projects`: a `CLAUDE_CONFIG_DIR` of your own is not followed. An older phone app or browser tab works
+as before and is sent nothing new. Nothing changes in what is measured: the measure rules stay 4.
+
 ## 0.11.18: files from your phone reach projects inside a granted root, stay out of git, and can be cleared one by one
 
 **Files from the phone arrive in every project a session can run in.** A session in a project this computer reaches

@@ -19,6 +19,7 @@
  * read by the daemon on every start (checkAgentOptions), never taken from a phone.
  */
 import { readdirSync } from "node:fs";
+import { basename } from "node:path";
 import { adminRefusal, resolveAdminChange } from "./remote-admin.mjs";
 import { removePhones } from "./remote-connections.mjs";
 import { protectedFolder } from "./folder-picker.mjs";
@@ -27,7 +28,7 @@ import { probeFolders } from "./remote-service.mjs";
 import { checkRoot, MAX_ROOTS, rootIdOf } from "./remote-projects.mjs";
 import { agentOptionsOf } from "./remote-inventory.mjs";
 import * as P from "./remote-protocol.mjs";
-import { ensureRemoteDir, loadKeys, loadPreviewGrants, loadProjects, loadRoots, loadSettings, projectIdOf, savePreviewGrants, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
+import { deskReadOf, ensureRemoteDir, loadKeys, loadPhones, loadReadAlongAsk, readJson, saveReadAlongAsk, loadPreviewGrants, loadProjects, loadRoots, loadSettings, projectIdOf, savePreviewGrants, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
 
 export const RAISABLE_MODES = Object.freeze(["edit", "auto"]);
 const ORDER = ["manual", "edit", "plan", "auto"];
@@ -58,7 +59,7 @@ export function startChoice(payload, projectId, inventory, settings, known) {
 /**
  * The one door for a settings change. `change`: { what: "modes", allow|deny: "edit"|"auto" } | { what: "roots", add: dir,
  * git_init } | { what: "roots", remove: id|dir } | { what: "projects", add: dir } | { what: "projects", remove: id|dir } |
- * { what: "admin", on: boolean } | { what: "endorse", on: boolean } (both this keyboard only) | { what: "connections", remove:
+ * { what: "admin", on: boolean } | { what: "endorse", on: boolean } | { what: "desk_history", on: boolean } | { what: "desk_live", on: boolean } (all four this keyboard only) | { what: "connections", remove:
  * fingerprint } (resolved from the app's change only).
  * `source`: { kind: "keyboard" }, or { kind: "admin", proof, issuerKeys, claims, now, via } (part B; its change is
  * crypto/admin.ts's ADMIN_CHANGE_SPEC, resolved by id before it reaches the rules below).
@@ -106,8 +107,15 @@ function applyRules(change, fromApp) {
     // May a phone READ a session of this computer's own desk list that it never continued (remote-history.mjs)? This keyboard only.
     if (fromApp) return refused("reading this computer's own sessions changes at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
-    saveSettings({ ...settings, desk_history: change.on });
+    saveSettings({ ...settings, desk_history: change.on, ...(change.on ? {} : { desk_live: false }) }); // without the closed turns there is no reading along either
     return { ok: true, message: change.on ? "Your paired phones and browsers may read the sessions you ran at this computer, in the folders you granted. Nothing is stored on a server." : "Sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
+  }
+  if (change?.what === "desk_live") {
+    // May a phone READ ALONG, live, with a session running at this computer (remote-history-follow.mjs)? This keyboard only. On brings the closed turns with it.
+    if (fromApp) return refused("reading along with this computer's own sessions changes at this keyboard only");
+    if (typeof change.on !== "boolean") return refused("on or off");
+    saveSettings({ ...settings, desk_history: change.on, desk_live: change.on });
+    return { ok: true, message: change.on ? "Your paired phones may read along, live and read-only, with the sessions you run at this computer. This covers EVERY folder you granted and every project inside a root you added, also one added later, from this keyboard or (while `remote admin` is on, the default) approved in the app or on the web. See them: npx worktrust remote projects list · npx worktrust remote roots list. Nothing is stored on a server, and nothing can be sent into a session from there." : "Nobody reads along, and sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
   }
   if (change?.what === "admin") {
     if (fromApp) return refused("the admin switch changes at this keyboard only");
@@ -176,6 +184,45 @@ export function modesCommand(io, rest) {
 export function deskHistoryCommand(io, rest) {
   if (rest[0] === "on" || rest[0] === "off") return io.say(`  ✓ ${applySettingsChange({ what: "desk_history", on: rest[0] === "on" }, { kind: "keyboard" }).message}`);
   io.say(`  Reading this computer's own sessions from a phone or a browser: ${loadSettings().desk_history === true ? "on" : "off"} (npx worktrust remote desk-history on|off)`);
+}
+
+/**
+ * WHO READS ALONG NOW (review 2026-11-21, P3-6: under the installed service nobody sees the run terminal's line). The daemon
+ * keeps the readers in readers.json (remote-run.mjs: device id, project id and since when, never a word of a session) and
+ * refreshes it every three seconds while there are any; `remote status` reads it and believes it for READERS_FRESH_MS.
+ */
+export const READERS_FRESH_MS = 10_000;
+export const keepReaders = (rows, now = Date.now()) => { try { ensureRemoteDir(); writeJson("readers.json", { at: now, readers: rows.slice(0, 8).map((r) => ({ phone: r.phone, project_id: r.project_id, since: r.since })) }); } catch { /* status says nobody: the run terminal's line was still said */ } };
+const phoneWords = (id, phones) => { const p = phones.confirmed.find((x) => x.device_id === id); return p?.name ?? (p ? `a phone (key ${p.fingerprint})` : "a phone"); };
+const folderWords = (id, projects) => { const p = projects.find((x) => x.project_id === id); return p ? basename(p.path) || p.path : "a granted folder"; };
+export function keptReaders(now = Date.now(), phones = loadPhones(), projects = loadProjects()) {
+  const kept = readJson("readers.json");
+  if (!kept || !Number.isSafeInteger(kept.at) || Math.abs(now - kept.at) > READERS_FRESH_MS || !Array.isArray(kept.readers)) return [];
+  return kept.readers.slice(0, 8).map((r) => ({ phone: phoneWords(r.phone, phones), project: folderWords(r.project_id, projects), since: Number.isSafeInteger(r.since) ? r.since : null }));
+}
+/** What `remote status` and `remote read-along` say of the desk (remote-store.mjs deskReadOf), and who reads along now. */
+export function deskReadLine(settings = loadSettings(), now = Date.now()) {
+  const read = deskReadOf(settings), readers = read === "live" ? keptReaders(now) : [];
+  const clock = (at) => (at === null ? "" : ` since ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+  return `  Reading this computer's own sessions from a phone: ${{ off: "off", history: "closed turns only", live: "live (read along) and closed turns" }[read]} (npx worktrust remote read-along on|off)${read === "live" ? `\n  Reading along now: ${readers.length ? readers.map((r) => `${r.phone} in ${r.project}${clock(r.since)}`).join("; ") : "nobody"}` : ""}`;
+}
+/** `remote read-along on|off | status` (CLI 0.11.19): may a paired phone read along, live and read-only, with a session running at this computer. */
+export function readAlongCommand(io, rest) {
+  if (rest[0] === "on" || rest[0] === "off") {
+    const done = applySettingsChange({ what: "desk_live", on: rest[0] === "on" }, { kind: "keyboard" });
+    if (done.ok) saveReadAlongAsk({ answer: rest[0] === "on" ? "yes" : "no", at: Date.now() }); // typed by the person: that is the answer, and the question is not asked again
+    return io.say(`  ✓ ${done.message}`);
+  }
+  if (rest[0] !== undefined && rest[0] !== "status") return io.fail("npx worktrust remote read-along on|off | status");
+  io.say(deskReadLine());
+  const asked = loadReadAlongAsk();
+  io.say(`  Asked at this keyboard: ${asked ? `yes, answered ${asked.answer}${asked.at ? ` on ${new Date(asked.at).toISOString().slice(0, 10)}` : ""}` : "not yet (the next remote command you run in a terminal asks once)"}`);
+}
+/** What the run terminal says when a phone starts or stops reading along (remote-run.mjs): the folder's name and the phone's, never a word of the session. */
+export function readAlongLine(fields, phones = loadPhones(), projects = loadProjects()) {
+  const who = phoneWords(fields.phone, phones), where = folderWords(fields.project_id, projects);
+  const WHY = { off: ": reading along was turned off here", paused: ": this computer is paused", gone: ": the session can no longer be read", busy: ": this computer could not keep up", expired: ": it went away", capped: ": an hour passed (the phone can open it again)", removed: ": it was disconnected", refused: "", asked: "" };
+  return fields.on ? `  ! ${who} reads along with a session in ${where}. To stop it: npx worktrust remote read-along off` : `  ! ${who} stopped reading along with a session in ${where}${WHY[fields.why] ?? ""}.`;
 }
 
 /** `remote admin on|off | status`: whether a change approved in the app or on the web (with the authenticator) is honoured here. */

@@ -13,7 +13,8 @@ import { closeSync, openSync, readFileSync, rmSync, writeSync, constants } from 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as P from "./remote-protocol.mjs";
-import { loadPreviewGrants, loadRoots } from "./remote-store.mjs";
+import { deskReadOf, loadPreviewGrants, loadRoots } from "./remote-store.mjs";
+import { keepReaders, readAlongLine } from "./remote-settings.mjs";
 import { sessionProjects } from "./remote-projects.mjs";
 import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
 import { openJournal } from "./remote-journal.mjs";
@@ -42,10 +43,14 @@ import { createHandover, daemonBusy, holdDuring, ownLauncher, restartAsked } fro
 const HERE = dirname(fileURLToPath(import.meta.url));
 const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), kind, ...fields })}\n`);
 // A browser a phone added (2026-11-09, remote-endorse.mjs) is said in words too, so it is never news only in a JSON line.
+// WHO READS ALONG NOW, for `remote status` (0.11.19, review P3-6): kept from the follow's own start and end lines, by ids, never a word of a session.
+const readers = new Map();
 const notice = (kind, fields) => {
+  if (kind === "read_along") { if (fields.on) readers.set(fields.phone, { phone: fields.phone, project_id: fields.project_id, since: Date.now() }); else readers.delete(fields.phone); keepReaders([...readers.values()]); }
   if (kind === "browser_endorsed") process.stderr.write(`  ! A browser was added by your phone ${fields.by}: ${fields.fingerprint}. See or remove it: npx worktrust remote phones\n`);
   // Part B: a change approved in the app or on the web with the authenticator, signed by WorkTrust and verified here.
   if (kind === "session_refused") process.stderr.write(`  ! A new session from a phone or browser was refused: ${HEALTH_REFUSAL}. Running sessions continue.\n`);
+  if (kind === "read_along" && fields.why !== "refused") process.stderr.write(`${readAlongLine(fields)}\n`); // CLI 0.11.19: who reads along with a desk session, in which folder (never a word of it)
   if (kind === "settings_changed") process.stderr.write(`  ! ${SETTING_WORDS[fields.setting] ?? "a remote setting"} changed from ${fields.by}, approved there with your authenticator. To keep every change at this keyboard: npx worktrust remote admin off\n`);
 };
 const logged = (kind, fields = {}) => { log(kind, fields); notice(kind, fields); };
@@ -234,9 +239,10 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // WHAT A PHONE MAY REACH, TOLD AT ONCE (0.11.12, owner 2026-11-15): a grant made at this keyboard (the access step after
   // "Phone linked", Remote Agent › Roots or › Projects) changes the lists another process wrote; the next tick sends the
   // inventory again, sealed, so a phone waiting on "Choose access at your computer" learns it from this computer, not a server.
-  let grants = null;
-  const grantsChanged = () => { const now = [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id)].join(","); const changed = grants !== null && now !== grants; grants = now; return changed; };
-  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); registerCode(); releases.poll(); try { handover?.tick(); } catch { log("handover_error", {}); } try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
+  // The baseline is what stood when the daemon started (0.11.19: until then it was taken at the first tick, so a change in the first three seconds was never told).
+  const reach = () => [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id), "|", deskReadOf(loadSettings()) /* 0.11.19: also what the keyboard lets a phone read of the desk */].join(","); let grants = null; try { grants = reach(); } catch { /* unreadable now: the first tick that reads it is the baseline */ } const grantsChanged = () => { const now = reach(); const changed = grants !== null && now !== grants; grants = now; return changed; };
+  keepReaders([]); // nobody reads along yet: an older daemon's list is not this one's
+  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); if (readers.size > 0) keepReaders([...readers.values()]); registerCode(); releases.poll(); try { handover?.tick(); } catch { log("handover_error", {}); } try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
   releases.schedule(); // queued tasks a restart kept
   handover?.start();
   health.start();

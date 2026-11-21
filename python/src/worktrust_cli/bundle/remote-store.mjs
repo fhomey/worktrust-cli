@@ -76,6 +76,28 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 // this computer's own desk list that was never continued from it? OFF by default (review 2026-11-17, F3: the owner has not
 // given their word, docs/OPEN.md), turned on at this keyboard only (`worktrust remote desk-history on`). Anything but `true`
 // is off: such an ask is refused `not_allowed`.
+// desk_live (0.11.19; owner, 2026-11-21; docs/remote-agents/DESK-SESSIONS.md §Read along): may a paired phone READ ALONG, live,
+// with a session running at this computer? OFF until a person says yes at this keyboard: by the question after a pairing (remote-read-along.mjs; Enter is yes) or by `worktrust remote read-along on` (
+// which turns desk_history on with it). A settings file of 0.11.17 or 0.11.18 with desk_history and no desk_live keeps
+// exactly what it had: closed turns, never the running one.
+/**
+ * Whether this computer knows a confirmed device as a BROWSER (CLI 0.11.19: reading along is for the phone app only). The
+ * issuer binds a browser as kind `phone`, so the binding cannot tell them apart. What the computer itself wrote can: `how:
+ * "endorsed"`, set by the daemon when a confirmed phone added a browser it scanned (remote-endorse.mjs), never by the device;
+ * `kind: "browser"` is honoured where a record carries it (no release writes it yet). A browser confirmed some other way
+ * (its pending hello confirmed at the keyboard) is recorded like a phone and is NOT known here: for that one the gate is
+ * the keyboard's switch alone. A device not in the list at all counts as a browser (fails closed).
+ */
+export const knownBrowser = (deviceId, phones = loadPhones()) => { const p = phones.confirmed.find((x) => x.device_id === deviceId); return !p || p.how === "endorsed" || p.kind === "browser"; };
+/**
+ * WHETHER THIS COMPUTER'S PERSON WAS ASKED ABOUT READING ALONG, AND WHAT THEY SAID (0.11.19, remote-read-along.mjs): beside
+ * the settings, in its own file, so nothing that rewrites the settings carries it. `{ answer: "yes" | "no", at }` or null:
+ * not asked yet. Written at this keyboard only: by the question's own answer and by `read-along on|off` typed by the person.
+ */
+export const loadReadAlongAsk = () => { const kept = readJson("read-along.json"); return kept && (kept.answer === "yes" || kept.answer === "no") ? { answer: kept.answer, at: Number.isSafeInteger(kept.at) ? kept.at : null } : null; };
+export const saveReadAlongAsk = ({ answer, at }) => writeJson("read-along.json", { v: 1, answer: answer === "yes" ? "yes" : "no", at });
+/** What a phone may read of this computer's own sessions (protocol desk.ts DESK_READS). Anything but `true` is off. */
+export const deskReadOf = (settings) => (settings?.desk_history !== true ? "off" : settings.desk_live === true ? "live" : "history");
 /**
  * WORKTRUST'S PRODUCTION RELAY, ON BY DEFAULT FOR EVERYONE (owner, 2026-11-14: "it must be ON by default for everyone, also
  * without Premium; the subscription comes later"; CLI 0.11.10). A computer's saved `gateway: null` means THIS default, read
@@ -86,7 +108,7 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 export const PRODUCTION_GATEWAY = "wss://remote.worktrust.io";
 /** The relay this computer uses: its own saved choice, else WorkTrust's. */
 export const gatewayOf = (settings) => settings?.gateway ?? PRODUCTION_GATEWAY;
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false });
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false, desk_live: false });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 

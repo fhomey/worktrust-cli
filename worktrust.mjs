@@ -83,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.20";
+const CLI_VERSION = "0.11.21";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -119,7 +119,7 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-desk-sessions.mjs", "remote-notices.mjs", "remote-pace.mjs", "remote-history.mjs", "remote-history-file.mjs", "remote-history-claude.mjs", "remote-history-journal.mjs", "remote-catch-up.mjs", "remote-turns.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-launchers.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "cli-stop.mjs", "cli-look.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-admin.mjs", "remote-health.mjs", "remote-read-along.mjs", "remote-history-follow.mjs", "remote-history-mask.mjs", "remote-peers.mjs", "remote-steer-mod.mjs", "remote-desk-steer.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "credential-decoy.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
+const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-desk-sessions.mjs", "remote-notices.mjs", "remote-pace.mjs", "remote-history.mjs", "remote-history-file.mjs", "remote-history-claude.mjs", "remote-history-journal.mjs", "remote-catch-up.mjs", "remote-turns.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-launchers.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "cli-stop.mjs", "cli-look.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-admin.mjs", "remote-health.mjs", "remote-read-along.mjs", "remote-history-follow.mjs", "remote-history-mask.mjs", "remote-peers.mjs", "remote-steer-mod.mjs", "remote-desk-steer.mjs", "remote-voice.mjs", "remote-voice-speech.mjs", "remote-keyboard.mjs", "remote-default-root.mjs", "cli-menu-switches.mjs", "cli-menu-search.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "credential-decoy.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["project-modes.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -760,6 +760,7 @@ async function update() {
       if (moved) say(`  ${moved}`);
       if (doorIsOff) say(`    the door stays off here (hours only, ${DOOR_SWITCH})`); // a choice the update keeps is still said
       say("  To set this computer up again all the same: npx worktrust update --force");
+      await remoteDefaultRoot();
       return;
     }
     title();
@@ -805,6 +806,7 @@ async function update() {
   });
   const moved = await remoteFollows();
   if (moved) say(`  ${moved}`);
+  await remoteDefaultRoot();
   // Codex installed since, or a No said at connect: the one question, asked again (or "already set").
   await offerCodex();
   await offerAntigravity();
@@ -829,6 +831,15 @@ async function remoteFollows() {
     const { serviceOnRelease } = await import("./remote-service.mjs");
     return await serviceOnRelease({ program: [NODE, ...NODE_FLAGS, ...NODE_ARGS, STABLE, "remote", "run"], version: CLI_VERSION });
   } catch { return "! Remote Agent was not moved to this release; npx worktrust remote app restarts it."; }
+}
+
+/**
+ * THE DEFAULT FOLDER FOR NEW PROJECTS (CLI 0.11.21, owner 2026-11-22; remote-default-root.mjs): a computer paired for Remote
+ * Agent is asked once, at the end of an update a person runs here, whether ~/Desktop/WorkTrust may be the root a phone's
+ * "New session" makes its project in. Enter is yes; --yes, no terminal or an agent's shell ask nothing and make nothing.
+ */
+async function remoteDefaultRoot() {
+  try { await (await import("./remote-default-root.mjs")).offerAfterUpdate({ say, has, agentShell: false, prepare: async () => { await prepareBundledRuntime(); return { node: NODE, nodeArgs: [...NODE_FLAGS, ...NODE_ARGS], entry: STABLE }; } }); } catch { /* a question that cannot be asked never fails the update */ }
 }
 
 /** `setup-mcp --restore` with the snapshot on stdin: never on a command line, never in a file. */

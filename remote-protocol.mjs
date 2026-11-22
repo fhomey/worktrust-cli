@@ -1122,6 +1122,74 @@ export const NOTICE_COMMAND_SPECS = {
   "notice.key": object({ kid: id("nky"), key: nullable(b64({ exact: NOTICE_KEY_BYTES })), not_after: int(0) }),
 }         ;
 
+// ---- packages/remote-protocol/src/device-notice.ts
+/**
+ * "ANSWER READY", A DEVICE NOTICE (build 31 and CLI 0.11.21; owner, 2026-11-22; VOICE-SIRI.md §8, docs/OPEN.md). A spoken prompt
+ * goes into a session open at the desk; when its turn ends after Siri stopped waiting, the phone that owns the voice key hears
+ * "Answer ready" on its lock screen. Release 38's notices ride a SESSION's ordered stream and are pushed only for a session the
+ * phone follows; a desk turn is neither, so this is a lane of its own, as content-free as theirs:
+ *
+ *   the frame    a computer sends `device_notice { phone, notice }` (gateway.ts) to the relay, naming ONE phone of its own account
+ *                that it shares a grant with; the relay checks exactly that, paces it, and pushes it to that phone's iOS push
+ *                channel only while the phone is not connected (DEVICE_PUSH_PAYLOAD_SPEC); it keeps and records nothing of it
+ *   the box      sealed under that phone's NOTICE key (notice.ts `notice.key`, the key its notification extension opens with the
+ *                app closed; one key per phone and computer, so no other phone can open it): a 256-byte padded plaintext
+ *                { v, kind: "answer", c (computer), p (project), at } and nothing an agent wrote; the associated data names the
+ *                computer, the key and the seq, so the relay cannot present it as another computer's, nor an old one under a
+ *                newer seq (the notification extension knows the computer from the payload, not its own device id)
+ *   the probe    inventory.get `voice_notice` (voice.ts VOICE_GET_FIELDS, with `extended`), asked only by a phone with Siri:
+ *                a computer seals a device notice only for a phone that asked, so an older phone never receives one
+ */
+
+export const DEVICE_NOTICE_KINDS = ["answer"]         ;
+/** The outer device notice: relay-visible, every field also the box's associated data (with the computer). */
+export const DEVICE_NOTICE_SPEC = object({ kid: id("nky"), seq: int(1), box: b64({ exact: NOTICE_BOX_BYTES }) });
+
+/** The sealed plaintext. Exactly these keys: two names, the kind and the time. */
+export const DEVICE_NOTICE_PLAIN_SPEC = object({ v: int(1, 1), kind: oneOf(DEVICE_NOTICE_KINDS), c: text(MAX_NOTICE_NAME, 1), p: text(MAX_NOTICE_NAME, 1), at: int(0) });
+
+/** What the relay pushes beside the content-free alert (push.mjs): the computer's id, the hint and the box. */
+export const DEVICE_PUSH_PAYLOAD_SPEC = object({ computer: id("dev"), hint: oneOf(DEVICE_NOTICE_KINDS), notice: DEVICE_NOTICE_SPEC });
+/** At most this many device notices a minute from one computer to one phone, at the relay (and the computer sends one per voice turn). */
+export const DEVICE_NOTICES_PER_MINUTE = 6;
+
+const DEVICE_NOTICE_DOMAIN = utf8Encode("worktrust-remote/v1/device-notice\n");
+export const deviceNoticeAad = (o                                                                           )             =>
+  concatBytes(DEVICE_NOTICE_DOMAIN, canonicalBytes({ computer: o.computer, kid: o.kid, seq: o.seq }));
+
+function devicePadded(plain                   )                    {
+  const bytes = canonicalBytes(plain);
+  if (bytes.length > NOTICE_PLAIN_BYTES) return null;
+  const out = new Uint8Array(NOTICE_PLAIN_BYTES).fill(0x20);
+  out.set(bytes);
+  return out;
+}
+
+/** The computer's side: the outer device notice, or null when the plaintext does not validate or the key is not 32 bytes. */
+export function sealDeviceNotice(o                                                                                                                                        , random        )                      {
+  if (o.key.length !== NOTICE_KEY_BYTES) return null;
+  const plain = { ...o.plain, c: noticeName(o.plain.c), p: noticeName(o.plain.p) };
+  if (!check(DEVICE_NOTICE_PLAIN_SPEC, plain, "$notice").ok) return null;
+  const bytes = devicePadded(plain);
+  if (!bytes) return null;
+  const nonce = random(IETF_NONCE_BYTES);
+  const notice = { kid: o.kid, seq: o.seq, box: toBase64Url(concatBytes(nonce, ietfSeal(o.key, nonce, deviceNoticeAad(o), bytes))) };
+  return check(DEVICE_NOTICE_SPEC, notice, "$notice").ok ? notice : null;
+}
+
+/** The opener (the notification extension does the same in Swift): the plaintext, or null when the shape, the tag or the associated data does not hold. */
+export function openDeviceNotice(key            , computer        , notice         )                           {
+  const shaped = check(DEVICE_NOTICE_SPEC, notice, "$notice");
+  if (!shaped.ok) return null;
+  const n = shaped.value                , box = fromBase64Url(n.box);
+  if (!box || box.length !== NOTICE_BOX_BYTES) return null;
+  const opened = ietfOpen(key, box.subarray(0, IETF_NONCE_BYTES), deviceNoticeAad({ computer, kid: n.kid, seq: n.seq }), box.subarray(IETF_NONCE_BYTES));
+  const value = opened ? utf8Decode(opened) : null;
+  if (value === null) return null;
+  const plain = check(DEVICE_NOTICE_PLAIN_SPEC, parseJson(value.trimEnd()), "$notice.plain");
+  return plain.ok ? (plain.value                     ) : null;
+}
+
 // ---- packages/remote-protocol/src/attention.ts
 /**
  * "NEEDS YOU" AND "FOLLOW". A session's activity in five words:
@@ -2085,6 +2153,133 @@ export function deskRule(desk                                    , projects     
   return null;
 }
 
+// ---- packages/remote-protocol/src/voice.ts
+/**
+ * VOICE PROMPTS WITH SIRI (CLI 0.11.21 and build 31; owner 2026-11-19 and 2026-11-22; docs/remote-agents/VOICE-SIRI.md). A
+ * spoken prompt goes from the phone, unlocked or locked, into the NEWEST steerable desk session of one project, through the
+ * door release 51 shipped (desk.ts, `agent.prompt` into the `worktrust-steer` mod). This file adds a SENDER, not a door:
+ *
+ *   the key      a third device kind, `voice` (crypto/binding.ts): its own Ed25519 and X25519 pair and its own binding, at
+ *                most seven days, naming its `parent`, the phone it belongs to. Its capabilities are capped by kind
+ *                (crypto/assertion.ts): connect, send commands, receive events; never push, never follow.
+ *   enrolment    `voice.enrol { binding }`, a device command from a PHONE the computer's keyboard confirmed: the computer
+ *                adds the voice key as its own peer role only while its keyboard's switch is on, and only when the
+ *                binding's `parent` is the sender and its account is the computer's own.
+ *   one command  from a voice peer the computer takes `agent.prompt` with `voice_ref` and nothing else (`not_allowed`):
+ *                `{ project_id, session: "newest", locked }`, words alone beside it (never `desk_ref`, `interrupt`, a file
+ *                or a model). The computer resolves the project to its newest steerable session itself; `locked: true`
+ *                (the phone's own reading: protected data unavailable) reaches only a session whose mode is `default` or
+ *                `plan`, every other mode is refused `locked_mode`. A voice prompt lives two minutes, not sixty.
+ *   the probe    inventory.get `voice` (with `extended`, probed on its own): this phone reads device.inventory `voice`
+ *                `{ on, enrolled }`, the keyboard's switch and whether THIS phone's voice key is enrolled here. An older
+ *                computer drops the probe, so the phone never sends it a voice binding (release 49's lesson), and an
+ *                older daemon answers `voice.enrol` with `unknown_type` and refuses a `voice` binding at the handshake.
+ */
+
+/** How a voice prompt names its session: only the newest steerable one of the project (a later phase may add more). */
+export const VOICE_SESSIONS = ["newest"]         ;
+/**
+ * WHERE THE WORDS WERE SPOKEN, AS THE PHONE'S SIRI EXTENSION SAW ITS AUDIO ROUTE (owner, 2026-11-22): a HINT, never proof, and
+ * never shown as more than that ("Sent by voice through a headset").
+ */
+export const VOICE_ROUTES = ["headset", "phone", "carplay"]         ;
+
+/** `unlock_sig` (voice audit P2-1): the unlock key's signature over the command id (issuer-requests.ts voiceUnlockBytes), only with `locked: false`. */
+export const VOICE_REF_SPEC = object({ project_id: id("prj"), session: oneOf(VOICE_SESSIONS), locked: bool(), route: optional(oneOf(VOICE_ROUTES)), unlock_sig: optional(b64({ exact: 64 })) });
+
+/**
+ * WHERE A STEERED PROMPT CAME FROM, ON ITS USER TURN IN A DESK SESSION'S HISTORY (owner, 2026-11-22; VOICE-SIRI.md §9; history.ts
+ * `via`): sent by voice (with the route hint, when the phone gave one), from a phone, or from a browser, as the computer recorded
+ * it when the steer mod said the turn started (with a hash of the words it submitted, never the words). Sealed only for a phone
+ * or browser that asked `steer_via` (remote-peers.mjs): an older peer gets the row unchanged.
+ */
+export const STEERED_VIA_KINDS = ["voice", "phone", "browser"]         ;
+export const STEERED_VIA_SPEC = object({ kind: oneOf(STEERED_VIA_KINDS), route: optional(oneOf(VOICE_ROUTES)) });
+
+/** A route only with a voice prompt. → null, or what is wrong. */
+export const steeredViaRule = (via                        )                => (via?.route !== undefined && via.kind !== "voice" ? "via.route: only for a voice prompt" : null);
+
+/** A voice prompt is deliverable for two minutes at most: a late prompt must not land an hour after the drive. */
+export const MAX_VOICE_PROMPT_TTL_MS = 2 * 60_000;
+/** A voice key's binding lives seven days at most (owner, 2026-11-22), renewed by the app at each unlock. */
+export const MAX_VOICE_BINDING_LIFETIME_S = 7 * 24 * 60 * 60;
+/** The desk modes a prompt sent while the phone was LOCKED may reach (owner, 2026-11-22): those that ask before they act. */
+export const VOICE_LOCKED_MODES = ["default", "plan"]         ;
+
+/** `voice.enrol`: the voice key's issuer binding (kind `voice`, `parent` = the sending phone). */
+export const VOICE_ENROL_SPEC = object({ binding: token(4096) });
+/** inventory.get's field (commands.ts spreads it): this phone reads `voice` and may enrol a voice key. Only with `extended`. */
+export const VOICE_GET_FIELDS = { voice: optional(bool()), voice_read: optional(bool()), steer_via: optional(bool()), voice_notice: optional(bool()) }         ; // voice_notice (build 31, device-notice.ts): this phone hears "Answer ready" as a device notice; // voice_read: this phone may offer "Read answers aloud" and reads `voice.read`; steer_via: it reads a user turn's `via` (history.ts)
+/** device.inventory's field (events.ts spreads it): only for a phone that asked `voice`; `enrolled` is THIS phone's voice key. */
+export const VOICE_INVENTORY_FIELDS = { voice: optional(object({ on: bool(), enrolled: bool(), read: optional(bool()) })) }         ; // `read`: the keyboard's `remote voice read`, only for a phone that asked `voice_read`
+
+/** agent.prompt's rule for `voice_ref`: words alone. → null, or what is wrong. */
+export function voiceRefRule(p                                                                                                                                                                 )                {
+  if (p.voice_ref === undefined) return null;
+  if (p.desk_ref !== undefined || p.interrupt !== undefined || p.attachments !== undefined || p.model !== undefined) return "voice_ref: words alone (no desk_ref, interrupt, file or model)";
+  if (p.voice_ref.unlock_sig !== undefined && p.voice_ref.locked) return "voice_ref.unlock_sig: only with locked false";
+  return null;
+}
+
+/**
+ * READ ANSWERS ALOUD (owner, 2026-11-22, decision 5: also on a LOCKED phone; VOICE-SIRI.md §8). Two gates, both needed: the voice
+ * key's binding says `read: true` (the phone's own switch "Read answers aloud", off by default; the parent phone signs it) AND
+ * this computer's keyboard said `npx worktrust remote voice read on` (off by default). Then, sealed to that voice key ALONE, on
+ * the transient lane, sent once and kept nowhere, `voice.answer`: (a) the reply that ends the turn its own prompt started
+ * (`command_id` that prompt), and (b) for `voice.read_last { project_id }` the last FINISHED reply of that project's newest desk
+ * session (`command_id` null, `running` when a turn still runs). Nothing else: no history, no title, no approval, no other
+ * session. The words are SPOKEN TEXT made on the computer (remote-voice-speech.mjs: no markdown, a code block as "a code block
+ * of N lines", a link by its words), at most VOICE_ANSWER_MAX_CHARS in parts of at most VOICE_ANSWER_PART_CHARS cut at sentence
+ * ends (`truncated` when the rest was left out: "Open WorkTrust to read it").
+ */
+export const VOICE_ANSWER_MAX_CHARS = 4_000, VOICE_ANSWER_PART_CHARS = 600, VOICE_ANSWER_MAX_PARTS = 20;
+export const VOICE_READ_SPEC = object({ project_id: id("prj") });
+export const VOICE_EVENT_SPECS = { "voice.answer": object({ command_id: nullable(id("cmd")), parts: list(text(VOICE_ANSWER_PART_CHARS, 1), VOICE_ANSWER_MAX_PARTS, 1), running: bool(), truncated: bool() }) }         ;
+/** voice.answer's rule between fields: the parts together at most VOICE_ANSWER_MAX_CHARS. → null, or what is wrong. */
+export const voiceAnswerRule = (a                                       )                => (a.parts.reduce((n, p) => n + p.length, 0) > VOICE_ANSWER_MAX_CHARS ? "parts: 4,000 characters at most together" : null);
+
+/** A command envelope's own life fits a voice prompt (both integers, milliseconds). */
+export const voiceLifetimeOk = (issuedAt        , expiresAt        )          =>
+  Number.isSafeInteger(issuedAt) && Number.isSafeInteger(expiresAt) && expiresAt > issuedAt && expiresAt - issuedAt <= MAX_VOICE_PROMPT_TTL_MS;
+
+// ---- packages/remote-protocol/src/phone-start.ts
+/**
+ * A SESSION STARTED FROM THE PHONE, BUILD 31 AND CLI 0.11.21 (owner, 2026-11-22). Two probes of their own, each asked with
+ * `extended` beside the others (the client's inventory-asks.ts); an older computer refuses the unknown key, so it never
+ * receives either, and an older phone never receives the fields it would refuse (remote-peers.mjs takes them out).
+ *
+ *   default_root   THE DEFAULT ROOT: `~/Desktop/WorkTrust`, made and added as a root ONLY at the computer's keyboard (a
+ *                  question asked once, `npx worktrust remote roots default on|off|status`), never from a phone, a browser,
+ *                  the MCP door or the daemon. device.inventory `default_root` names that root's id (one of `roots`), or null
+ *                  while the keyboard has not turned it on. A phone starts "New session" without choosing a project by asking
+ *                  a project name and sending the existing `project.create` into that root (one new, empty folder; no path).
+ *   agent_ref      CONTINUE AT THE COMPUTER: a Claude Code session started from the phone names its own session uuid on its
+ *                  device.inventory row (`agent_ref`), so the phone can show `claude --resume <uuid>` for the desk once its
+ *                  turn has ended. Claude Code's id only (the uuid's shape), never another agent's, never a path.
+ */
+
+/** inventory.get's fields (commands.ts spreads them), each only with `extended`. */
+export const START_GET_FIELDS = { default_root: optional(bool()), agent_ref: optional(bool()) }         ;
+/** device.inventory's field (events.ts spreads it): only for a phone that asked `default_root`. */
+export const START_INVENTORY_FIELDS = { default_root: optional(nullable(id("rot"))) }         ;
+/** The one command that turns the default root on, typed at the computer (the phone shows it; it can never send it). */
+export const DEFAULT_ROOT_COMMAND = "npx worktrust remote roots default on";
+/** The folder it makes, under the home folder. */
+export const DEFAULT_ROOT_LABEL = "Desktop/WorkTrust";
+
+const CLAUDE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A session row's `agent_ref`: Claude Code's own session uuid, nothing else. */
+export const agentRefOk = (ref         )                => typeof ref === "string" && CLAUDE_UUID.test(ref);
+/** The line a person types at the computer to continue that session there. */
+export const resumeLine = (ref        )                => (agentRefOk(ref) ? `claude --resume ${ref}` : null);
+
+/** device.inventory's rule for these fields: the default root is one of the listed roots; `agent_ref` a Claude Code uuid on a claude-code row. → null, or what is wrong. */
+export function startRule(inv                                                                                                                                                                                              )                {
+  if (inv.default_root && !(inv.roots ?? []).some((r) => r.root_id === inv.default_root)) return "default_root: one of the listed roots";
+  for (const s of inv.sessions) if (s.agent_ref !== undefined && (s.adapter !== "claude-code" || !agentRefOk(s.agent_ref))) return "sessions.agent_ref: Claude Code's own session uuid, on a claude-code row";
+  return null;
+}
+
 // ---- packages/remote-protocol/src/history.ts
 /**
  * THE HISTORY OF A SESSION, ASKED PAGE BY PAGE (docs/remote-agents/CHAT-HISTORY.md §3; owner, 2026-11-16: "scroll up and
@@ -2152,6 +2347,8 @@ export const HISTORY_ITEM_SPEC = object({
   text: optional(text(HISTORY_MAX_TEXT)), cut: optional(bool()),
   /** user: who sent it (the asker, another paired device, or typed at the computer), its command and how many files it carried. */
   from: optional(oneOf(HISTORY_SENDERS)), command_id: optional(id("cmd")), attachments: optional(int(0, 99)),
+  /** user, in a desk session (CLI 0.11.21, voice.ts): where a steered prompt came from; only for a phone that asked `voice`. */
+  via: optional(STEERED_VIA_SPEC),
   /** step, subagent: the label a live step would carry, how it ended and its measured time. */
   label: optional(text(HISTORY_MAX_LABEL, 1)), step: optional(oneOf(HISTORY_STEP_KINDS)), state: optional(oneOf(HISTORY_STEP_STATES)), duration_ms: optional(int(0)),
   /** step: previews of what went in and came out, `more` when either was cut, `withheld` when nothing of it is sent. */
@@ -2169,7 +2366,7 @@ export const HISTORY_ITEM_SPEC = object({
 
 /** Per kind: the fields it must carry, and those it may. Anything else on an item is refused (a thinking item has no text). */
 export const HISTORY_ITEM_FIELDS                                                                                                           = {
-  user: { must: ["text", "from"], may: ["cut", "command_id", "attachments"] },
+  user: { must: ["text", "from"], may: ["cut", "command_id", "attachments", "via"] },
   text: { must: ["text"], may: ["cut"] },
   thinking: { must: [], may: ["thinking_ms"] },
   step: { must: ["label", "step", "state"], may: ["duration_ms", "input", "output", "more", "withheld", "subagent"] },
@@ -2188,6 +2385,7 @@ export function historyItemRule(item             )                {
   for (const key of fields.must) if (!(key in item)) return `a ${item.kind} item carries its ${key}`;
   if (item.withheld !== undefined && (item.input !== undefined || item.output !== undefined)) return "a withheld step carries no preview";
   if (item.reason !== undefined && item.outcome !== "failed") return "a reason only on a failed end";
+  const via = steeredViaRule(item.via); if (via) return via;
   if (item.kind === "notice" && item.model !== undefined && item.notice !== "model_changed") return "a model only on model_changed";
   return null;
 }
@@ -2677,7 +2875,11 @@ export function checkTimes(iat        , exp        , nowMs        , maxLifetimeS
  * pending on the computer until the person confirms its fingerprint at the computer's keyboard (handshake.ts).
  */
 
-export const DEVICE_KINDS = ["phone", "computer"]         ;
+/**
+ * `voice` (CLI 0.11.21, voice.ts): a phone's voice-only key, its binding naming its `parent` phone and living seven days at
+ * most. A closed list on purpose: a daemon older than 0.11.21 refuses a `voice` binding at the handshake.
+ */
+export const DEVICE_KINDS = ["phone", "computer", "voice"]         ;
 
 export const BINDING_CLAIMS_SPEC = object({
   iss: oneOf([PASSPORT_ISSUER]),
@@ -2690,13 +2892,26 @@ export const BINDING_CLAIMS_SPEC = object({
   iat: int(0),
   exp: int(0),
   jti: id("jti"),
+  /** A voice key's phone (voice.ts); present exactly when the kind is `voice`. */
+  parent: optional(id("dev")),
+  /** A voice key may hear replies read aloud (voice.ts, the phone's "Read answers aloud"); only on a voice binding. */
+  read: optional(bool()),
+  /** Voice audit P2-1 (build 31): the voice key's UNLOCK key, held only while the phone is unlocked; only on a voice binding (voice.ts). */
+  unlock_pub: optional(b64({ exact: 32 })),
 });
+
+/** The longest a binding of this kind may live: thirty days, a voice key's seven. */
+export const bindingLifetimeS = (kind            )         => (kind === "voice" ? MAX_VOICE_BINDING_LIFETIME_S : MAX_BINDING_LIFETIME_S);
+/** A voice binding names its phone, and no other kind names one. → null, or what is wrong. */
+const parentRule = (b                  )                => ((b.kind === "voice") !== (b.parent !== undefined) ? "$binding.parent: exactly for a voice key" : b.parent === b.device_id ? "$binding.parent: never itself" : b.read !== undefined && b.kind !== "voice" ? "$binding.read: only for a voice key" : b.unlock_pub !== undefined && b.kind !== "voice" ? "$binding.unlock_pub: only for a voice key" : null);
 
 /** For the Passport app: validate, then sign. */
 export function issueBinding(claims                  , issuerSecret            , kid        )         {
   const checked = validate(BINDING_CLAIMS_SPEC, claims, "$binding");
   if (!checked.ok) throw new TypeError(checked.detail);
-  if (claims.exp - claims.iat > MAX_BINDING_LIFETIME_S || claims.exp <= claims.iat) throw new RangeError("binding lifetime");
+  const parent = parentRule(checked.value);
+  if (parent) throw new TypeError(parent);
+  if (claims.exp - claims.iat > bindingLifetimeS(claims.kind) || claims.exp <= claims.iat) throw new RangeError("binding lifetime");
   return signToken("wt-remote-binding+jwt", kid, claims, issuerSecret);
 }
 
@@ -2706,7 +2921,9 @@ export function verifyBinding(token        , expect                    )        
   const shaped = validate(BINDING_CLAIMS_SPEC, verified.value.claims, "$binding");
   if (!shaped.ok) return refuse("binding", shaped.detail);
   const b = shaped.value;
-  const times = checkTimes(b.iat, b.exp, expect.now, MAX_BINDING_LIFETIME_S, CLOCK_SKEW_MS);
+  const parent = parentRule(b);
+  if (parent) return refuse("binding", parent);
+  const times = checkTimes(b.iat, b.exp, expect.now, bindingLifetimeS(b.kind), CLOCK_SKEW_MS);
   if (!times.ok) return times;
   if (expect.kind !== undefined && b.kind !== expect.kind) return refuse("binding", "$binding.kind: not the expected kind");
   if (expect.deviceId !== undefined && b.device_id !== expect.deviceId) return refuse("wrong_device", "$binding.device_id");
@@ -2937,7 +3154,6 @@ export const ADMIN_INVENTORY_FIELDS = {
  */
 
 export const MAX_PROMPT_CHARS = 65_536;
-
 /**
  * A NEW PROJECT'S FOLDER NAME (owner, 2026-11-07: the phone's "New session" sheet, project New). One path segment of
  * [A-Za-z0-9._-], 1 to 100 characters, never starting with a dot (no hidden folder, no `.` or `..`). The computer creates
@@ -2992,7 +3208,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * that adapter (an older computer refuses the unknown key and runs nothing). The computer checks it again
      * (checkModelSwitch) against its own list and its adapter; another agent is never a model: it is a new chat.
      */
-    model: optional(text(128, 1)), desk_ref: optional(DESK_REF_SPEC), // CLI 0.11.20: into a session open at the desk (desk.ts deskRefRule), only to a computer that read `desk_steer`
+    model: optional(text(128, 1)), desk_ref: optional(DESK_REF_SPEC), voice_ref: optional(VOICE_REF_SPEC), // CLI 0.11.20: into a session open at the desk (desk.ts deskRefRule), only to a computer that read `desk_steer`; CLI 0.11.21: a voice key's prompt into a project's newest steerable session (voice.ts voiceRefRule)
   }),
   /**
    * Words for an agent in the middle of a turn: redirect without stopping. Where the adapter reports steer_mode `live`
@@ -3070,7 +3286,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
      * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
      */
-    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, // `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
+    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, ...VOICE_GET_FIELDS, ...START_GET_FIELDS, // `default_root` and `agent_ref` (phone-start.ts, CLI 0.11.21); `voice` (voice.ts, CLI 0.11.21); `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -3106,7 +3322,7 @@ export const COMMAND_PAYLOAD_SPECS = {
    * browser's issuer binding, the QR's one-time nonce and its expiry. Taken only when the computer allowed endorsements at
    * its keyboard, from a phone confirmed there or by a scanned QR, for the computer's own account, in time, nonce unspent.
    */
-  "browser.endorse": ENDORSEMENT_SPEC,
+  "browser.endorse": ENDORSEMENT_SPEC, "voice.enrol": VOICE_ENROL_SPEC, "voice.read_last": VOICE_READ_SPEC, // CLI 0.11.21 (voice.ts): a confirmed phone enrols its voice key here; a voice key that may read asks the last reply
   /** A release: a bundle of tasks in one project (release.ts). Ids are minted by the phone, once. */
   "release.create": object({
     release_id: id("rel"),
@@ -3151,7 +3367,7 @@ export const COMMAND_PAYLOAD_SPECS = {
 export const COMMAND_TYPES = Object.keys(COMMAND_PAYLOAD_SPECS)                          ;
 
 export const RELEASE_COMMANDS                           = new Set             (["release.create", "release.add_task", "release.reorder", "release.cancel_task", "release.start", "release.list", "pipeline.start", "pipeline.cancel"]);
-export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "notice.key", "history.get", "project.create", "browser.endorse", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
+export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "notice.key", "history.get", "project.create", "browser.endorse", "voice.enrol", "voice.read_last", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
 export const commandScope = (type             )                       => (DEVICE_COMMANDS.has(type) ? "device" : "session");
 
 /** Commands whose acceptance starts a run with steps, approvals and an end (state-machine.ts follows those through
@@ -3166,8 +3382,7 @@ export const COMMAND_TTL_MS                                        = {
   "agent.start": 60 * MINUTE,
   "agent.prompt": 60 * MINUTE,
   "agent.steer": 5 * MINUTE,
-  "agent.pause": 2 * MINUTE,
-  "agent.resume": 2 * MINUTE,
+  "agent.pause": 2 * MINUTE, "agent.resume": 2 * MINUTE,
   "agent.stop": 2 * MINUTE,
   "approval.decision": 5 * MINUTE,
   "question.answer": 30 * MINUTE,
@@ -3177,7 +3392,7 @@ export const COMMAND_TTL_MS                                        = {
   "session.close": 5 * MINUTE,
   "session.rename": 5 * MINUTE,
   "project.create": 10 * MINUTE,
-  "browser.endorse": 5 * MINUTE,
+  "browser.endorse": 5 * MINUTE, "voice.enrol": 5 * MINUTE, "voice.read_last": 2 * MINUTE,
   "attachment.put": 60 * MINUTE,
   "attachment.clear": 10 * MINUTE,
   "preview.targets": 1 * MINUTE,
@@ -3233,14 +3448,14 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended");
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
   }
   if (type === "session.attach") {
     const a = payload                                    ;
     const given = [a.after, a.max_events, a.max_bytes].filter((v) => v !== undefined).length;
     if (given !== 0 && given !== 3) return refuse("payload", "$payload: after, max_events and max_bytes together, or none");
   }
-  if (type === "history.get") { const bad = historyGetRule(payload              ); if (bad) return refuse("payload", `$payload: ${bad}`); } if (type === "agent.prompt") { const bad = deskRefRule(payload                                  ); if (bad) return refuse("payload", `$payload.${bad}`); }
+  if (type === "history.get") { const bad = historyGetRule(payload              ); if (bad) return refuse("payload", `$payload: ${bad}`); } if (type === "agent.prompt") { const bad = deskRefRule(payload                                  ) ?? voiceRefRule(payload                                  ); if (bad) return refuse("payload", `$payload.${bad}`); }
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.live_start") { const bad = liveStartRule(payload             ); if (bad) return refuse("payload", `$payload: ${bad}`); }
@@ -3357,7 +3572,7 @@ export const REJECT_REASONS = [
   "busy", // the agent is mid-turn and the command needs it idle (a release: its tasks still run, or no slot for a pipeline)
   "unreviewed", // the project's pipeline file was not reviewed at the keyboard, or changed since (2026-11-07)
   "not_allowed", // the computer did not allow it at its keyboard (a browser endorsement without allow-endorse), or the sender may not (2026-11-09)
-  "in_use", "bypass_mode", "not_prompt", // in_use (release 36): the desk session to continue is open on the computer; sent only to a phone that asked `desk_sessions` (others hear `busy`). bypass_mode (CLI 0.11.20): a desk session that skips permission questions (or whose mode is unknown) takes no prompt from a phone; sent only to a phone that asked `desk_steer` (others hear `not_allowed`). not_prompt (CLI 0.11.20, review): a desk prompt that starts with `!` or `/` (a shell line or a command, perhaps run as such in the session) is not sent; the same rule for older phones
+  "in_use", "bypass_mode", "not_prompt", "locked_mode", // locked_mode (CLI 0.11.21, voice.ts): a voice prompt sent while the phone was locked reaches only a desk session in `default` or `plan`; sealed only for a voice key (others hear `not_allowed`). in_use (release 36): the desk session to continue is open on the computer; sent only to a phone that asked `desk_sessions` (others hear `busy`). bypass_mode (CLI 0.11.20): a desk session that skips permission questions (or whose mode is unknown) takes no prompt from a phone; sent only to a phone that asked `desk_steer` (others hear `not_allowed`). not_prompt (CLI 0.11.20, review): a desk prompt that starts with `!` or `/` (a shell line or a command, perhaps run as such in the session) is not sent; the same rule for older phones
 ]         ;
 
 export const FAIL_REASONS = ["agent_exited", "adapter_error", "not_ready", "timeout", "internal"]         ;
@@ -3507,7 +3722,7 @@ export const EVENT_BODY_SPECS = {
     agent_options: optional(list(AGENT_OPTIONS_SPEC, 16)),
     modes_allowed: optional(list(oneOf(AGENT_MODES), AGENT_MODES.length)),
     /** Part B (owner, 2026-11-12), only for an `extended` phone: the settings page's admin switch, folders, connections (crypto/admin.ts). */
-    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, ...CLI_INVENTORY_FIELDS, // release 36: `desk_sessions` (desk.ts); CLI 0.11.16: `cli`, the daemon's release and restart (cli.ts); each only for a phone that asked
+    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, ...CLI_INVENTORY_FIELDS, ...VOICE_INVENTORY_FIELDS, ...START_INVENTORY_FIELDS, // CLI 0.11.21: `default_root` (phone-start.ts), only for a phone that asked; CLI 0.11.21: `voice` (voice.ts), only for a phone that asked; release 36: `desk_sessions` (desk.ts); CLI 0.11.16: `cli`, the daemon's release and restart (cli.ts); each only for a phone that asked
     sessions: list(
       object({
         session_id: id("ses"),
@@ -3527,6 +3742,7 @@ export const EVENT_BODY_SPECS = {
         background_jobs: optional(int(0, 99)),
         /** `terminal` for a terminal session (release 19); absent means structured. */
         mode: optional(oneOf(ADAPTER_MODES)),
+        agent_ref: optional(text(36, 36)), // CLI 0.11.21 (phone-start.ts): Claude Code's own session uuid, only on a claude-code row, only for a phone that asked `agent_ref`
       }),
       100,
     ),
@@ -3547,13 +3763,13 @@ export const EVENT_BODY_SPECS = {
   ...LIVE_EVENT_SPECS,
   /** The computer's health (health.ts), every 15 s on the transient lane, device-wide: passed on, kept by nobody. */
   "device.health": HEALTH_BODY_SPEC,
-  ...HISTORY_EVENT_SPECS, // `history.page` (history.ts): one page of a session's history, transient, for the asker alone
+  ...HISTORY_EVENT_SPECS, ...VOICE_EVENT_SPECS, // `voice.answer` (voice.ts, CLI 0.11.21): a reply read aloud, transient, for one voice key alone; `history.page` (history.ts): one page of a session's history, transient, for the asker alone
 }                                                  ;
 
 export const DEVICE_EVENT_TYPES = Object.keys(EVENT_BODY_SPECS)                              ;
 
 /** The one device event about the computer as a whole; every other names a session. */
-export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active", "device.health", "history.page"]);
+export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active", "device.health", "history.page", "voice.answer"]);
 /** Events that answer one command, so their envelope names it (command_id is required). */
 export const COMMAND_RECEIPT_EVENTS                               = new Set                 (["command.device_received", "command.agent_accepted", "command.rejected", "command.queued"]);
 
@@ -3608,7 +3824,7 @@ export function validateEventBody                           (type   , value     
     if (bad) return refuse("payload", `$body: ${bad}`);
   }
   if (type === "device.health") { const bad = healthRule(checked.value              ); if (bad) return refuse("payload", `$body: ${bad}`); }
-  if (type === "history.page") { const bad = historyPageRule(checked.value               ); if (bad) return refuse("payload", `$body: ${bad}`); }
+  if (type === "history.page") { const bad = historyPageRule(checked.value               ); if (bad) return refuse("payload", `$body: ${bad}`); } if (type === "voice.answer") { const bad = voiceAnswerRule(checked.value                       ); if (bad) return refuse("payload", `$body.${bad}`); }
   if (type === "agent.attention") {
     const a = validateAttention(value, "$body");
     if (!a.ok) return refuse("payload", a.detail);
@@ -3622,7 +3838,7 @@ export function validateEventBody                           (type   , value     
     // One report per (adapter, mode) since release 19: Claude Code structured and in a terminal are two reports.
     if (new Set(inv.adapters.map((a) => `${a.adapter}/${a.mode}`)).size !== inv.adapters.length) return refuse("payload", "$body.adapters: an adapter twice");
     { const desk = deskRule(inv.desk_sessions, inv.projects); if (desk) return refuse("payload", `$body.desk_sessions: ${desk}`); }
-    { const cli = cliRule(inv.cli); if (cli) return refuse("payload", `$body.cli.${cli}`); }
+    { const cli = cliRule(inv.cli); if (cli) return refuse("payload", `$body.cli.${cli}`); } { const start = startRule(inv); if (start) return refuse("payload", `$body.${start}`); }
   }
   return checked;
 }
@@ -3649,10 +3865,8 @@ export function deliveryInputFor                           (type   , body       
       return { kind: "resumed" };
     case "agent.stopped":
       return { kind: "cancelled" };
-    case "agent.completed":
-      return { kind: "completed" };
-    case "agent.failed":
-      return { kind: "failed" };
+    case "agent.completed": return { kind: "completed" };
+    case "agent.failed": return { kind: "failed" };
     case "status.report": {
       const report = body                              ;
       return { kind: "reconciled", state: report.state };
@@ -3707,13 +3921,13 @@ export const COMMAND_ENVELOPE_SPEC = object({
  * So the stream stays gap-free for every phone, whoever followed. Only the types below may take the lane.
  */
 export const EVENT_LANES = ["transient"]         ;
-export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame", "device.health", "history.page"]);
+export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame", "device.health", "history.page", "voice.answer"]);
 /**
  * Types that may ONLY travel on the transient lane (a live preview's frames: never journaled, never replayed), and the
  * computer's health (health.ts, 2026-11-15): device-wide, so its lane is the device stream's, with its own rising number.
  * A page of a session's history (history.ts) is device-wide too, so the relay never learns which session was read.
  */
-export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame", "device.health", "history.page"]);
+export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame", "device.health", "history.page", "voice.answer"]);
 export const isTransientEvent = (e                            )          => e.lane === "transient";
 
 export const EVENT_ENVELOPE_SPEC = object({
@@ -4170,6 +4384,8 @@ export const ASSERTION_CAPABILITIES = [
 export const CAPABILITIES_BY_KIND                                                                 = {
   phone: new Set                     (["relay:connect", "commands:send", "events:receive", "push:register"]),
   computer: new Set                     (["relay:connect", "commands:receive", "events:send", "presence:publish"]),
+  /** CLI 0.11.21 (voice.ts): a phone's voice-only key sends one command type and hears its receipts; never push. */
+  voice: new Set                     (["relay:connect", "commands:send", "events:receive"]),
 };
 
 export const ASSERTION_CLAIMS_SPEC = object({
@@ -4756,7 +4972,8 @@ const verifySig = (domain            , body        , signature        , publicKe
 export function createHello(input   
 
  )               {
-  if (input.self.claims.kind !== "phone") throw new TypeError("a phone opens the handshake");
+  if (input.self.claims.kind !== "phone" && input.self.claims.kind !== "voice") throw new TypeError("a phone (or its voice key) opens the handshake");
+  if (input.self.claims.kind === "voice" && input.psk) throw new TypeError("a voice key never pairs: a phone enrols it (voice.enrol)");
   const versions = sorted(input.versions ?? SUPPORTED_PROTOCOL_VERSIONS);
   const ephemeralSecret = input.random(KEY_BYTES);
   const unsigned = {
@@ -4785,7 +5002,10 @@ export function inspectHello(value         , self             , v        )      
   if (hello.to_device_id !== self.claims.device_id) return refuse("wrong_device", "$hello.to_device_id");
   if (hello.issued_at > v.now + MAX_HANDSHAKE_AGE_MS) return refuse("not_yet_valid", "$hello.issued_at");
   if (v.now - hello.issued_at > MAX_HANDSHAKE_AGE_MS) return refuse("expired", "$hello.issued_at");
-  const phone = verifyBinding(hello.binding, { ...v, kind: "phone", deviceId: hello.from_device_id, sub: self.claims.sub });
+  // A phone, or (CLI 0.11.21, voice.ts) a phone's voice key: a computer's binding never opens a handshake.
+  const read = verifyBinding(hello.binding, { issuerKeys: v.issuerKeys, now: v.now });
+  if (!read.ok) return read;
+  const phone = verifyBinding(hello.binding, { ...v, kind: read.value.kind === "voice" ? "voice" : "phone", deviceId: hello.from_device_id, sub: self.claims.sub });
   if (!phone.ok) return phone;
   const { signature, ...unsigned } = hello;
   if (!verifySig(D.hello, unsigned, signature, bindingSigningKey(phone.value))) return refuse("signature", "$hello.signature");
@@ -4812,8 +5032,10 @@ export function acceptHello(input
   if (input.knownChannels.has(hello.channel_id)) return refuse("channel_known", "$hello.channel_id");
   const { signature: _sig, pair_proof: proof, ...withoutProof } = hello;
   const paired = proof !== undefined;
+  const voice = phone.kind === "voice";
+  if (voice && paired) return refuse("not_confirmed", "$hello.pair_proof: a voice key never pairs");
   if (paired && (!input.psk || !pairProofValid(input.psk, "hello", withoutProof, proof))) return refuse("not_confirmed", "$hello.pair_proof: no invite of this computer");
-  if (!paired && !input.confirmedPhones.has(fingerprint)) return refuse("not_confirmed", "$hello: phone not confirmed at this computer");
+  if (!paired && !(voice ? input.confirmedVoice?.has(fingerprint) === true : input.confirmedPhones.has(fingerprint))) return refuse("not_confirmed", voice ? "$hello: voice key not enrolled at this computer" : "$hello: phone not confirmed at this computer");
   if (hello.protocol_version !== sorted(hello.versions)[0]) return refuse("downgrade", "$hello.protocol_version: not its own highest");
   const ours = sorted(input.versions ?? SUPPORTED_PROTOCOL_VERSIONS);
   const chosen = highestCommon(hello.versions, ours);
@@ -5005,6 +5227,8 @@ export function isBindingRevoked(list                     , binding             
  *   assertion-request  a five-minute gateway assertion (POST /api/remote/assertion)
  *   self-revoke        a device ends its own binding (POST /api/remote/revoke), e.g. the app's sign-out
  *   relay-auth         the answer to the gateway's challenge (gateway.ts), bound to that gateway's origin
+ *   voice-bind         a phone's voice key (CLI 0.11.21, voice.ts): signed TWICE over the same bytes, by the new voice key
+ *                      (it holds it) and by its parent phone's bound key (the phone asks for it), under the phone's session
  */
 
 const requestDomain = (name        ) => utf8Encode(`worktrust-remote/v1/${name}\n`);
@@ -5014,11 +5238,22 @@ const REQ_RENEW = requestDomain("renew");
 const REQ_ASSERT = requestDomain("assertion-request");
 const REQ_RELAY = requestDomain("relay-auth");
 const REQ_SELF_REVOKE = requestDomain("self-revoke");
+const REQ_VOICE = requestDomain("voice-bind");
 
 export const pairRequestBytes = (b                                                                                       )             =>
   concatBytes(REQ_PAIR, canonicalBytes({ code_challenge: b.code_challenge, ed25519_pub: b.ed25519_pub, kind: b.kind, x25519_pub: b.x25519_pub }));
 export const phoneBindBytes = (b                                                          )             =>
   concatBytes(REQ_PHONE, canonicalBytes({ ed25519_pub: b.ed25519_pub, iat: b.iat, kind: "phone", x25519_pub: b.x25519_pub }));
+/** `unlock_pub` (voice audit P2-1, build 31): inside the bytes both keys sign, so only this phone names its voice key's unlock key. */
+export const voiceBindBytes = (b                                                                                                                         )             =>
+  concatBytes(REQ_VOICE, canonicalBytes({ ed25519_pub: b.ed25519_pub, iat: b.iat, kind: "voice", parent_device_id: b.parent_device_id, read: b.read === true, ...(b.unlock_pub !== undefined ? { unlock_pub: b.unlock_pub } : {}), x25519_pub: b.x25519_pub }));
+const REQ_UNLOCK = requestDomain("voice-unlock");
+/**
+ * A VOICE PROMPT SENT UNLOCKED (voice audit P2-1): the unlock key, kept WhenUnlockedThisDeviceOnly whatever "Send while locked"
+ * says, signs the prompt's command id. A prompt without it, or with one that does not verify under the binding's `unlock_pub`, is
+ * taken as sent LOCKED (default and plan only): an extracted voice key alone can no longer claim `locked: false`.
+ */
+export const voiceUnlockBytes = (commandId        )             => concatBytes(REQ_UNLOCK, canonicalBytes({ command_id: commandId }));
 export const renewRequestBytes = (b                                                         )             =>
   concatBytes(REQ_RENEW, canonicalBytes({ binding_jti: b.binding_jti, device_id: b.device_id, iat: b.iat }));
 export const assertionRequestBytes = (b                                                   )             =>
@@ -5160,6 +5395,8 @@ export const GATEWAY_INBOUND_SPECS = {
   pair_ticket: object({ frame: gwWord("pair_ticket"), ticket: gwTicket, expires_at: gwTime }),
   /** A phone: which computer a typed code names (the same account only, once). */
   resolve_ticket: object({ frame: gwWord("resolve_ticket"), ticket: gwTicket }),
+  /** A computer (build 31, device-notice.ts): "Answer ready" for ONE phone of its account it shares a grant with, pushed only while that phone is away. */
+  device_notice: object({ frame: gwWord("device_notice"), phone: gwDev, notice: DEVICE_NOTICE_SPEC }),
 }                                                  ;
 
 /** What the gateway sends. */

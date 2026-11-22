@@ -2,6 +2,63 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.21: a spoken prompt from your phone with Siri, only if you say yes here
+
+**Voice prompts, off until you turn them on at this keyboard.** `npx worktrust remote voice on` lets a phone you confirmed
+here enrol a voice key and send a prompt you speak to Siri into the newest open session of a project you granted, also
+while that phone is locked. It needs desk steering on first (`npx worktrust remote desk-steer on`, which needs read along),
+and turning steering or read along off turns voice off too. `remote voice off` stops it; `remote voice remove [<fingerprint>]`
+forgets the voice keys (of one phone when named); `remote voice status` lists them; `remote status` says it.
+
+**A voice key can do almost nothing.** It is its own key, bound by WorkTrust to the phone it belongs to for seven days,
+and this computer takes it only from that phone, only while voice is on here. It sends a prompt and nothing else: it
+reads no session, no history and no answer, approves nothing, starts and stops nothing, and hears only whether its own
+prompt arrived. Removing or revoking the phone takes its voice key with it.
+
+**Every desk-steering rule, and more.** A spoken prompt goes through the same door as a typed one from the phone: your
+keyboard's switch, the folder grant, the session's own permission mode (never a session that skips permission questions),
+words only, one waiting per session. On top: it lives two minutes, one per 20 seconds and 30 a day per voice key, and a
+prompt sent while the phone was locked only reaches a session in default or plan mode. The run terminal says each one:
+"A spoken prompt from phone <fingerprint> went into <project>".
+
+**Answers read aloud, behind two more switches.** `npx worktrust remote voice read on` (off until you say so here, and
+again after voice was off) lets Siri read a reply to a phone whose own "Read answers aloud" is on, also while that phone
+is locked: the reply that ends the turn its own spoken prompt started, and on asking, the last finished reply of a
+project's newest session. Nothing else is read: no history, no session titles, no approvals. This computer turns the
+reply into spoken text itself (a code block becomes "a code block of N lines", a link is read by its words, a key is
+hidden), at most 4,000 characters in parts of 600, sent once to that voice key alone and kept nowhere. Asking for the last
+reply is limited to once every 10 seconds and 60 times a day per voice key.
+
+**Where a steered prompt came from.** A prompt sent into a session open here, by voice, from your phone or from a browser,
+is recorded (a hash of its words, never the words) when its turn starts, so the phone and the web can mark that message
+in read along as sent by voice, from your phone or from a browser. An older phone sees the message as before.
+
+**A default folder for new projects, made only here.** Asked once, Enter is yes: after a phone is linked, at the end of
+`npx worktrust remote status` and at the end of `npx worktrust update` on a computer paired for Remote Agent. Yes makes
+`~/Desktop/WorkTrust` and adds it as a root (with git init), so "New session" on your phone, without choosing a project, asks
+a project name and makes that one new, empty folder there. Nothing is asked without a person at a terminal (`--yes`,
+`--json`, a pipe or an AI agent's shell), and no phone, browser or MCP door can turn it on. `npx worktrust remote roots
+default on|off|status`; off keeps the folder and its projects.
+
+**Continue a phone's session at your desk.** A Claude Code session started from the phone names its own session id to that
+phone, so it can show `claude --resume <id>` once its turn has ended.
+
+**After the voice security review.** A prompt sent while the phone was locked is checked again by the steer mod (1.1.0) when
+it is delivered and when its turn starts: outside default and plan nothing runs. Voice keeps working past the first binding's
+seven days (the phone renews it); a hello with an older binding than the newest seen is refused; every attempt counts toward a
+voice key's limits; the steered words' hash is keyed with this computer's secret, kept 30 days, and `remote disable --forget`
+deletes it.
+
+**Every switch in the menu.** `npx worktrust` › Remote Agent now lists Read along, Steer from the phone, Voice prompts with
+Siri and Read answers aloud with their state, and Roots lists Desktop/WorkTrust; each runs the same command you would type,
+and says in one sentence what has to be on first. Type `/` or a letter to search every menu; Esc clears the search.
+
+**Answer ready.** When a spoken prompt's turn ends after Siri stopped waiting, your phone gets "Answer ready" on its lock
+screen (only a phone that asks for it; two names and nothing the agent wrote).
+
+**Voice keys hold less.** A prompt counts as sent while the phone was unlocked only when its unlock key, which a locked phone
+cannot read, signed it; anything else reaches only a session in default or plan mode.
+
 ## 0.11.20: a session's own name, a paste you can read, and the right answer for a session open at your desk
 
 **The name Claude Code gives a session.** The list of this computer's sessions (Continue a session, Read along) now

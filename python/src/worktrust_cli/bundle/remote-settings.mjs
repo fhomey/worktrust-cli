@@ -29,6 +29,7 @@ import { checkRoot, MAX_ROOTS, rootIdOf } from "./remote-projects.mjs";
 import { agentOptionsOf } from "./remote-inventory.mjs";
 import { uninstallSteerMod } from "./remote-steer-mod.mjs"; import { deskSteerLine } from "./remote-desk-steer.mjs";
 import * as P from "./remote-protocol.mjs";
+import { keyboardYes } from "./remote-keyboard.mjs";
 import { deskReadOf, ensureRemoteDir, loadKeys, loadPhones, loadReadAlongAsk, readJson, saveReadAlongAsk, loadPreviewGrants, loadProjects, loadRoots, loadSettings, projectIdOf, savePreviewGrants, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
 
 export const RAISABLE_MODES = Object.freeze(["edit", "auto"]);
@@ -60,7 +61,7 @@ export function startChoice(payload, projectId, inventory, settings, known) {
 /**
  * The one door for a settings change. `change`: { what: "modes", allow|deny: "edit"|"auto" } | { what: "roots", add: dir,
  * git_init } | { what: "roots", remove: id|dir } | { what: "projects", add: dir } | { what: "projects", remove: id|dir } |
- * { what: "admin", on: boolean } | { what: "endorse", on: boolean } | { what: "desk_history", on: boolean } | { what: "desk_live", on: boolean } | { what: "desk_steer", on: boolean } (all five this keyboard only) | { what: "connections", remove:
+ * { what: "admin", on: boolean } | { what: "endorse", on: boolean } | { what: "desk_history", on: boolean } | { what: "desk_live", on: boolean } | { what: "desk_steer", on: boolean } | { what: "voice", on: boolean } (all six this keyboard only) | { what: "connections", remove:
  * fingerprint } (resolved from the app's change only).
  * `source`: { kind: "keyboard" }, or { kind: "admin", proof, issuerKeys, claims, now, via } (part B; its change is
  * crypto/admin.ts's ADMIN_CHANGE_SPEC, resolved by id before it reaches the rules below).
@@ -108,7 +109,7 @@ function applyRules(change, fromApp) {
     // May a phone READ a session of this computer's own desk list that it never continued (remote-history.mjs)? This keyboard only.
     if (fromApp) return refused("reading this computer's own sessions changes at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
-    saveSettings({ ...settings, desk_history: change.on, ...(change.on ? {} : { desk_live: false, desk_steer: false }) }); // without the closed turns there is no reading along either, and no steering
+    saveSettings({ ...settings, desk_history: change.on, ...(change.on ? {} : { desk_live: false, desk_steer: false, voice: false }) }); // without the closed turns there is no reading along either, and no steering or voice
     if (!change.on) uninstallSteerMod();
     return { ok: true, message: change.on ? "Your paired phones and browsers may read the sessions you ran at this computer, in the folders you granted. Nothing is stored on a server." : "Sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
   }
@@ -116,7 +117,7 @@ function applyRules(change, fromApp) {
     // May a phone READ ALONG, live, with a session running at this computer (remote-history-follow.mjs)? This keyboard only. On brings the closed turns with it.
     if (fromApp) return refused("reading along with this computer's own sessions changes at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
-    saveSettings({ ...settings, desk_history: change.on, desk_live: change.on, ...(change.on ? {} : { desk_steer: false }) }); // read along off takes steering with it (CLI 0.11.20)
+    saveSettings({ ...settings, desk_history: change.on, desk_live: change.on, ...(change.on ? {} : { desk_steer: false, voice: false }) }); // read along off takes steering (CLI 0.11.20) and voice (0.11.21) with it
     if (!change.on) uninstallSteerMod();
     return { ok: true, message: change.on ? "Your paired phones may read along, live and read-only, with the sessions you run at this computer. This covers EVERY folder you granted and every project inside a root you added, also one added later, from this keyboard or (while `remote admin` is on, the default) approved in the app or on the web. See them: npx worktrust remote projects list · npx worktrust remote roots list. Nothing is stored on a server, and nothing can be sent into a session from there (unless you also turn on npx worktrust remote desk-steer on)." : "Nobody reads along, and sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
   }
@@ -125,8 +126,24 @@ function applyRules(change, fromApp) {
     if (fromApp) return refused("sending into this computer's own sessions changes at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
     if (change.on && (settings.desk_live !== true || settings.desk_history !== true)) return refused("steering needs read along on first: npx worktrust remote read-along on, then npx worktrust remote desk-steer on");
-    saveSettings({ ...settings, desk_steer: change.on });
+    saveSettings({ ...settings, desk_steer: change.on, ...(change.on ? {} : { voice: false }) }); // steering off takes voice with it (CLI 0.11.21)
     return { ok: true, message: change.on ? "Your paired phones (and a browser after its Remote PIN) may send a prompt into a Claude Code session open at this computer, in the folders you granted. It runs with that session's own permission mode and is refused while the session bypasses permissions; questions still appear here. Restart open sessions (or update Claude Code to 2.1.304 or later) so they load the WorkTrust steer mod." : "Nobody can send a prompt into a session open at this computer. The WorkTrust steer mod is removed; sessions that loaded it stop taking prompts at once." };
+  }
+  if (change?.what === "voice") {
+    // May a phone's voice key (Siri, also while the phone is locked) send a prompt into a session open here (remote-voice.mjs)? This keyboard only, on top of steering.
+    if (fromApp) return refused("voice prompts change at this keyboard only");
+    if (typeof change.on !== "boolean") return refused("on or off");
+    if (change.on && (settings.desk_steer !== true || settings.desk_live !== true || settings.desk_history !== true)) return refused("voice prompts need desk steering on first: npx worktrust remote desk-steer on, then npx worktrust remote voice on");
+    saveSettings({ ...settings, voice: change.on, ...(settings.voice === true && change.on ? {} : { voice_read: false }) }); // reading aloud needs its own yes again after voice was off
+    return { ok: true, message: change.on ? "A phone you confirmed here may enrol a voice key and send a spoken prompt with Siri into the newest open session of a project you granted, also while that phone is locked (only into a session in default or plan mode then). It cannot read anything, approve anything or start an agent. Each phone turns its own voice on with Face ID and your authenticator." : "No spoken prompt reaches this computer. Voice keys stay listed until you remove them: npx worktrust remote voice remove" };
+  }
+  if (change?.what === "voice_read") {
+    // May a voice key whose phone turned on "Read answers aloud" hear replies (remote-voice.mjs)? This keyboard only, on top of voice.
+    if (fromApp) return refused("reading answers aloud changes at this keyboard only");
+    if (typeof change.on !== "boolean") return refused("on or off");
+    if (change.on && settings.voice !== true) return refused("reading answers aloud needs voice prompts on first: npx worktrust remote voice on, then npx worktrust remote voice read on");
+    saveSettings({ ...settings, voice_read: change.on });
+    return { ok: true, message: change.on ? "A voice key whose phone turned on \"Read answers aloud\" may hear the reply to its own prompt, and the last reply of a project's newest session, read by Siri, also while that phone is locked. Nothing else: no history, no titles, no approvals. Each reply is cut at 4,000 characters." : "No reply is read aloud from this computer." };
   }
   if (change?.what === "admin") {
     if (fromApp) return refused("the admin switch changes at this keyboard only");
@@ -218,8 +235,9 @@ export function deskReadLine(settings = loadSettings(), now = Date.now()) {
   return `  Reading this computer's own sessions from a phone: ${{ off: "off", history: "closed turns only", live: "live (read along) and closed turns" }[read]} (npx worktrust remote read-along on|off)${read === "live" ? `\n  Reading along now: ${readers.length ? readers.map((r) => `${r.phone} in ${r.project}${clock(r.since)}`).join("; ") : "nobody"}` : ""}\n${deskSteerLine(settings)}`;
 }
 /** `remote read-along on|off | status` (CLI 0.11.19): may a paired phone read along, live and read-only, with a session running at this computer. */
-export function readAlongCommand(io, rest) {
+export async function readAlongCommand(io, rest) {
   if (rest[0] === "on" || rest[0] === "off") {
+    if (rest[0] === "on" && !(await keyboardYes(io, "A confirmed phone may then read along live with a session in every folder you granted. Turn read along on?"))) return;
     const done = applySettingsChange({ what: "desk_live", on: rest[0] === "on" }, { kind: "keyboard" });
     if (done.ok) saveReadAlongAsk({ answer: rest[0] === "on" ? "yes" : "no", at: Date.now() }); // typed by the person: that is the answer, and the question is not asked again
     return io.say(`  ✓ ${done.message}`);

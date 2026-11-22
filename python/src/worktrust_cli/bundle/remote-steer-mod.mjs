@@ -13,7 +13,8 @@
  *   inbox/<cmd>.json  the oldest one the daemon wrote (0600, an atomic rename) is read; one older than 60 s is dropped
  *                   `stale` and a leading `!` or `/` `not_prompt`; else a receipt `taken` is written FIRST, the inbox file is asked for again (the daemon withdraws it by renaming it away after 60 s: gone means
  *                   withdrawn), then `$.prompt.submit({ text, asUser: true })`: the words start a turn as the person's own,
- *                   once the session is idle. Never while the mode is bypassPermissions or unknown.
+ *                   once the session is idle. Never while the mode is bypassPermissions or unknown, and never outside the
+ *                   file's own `modes` when it names them (a locked voice send: default and plan only; 1.1.0).
  *   receipts/<cmd>.json  `taken`, then `submitted` (the turn started) or `dropped` with a reason, then `ended` at the turn's end.
  * The mod deletes nothing (the mods API has no delete): the daemon removes the inbox file and the receipts it has read.
  * A last guard: `classic.UserPromptSubmit` blocks its own prompt when the mode it carries is bypassPermissions.
@@ -27,7 +28,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const STEER_MOD_NAME = "worktrust-steer";
-export const STEER_MOD_VERSION = "1.0.0";
+export const STEER_MOD_VERSION = "1.1.0";
+/**
+ * THE LOCKED SEND'S MODES, AT DELIVERY (CLI 0.11.21, voice audit P1-1). A voice prompt sent while the phone was LOCKED may reach
+ * only `default` or `plan`; the daemon checked that against alive.json, which can be stale (Shift+Tab raises no hook). So the
+ * inbox file carries `modes`, and the mod checks them AGAIN at delivery and at the turn's start (UserPromptSubmit carries the
+ * mode the turn starts under): outside them, nothing runs (`locked_mode`). A mod before 1.1.0 knows no `modes`: the daemon
+ * sends it no locked prompt at all (alive.json's `mod`).
+ */
+export const MODES_MOD_VERSION = "1.1.0";
 /** `$.prompt.submit` after an interrupt, and the VS Code extension's mods (2.1.299), both settled from this release. */
 export const MIN_CLAUDE_CODE_STEER = "2.1.304";
 /** How often the mod looks, and how old a heartbeat may be for the daemon to offer the session. */
@@ -45,7 +54,8 @@ let dir = null, version = null, mode = null, busy = false, inFlight = null, runn
 const seen = new Set();
 const atLeast = (v) => { const p = String(v ?? "").split(/[.-]/).slice(0, 3).map(Number); for (let i = 0; i < 3; i += 1) { if ((p[i] ?? 0) > MIN[i]) return true; if ((p[i] ?? 0) < MIN[i]) return false; } return true; };
 const receipt = ($, id, body) => $.fs.write(dir + "/receipts/" + id + ".json", JSON.stringify({ v: 1, command_id: id, at: Date.now(), ...body }));
-const alive = ($, extra = {}) => $.fs.write(dir + "/alive.json", JSON.stringify({ v: 1, at: Date.now(), version, mode, ...extra }));
+const alive = ($, extra = {}) => $.fs.write(dir + "/alive.json", JSON.stringify({ v: 1, at: Date.now(), version, mode, mod: ${JSON.stringify(STEER_MOD_VERSION)}, ...extra }));
+const modesOf = (sent) => (Array.isArray(sent.modes) ? sent.modes.filter((m) => typeof m === "string") : null);
 async function look($) {
   if (!dir) return;
   await alive($);
@@ -65,12 +75,14 @@ async function look($) {
     if (/^\s*[!/]/.test(sent.text)) return receipt($, id, { state: "dropped", reason: "not_prompt" });
     await receipt($, id, { state: "taken" });
     if (!SAFE.has(mode)) return receipt($, id, { state: "dropped", reason: "bypass" });
+    const modes = modesOf(sent);
+    if (modes && !modes.includes(mode)) return receipt($, id, { state: "dropped", reason: "locked_mode" });
     // Asked again right before the submit: the daemon withdraws by renaming the file away, and turning steering off removes the folder.
     if (!(await $.fs.exists(file))) return receipt($, id, { state: "dropped", reason: "withdrawn" });
-    inFlight = { id, text: sent.text };
+    inFlight = { id, text: sent.text, modes };
     $.prompt.submit({ text: sent.text, asUser: true }).then(async (r) => {
       const dropped = r && typeof r === "object" && "drop" in r;
-      if (inFlight?.blocked) await receipt($, id, { state: "dropped", reason: "bypass" });
+      if (inFlight?.blocked) await receipt($, id, { state: "dropped", reason: inFlight.blocked });
       else if (dropped) await receipt($, id, { state: "dropped", reason: "stopped" });
       else { running = id; await receipt($, id, { state: "submitted" }); }
     }, async () => { await receipt($, id, { state: "dropped", reason: "refused" }); }).finally(() => { inFlight = null; });
@@ -104,7 +116,8 @@ export function register(on) {
   on("classic.UserPromptSubmit", async ($, e, next) => {
     try {
       if (typeof e.permission_mode === "string") mode = e.permission_mode;
-      if (inFlight && !SAFE.has(mode)) { inFlight.blocked = true; return { block: "WorkTrust: a prompt from your phone is not run while this session skips permission questions." }; }
+      if (inFlight && !SAFE.has(mode)) { inFlight.blocked = "bypass"; return { block: "WorkTrust: a prompt from your phone is not run while this session skips permission questions." }; }
+      if (inFlight && inFlight.modes && !inFlight.modes.includes(mode)) { inFlight.blocked = "locked_mode"; return { block: "WorkTrust: a prompt sent while your phone was locked runs only in the default or plan mode." }; }
     } catch {}
     return next(e);
   });

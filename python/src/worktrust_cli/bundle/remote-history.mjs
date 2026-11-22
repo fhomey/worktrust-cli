@@ -297,5 +297,22 @@ export function createHistory(o) {
       return "taken";
     });
   }
-  return { get, waiting: () => lines.size, following: follow.count };
+  /**
+   * READ ALOUD (CLI 0.11.21, remote-voice.mjs): the last completed reply of ONE desk session, for a voice key both gates let read.
+   * The same resolve as a page (the keyboard's desk switch, the grant, the session in this computer's own list) and the same
+   * transcript reader; never a page, never sealed here: → { id, at, text } or a reject reason.
+   */
+  async function lastAnswer(ref, projectId) {
+    const subject = resolve({ session_ref: ref, project_id: projectId });
+    if (typeof subject === "string") return subject;
+    let page = null;
+    try { page = await fromTranscript(subject, { session_ref: ref, project_id: projectId, before: null, max_bytes: P.HISTORY_PAGE_MAX_BYTES }, null, { request: `cmd_${"A".repeat(22)}`, ...subject.name, live_seq: 0 }); } catch { page = null; }
+    const items = Array.isArray(page?.items) ? page.items : [];
+    const at = items.findLastIndex((i) => i.kind === "answer" && typeof i.text === "string" && i.text.length > 0);
+    if (at < 0) return "not_found";
+    // A turn still runs when the page names one, or something other than its end follows the last finished answer.
+    const running = Boolean(page.open_turn) || items.slice(at + 1).some((i) => i.kind !== "end");
+    return { id: items[at].id, at: items[at].at ?? null, text: items[at].text, running };
+  }
+  return { get, lastAnswer, waiting: () => lines.size, following: follow.count };
 }

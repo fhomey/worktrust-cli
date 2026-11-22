@@ -105,6 +105,13 @@ export function createNotices(o) {
       const plain = { v: 1, kind: m.kind, c: computer, p: P.noticeName(project), n: Math.min(m.n, P.MAX_NOTICE_COUNT), m: m.m === null ? null : Math.min(m.m, P.MAX_NOTICE_COUNT), at: record.occurred_at };
       return P.sealNotice({ key, kid: k.kid, session_id: record.session_id, seq: record.event_seq, plain }, o.random);
     },
+    /** "Answer ready" (build 31, protocol device-notice.ts): a device notice for ONE phone under its own notice key, or null without one. */
+    sealDevice(phone, self, project) {
+      const k = keys.filter((x) => x.phone === phone && x.not_after > o.now()).sort((a, b) => b.at - a.at)[0];
+      const key = k ? P.fromBase64Url(k.key) : null;
+      if (!key) return null;
+      return P.sealDeviceNotice({ key, kid: k.kid, computer: self, seq: Math.max(1, Math.floor(o.now() / 1000)), plain: { v: 1, kind: "answer", c: computer, p: P.noticeName(project), at: o.now() } }, o.random);
+    },
     takeKey(phone, payload) { keys = takeNoticeKey(readKeys(), phone, payload, o.now()); save(); },
     dropPhone(phone) { keys = readKeys(); if (keys.some((k) => k.phone === phone)) { keys = keys.filter((k) => k.phone !== phone); save(); } },
     /** Tests only. */

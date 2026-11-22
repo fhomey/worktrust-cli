@@ -5,6 +5,8 @@
 import * as P from "./remote-protocol.mjs";
 
 const NO_ETA = { kind: "unavailable", source: "none", reason: "no_source" };
+/** CLI 0.11.21 (protocol phone-start.ts): a Claude Code session names its own uuid, so a phone can offer `claude --resume` at the desk; sealed only for a phone that asked `agent_ref` (remote-peers.mjs). */
+const agentRefOf = (adapter, ref) => (adapter === "claude-code" && P.agentRefOk(ref) ? { agent_ref: ref } : {});
 
 /** The agent's own plan as the denominator when it has one; otherwise the steps counted (never a percentage). */
 export const progressOf = (s) => {
@@ -35,14 +37,14 @@ export function listSessions(ctx, live) {
   for (const j of ctx.journal.sessions()) {
     if (!j.session_id || !j.adapter) continue;
     rows.set(j.session_id, { session_id: j.session_id, project_id: j.project_id ?? null, adapter: j.adapter, origin: "phone", attention: { activity: "unknown", needs: null, state_change_seq: 0, completion_seq: null }, title: null,
-      name: j.name ?? null, model: j.model ?? null, state: j.closed ? "closed" : "idle", last_activity_at: ctx.journal.lastAt(j.session_id) ?? j.at ?? null });
+      name: j.name ?? null, model: j.model ?? null, state: j.closed ? "closed" : "idle", last_activity_at: ctx.journal.lastAt(j.session_id) ?? j.at ?? null, ...agentRefOf(j.adapter, j.agent_session_ref) });
   }
   for (const s of live.values()) {
     if (s.closed) continue;
     const prior = rows.get(s.session_id);
     rows.set(s.session_id, { ...(prior ?? {}), session_id: s.session_id, project_id: s.project_id, adapter: s.adapter, origin: "phone", attention: s.attention ?? { activity: "unknown", needs: null, state_change_seq: 0, completion_seq: null }, title: null,
       name: s.name ?? null, model: s.model ?? null, state: s.turnOpen ? "running" : "idle", last_activity_at: ctx.journal.lastAt(s.session_id) ?? prior?.last_activity_at ?? null,
-      ...(s.jobs ? { background_jobs: Math.min(99, s.jobs.size) } : {}) });
+      ...(s.jobs ? { background_jobs: Math.min(99, s.jobs.size) } : {}), ...agentRefOf(s.adapter, s.agent_ref ?? prior?.agent_ref) });
   }
   return [...rows.values()].sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0));
 }

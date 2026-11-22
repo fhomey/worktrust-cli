@@ -9,7 +9,6 @@
  * (io.runCli), so people learn the short form and every command keeps its own questions and its own guards. Keys: ↑/↓
  * move, Enter opens, Esc or ← goes back one level, q quits from the top, 1 to 9 jump, Ctrl+C quits. Raw mode and the
  * cursor are restored on every way out (quit, Ctrl+C, an error). 0.11.12: Esc while a command runs stops it (cli-stop.mjs).
- *
  * 0.11.8 (owner, 2026-11-13): Update comes first and says whether there is something to update; every item carries one plain
  * sentence under it; the menu is redrawn IN PLACE (createTerminal) and never left in the scrollback; colours carry meaning
  * and are off wherever cli-colour.mjs says so (NO_COLOR, --no-color, a pipe). A terminal without cursor addressing
@@ -31,6 +30,7 @@ import { busyWith, clip, coloursFor, visibleLength } from "./cli-colour.mjs";
 import { STOPPED } from "./cli-stop.mjs";
 import { loadIdentity, loadPhones, loadSettings } from "./remote-store.mjs";
 import { awaitingName, awaitingRow } from "./remote-connections.mjs";
+import { searchFooter, searchItems, searchKey, setSearchIndex } from "./cli-menu-search.mjs";
 /** Whether bare `npx worktrust` opens the menu here. Pure: the caller passes what it knows. */
 export function menuWanted({ args: given = [], env = {}, stdinTTY = false, stdoutTTY = false, agentShell = null } = {}) {
   const args = given.filter((arg) => arg !== "--no-color" && arg !== "--no-colour"); // how it looks, not what it does
@@ -61,10 +61,8 @@ export function createTerminal(input = process.stdin, output = process.stdout) {
   const up = () => (drawn > 0 ? `\x1b[${drawn}A\r\x1b[J` : "");
   const draw = (lines) => { const { columns } = size(); output.write(`${up()}${lines.map((line) => clip(line, columns - 1)).join("\n")}\n`); drawn = lines.length; };
   const erase = () => { if (drawn > 0) output.write(up()); drawn = 0; };
-  // A RESIZE TAKES ONLY THE MENU'S OWN LINES (owner, 2026-11-14: a QR cut off halfway). It cleared the visible screen from its
-  // top (`ESC[H ESC[J`), and with it whatever a command had printed above the menu. Every line is clipped to the width, so a
-  // narrower terminal can only fold the menu into MORE rows than `drawn`: going up `drawn` rows lands inside the menu at worst
-  // (an old line may stay above the new menu), never in the output above it.
+  // A RESIZE TAKES ONLY THE MENU'S OWN LINES (owner, 2026-11-14: a QR cut off halfway): lines are clipped to the width, so going up
+  // `drawn` rows lands inside the menu at worst, never in a command's output above it (it once cleared the screen from its top).
   const reset = () => erase();
   /** Text that is not the menu (a reason, a result): the menu's lines go first, and the next draw starts below it. */
   const write = (text) => { erase(); output.write(text); };
@@ -135,24 +133,26 @@ export function menuFrame({ header = [], title = null, items, at = 0, ticked = n
  * be, and its digit only says its `quiet` line. `multi`: Space ticks an item that has `tick: true`; the ticked items come back as `ticked`. `header`:
  * the lines, or a function giving them, asked at every draw so a state a command just changed shows at once.
  */
-export async function choose(term, { header = [], title, items, top = false, multi = false, footer = null }) {
-  let at = Math.max(0, items.findIndex((i) => !i.disabled));
-  const ticked = new Set(items.filter((i) => i.ticked).map((i) => i.label));
+export async function choose(term, { header = [], title, items: base, top = false, multi = false, footer = null }) {
+  let query = null, items = base, at = Math.max(0, items.findIndex((i) => !i.disabled)); // SEARCH (0.11.21): typed letters filter this list and offer other menus' rows (cli-menu-search.mjs)
+  const ticked = new Set(items.filter((i) => i.ticked).map((i) => i.label)), move = (step) => { if (items.some((i) => !i.disabled)) do at = (at + step + items.length) % items.length; while (items[at].disabled); };
   let asked = null; // the row whose digit was pressed though it cannot be chosen (0.11.9), said under the list until the next key
   for (;;) {
-    term.draw(menuFrame({ header: typeof header === "function" ? header() : header, title, items, at, ticked, multi, top, footer, asked }, term.size()));
+    term.draw(menuFrame({ header: typeof header === "function" ? header() : header, title, items, at, ticked, multi, top, footer: query === null ? footer : searchFooter(query), asked }, term.size()));
     const k = await term.key();
     if (k.name === "resize") { term.reset(); continue; }
+    const s = searchKey(query, k, { multi, top });
+    if (s.consumed) { query = s.query; items = searchItems(base, query, { multi }); at = Math.max(0, items.findIndex((i) => !i.disabled)); asked = null; continue; }
     asked = /^[1-9]$/.test(k.str ?? "") && items[Number(k.str) - 1]?.disabled ? Number(k.str) - 1 : null;
     if (k.ctrl && k.name === "c") return "quit";
-    if (k.name === "up" || k.name === "k") { do at = (at - 1 + items.length) % items.length; while (items[at].disabled); continue; }
-    if (k.name === "down" || k.name === "j") { do at = (at + 1) % items.length; while (items[at].disabled); continue; }
+    if (k.name === "up" || k.name === "k") { move(-1); continue; }
+    if (k.name === "down" || k.name === "j") { move(1); continue; }
     if (k.name === "escape") return top ? "quit" : "back"; // 0.11.9: Esc leaves the top like q (a lone Esc: readline tells it from an arrow's sequence)
     if (k.name === "left") { if (!top) return "back"; continue; }
     if (k.name === "q" && top) return "quit";
-    if (multi && k.name === "space" && items[at].tick) { ticked.has(items[at].label) ? ticked.delete(items[at].label) : ticked.add(items[at].label); continue; }
+    if (multi && k.name === "space" && items[at]?.tick) { ticked.has(items[at].label) ? ticked.delete(items[at].label) : ticked.add(items[at].label); continue; }
     if (/^[1-9]$/.test(k.str ?? "") && items[Number(k.str) - 1] && !items[Number(k.str) - 1].disabled) { at = Number(k.str) - 1; if (!multi) return { item: items[at] }; continue; }
-    if (k.name === "return" || k.name === "enter") return { item: items[at], ticked: items.filter((i) => ticked.has(i.label)) };
+    if ((k.name === "return" || k.name === "enter") && items[at] && !items[at].disabled) return { item: items[at], ticked: base.filter((i) => ticked.has(i.label)) };
   }
 }
 
@@ -293,6 +293,7 @@ export function topItems(state, open = () => true, sub = {}) {
   return [
     ...(state.awaiting ? [awaitingRow(state.awaiting, open)] : []), { label: "Update WorkTrust", note, hint: "npx worktrust update", info: updateInfo, run: () => open(["update"]), ...(note.settled ? { disabled: true, quiet: "Already up to date." } : {}) },
     { label: "Check this computer", hint: "npx worktrust", info: "Shows what is coupled here and finishes what waits.", run: () => open([]) },
+    { label: "Status", hint: "npx worktrust status", info: "Shows the key, the hook and the door. It only reads.", run: () => open(["status"]) }, // 0.11.21 (owner, 2026-11-22): near the top
     // Node before 22.4 has no WebSocket (0.11.8): the item stays, says why, and Enter opens the ways forward, not the levels.
     state.remoteBlocked
       ? { label: "Remote Agent", note: { text: "needs Node 22.4+", tone: "yellow" }, hint: "npx worktrust remote …", info: REMOTE_NEEDS, run: () => open(["remote"]) }
@@ -301,7 +302,6 @@ export function topItems(state, open = () => true, sub = {}) {
     { label: "Import earlier history ›", hint: "npx worktrust history …", info: "Send earlier sessions as history. Each way asks first.", run: () => sub.history?.() },
     PRESERVE(sub, "Keep your AI history on this computer. Nothing is sent."),
     { label: "Sharing ›", hint: "npx worktrust mcp …", info: "What this computer sends, and the switches for it.", run: () => sub.sharing?.() },
-    { label: "Status", hint: "npx worktrust status", info: "Shows the key, the hook and the door. It only reads.", run: () => open(["status"]) },
     { label: "Disconnect this computer", hint: "npx worktrust disconnect", info: "Takes WorkTrust out and ends this computer's key. It asks.", run: () => open(["disconnect"]) },
     HELP(open), QUIT,
   ];
@@ -322,7 +322,7 @@ export async function menuLoop(term, io, levels) {
     const why = !state.connected && last?.args[0] === "connect" ? connectReason(last.code) : null;
     const header = () => [...headerLines(state), ...(why ? [`  ${paint.yellow(`! ${why}`)}`] : [])];
     const open = (args) => { const ran = { args, code: 1 }; last = ran; return runShown(term, { runCli: async (given) => (ran.code = await io.runCli(given)) }, args); };
-    const items = topItems(state, open, { ...Object.fromEntries(["remote", "history", "preserve", "sharing"].map((name) => [name, () => levels[`${name}Menu`](term, inner, header)])), look: async () => (await import("./cli-look.mjs")).lookMenu(term, inner, levels) });
+    const items = topItems(state, open, { ...Object.fromEntries(["remote", "history", "preserve", "sharing"].map((name) => [name, () => levels[`${name}Menu`](term, inner, header)])), look: async () => (await import("./cli-look.mjs")).lookMenu(term, inner, levels) }); setSearchIndex(() => [...items.filter((i) => !i.quit).map((i) => ({ ...i, where: "Main menu" })), ...(state.connected ? levels.menuIndex?.(term, inner, header) ?? [] : [])]); // 0.11.21: what a search offers from every menu
     const picked = await choose(term, { header, items, top: true });
     if (picked === "quit" || picked === "back" || picked.item.quit) break;
     last = null;

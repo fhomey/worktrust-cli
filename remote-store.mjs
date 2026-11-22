@@ -83,6 +83,9 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 // desk_steer (0.11.20; owner, 2026-11-21; docs/remote-agents/DESK-STEERING.md): may a paired phone (or a browser after its Remote PIN)
 // SEND a prompt into a Claude Code session open at this computer? OFF until `worktrust remote desk-steer on` at this keyboard, only
 // on top of read along; read along off (or desk-history off) turns it off (remote-settings.mjs).
+// voice (0.11.21; owner, 2026-11-19 and 2026-11-22; docs/remote-agents/VOICE-SIRI.md): may a phone's voice key (Siri, also while the
+// phone is locked) send a prompt into the newest steerable session of a project? OFF until `worktrust remote voice on` here, only on
+// top of desk steering; any of the three switches below it off turns it off. Its keys live in voice.json (remote-voice.mjs).
 /**
  * Whether this computer knows a confirmed device as a BROWSER (CLI 0.11.19: reading along is for the phone app only). The
  * issuer binds a browser as kind `phone`, so the binding cannot tell them apart. What the computer itself wrote can: `how:
@@ -99,6 +102,14 @@ export const knownBrowser = (deviceId, phones = loadPhones()) => { const p = pho
  */
 export const loadReadAlongAsk = () => { const kept = readJson("read-along.json"); return kept && (kept.answer === "yes" || kept.answer === "no") ? { answer: kept.answer, at: Number.isSafeInteger(kept.at) ? kept.at : null } : null; };
 export const saveReadAlongAsk = ({ answer, at }) => writeJson("read-along.json", { v: 1, answer: answer === "yes" ? "yes" : "no", at });
+/**
+ * THE DEFAULT ROOT (CLI 0.11.21, owner 2026-11-22; remote-default-root.mjs): `~/Desktop/WorkTrust`, made and added as a root at
+ * this keyboard only. Its own file, `{ root_id | null, answer: "yes" | "no" | null, at }`, written by remote-default-root.mjs
+ * alone (check-remote-cli rule D): no settings change, phone, browser, MCP door or daemon module writes it.
+ */
+export const loadDefaultRoot = () => { const k = readJson("default-root.json"); return { root_id: typeof k?.root_id === "string" ? k.root_id : null, answer: k?.answer === "yes" || k?.answer === "no" ? k.answer : null, at: Number.isSafeInteger(k?.at) ? k.at : null }; };
+/** The default root's id as a phone reads it (device.inventory `default_root`): while it is still a root and its folder is there; else null. */
+export const defaultRootOf = (kept = loadDefaultRoot(), roots = loadRoots()) => { const r = kept.root_id ? roots.find((x) => x.root_id === kept.root_id) : null; return r && existsSync(r.path) ? r.root_id : null; };
 /** What a phone may read of this computer's own sessions (protocol desk.ts DESK_READS). Anything but `true` is off. */
 export const deskReadOf = (settings) => (settings?.desk_history !== true ? "off" : settings.desk_live === true ? "live" : "history");
 /**
@@ -111,7 +122,7 @@ export const deskReadOf = (settings) => (settings?.desk_history !== true ? "off"
 export const PRODUCTION_GATEWAY = "wss://remote.worktrust.io";
 /** The relay this computer uses: its own saved choice, else WorkTrust's. */
 export const gatewayOf = (settings) => settings?.gateway ?? PRODUCTION_GATEWAY;
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false, desk_live: false, desk_steer: false });
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false, desk_live: false, desk_steer: false, voice: false, voice_read: false });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 

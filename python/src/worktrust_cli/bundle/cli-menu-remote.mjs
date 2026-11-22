@@ -15,6 +15,8 @@ import { awaitingName, awaitingRow, connections } from "./remote-connections.mjs
 import { loadIdentity, loadProjects, loadRoots, loadSettings } from "./remote-store.mjs";
 import { allowedModes, ceilingOf } from "./remote-settings.mjs";
 import { HEALTH_REFUSAL, keptHealth } from "./remote-health.mjs";
+import { defaultRootOf } from "./remote-store.mjs";
+import { defaultRootItem, switchItems } from "./cli-menu-switches.mjs";
 
 const BACK = { label: "← Back", hint: "Esc", back: true }; // its name and its key say it: no sentence of its own (owner, 2026-11-14)
 const tilde = (path) => (path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path);
@@ -63,13 +65,14 @@ async function addRoots(term, io, header) {
   return true;
 }
 
-function rootsMenu(term, io, header) {
-  return level(term, header, "Roots for new projects", () => [
+/** The rows of Roots for new projects ›, for its level and for the search (0.11.21: the default folder's switch first). */
+const rootsRows = (term, io, header) => [
+    defaultRootItem((() => { try { return defaultRootOf() !== null; } catch { return false; } })(), (args) => runShown(term, io, args)),
     { label: "+ Add folders", hint: "npx worktrust remote roots add <folder>", info: "Choose folders whose projects a phone may open or add to.", run: () => addRoots(term, io, header) },
     ...loadRoots().map((r) => ({ label: `Remove ${tilde(r.path)}`, hint: `npx worktrust remote roots remove ${tilde(r.path)}`, info: "A phone can no longer use this folder. No file is touched.", run: () => runShown(term, io, ["remote", "roots", "remove", r.path]) })),
     BACK,
-  ]);
-}
+  ];
+const rootsMenu = (term, io, header) => level(term, header, "Roots for new projects", () => rootsRows(term, io, header));
 
 function projectsMenu(term, io, header) {
   return level(term, header, "Projects a phone may steer an agent in", () => [
@@ -187,6 +190,7 @@ export function remoteItems(approved, paused, act = {}, access = null) {
     { label: "Connections ›", hint: "npx worktrust remote connections", info: "Phones and browsers linked here.", run: act.connections, ...wait },
     { label: paused ? "Resume" : "Pause", hint: `npx worktrust remote ${paused ? "resume" : "pause"}`, info: paused ? "Lets linked phones steer agents here again." : "Stops every phone until you resume. Links stay.", run: act.pause, ...wait },
     { label: "Status", hint: "npx worktrust remote status", info: "Shows if Remote Agent is on and what is linked. Only reads.", run: act.status },
+    ...(act.switches ?? []), // 0.11.21 (owner, 2026-11-22): read along, steering, voice, answers aloud, after Status so every digit above keeps its row (cli-menu-switches.mjs)
     BACK,
   ];
 }
@@ -227,28 +231,45 @@ export async function remoteMenu(term, io, header) {
       modesNote: (() => { try { return { plan: "Manual, Plan", edit: "+ Edit", auto: "+ Auto" }[ceilingOf(allowedModes(loadSettings()))]; } catch { return null; } })(), // 0.11.14: the ceiling in a word
       pause: () => runShown(term, io, ["remote", paused ? "resume" : "pause"]),
       status: () => runShown(term, io, ["remote", "status"]),
+      switches: switchItems((() => { try { return loadSettings(); } catch { return {}; } })(), (args) => runShown(term, io, args)),
       upgrade: () => showUpgrade(term, io, state?.upgrade ?? null), upgradeHint: state?.upgrade ? String(state.upgrade).replace(/^https?:\/\//, "") : undefined,
     }, state?.remoteAccess ?? null)];
   }, reading);
 }
 
-export function historyMenu(term, io, header) {
-  return level(term, header, "Import earlier history", () => [
+const historyRows = (term, io) => [
     { label: "Sessions on this computer", hint: "npx worktrust history", info: "Sessions your AI apps still hold. Shows a plan, asks first.", run: () => runShown(term, io, ["history"]) },
     { label: "Your local archive", hint: "npx worktrust history --from-archive", info: "Sessions your apps deleted, from your archive. Asks first.", run: () => runShown(term, io, ["history", "--from-archive"]) },
     { label: "A ChatGPT or Claude export…", hint: "npx worktrust history --export <path>", info: "Asks for its path. Reconstructed hours, never verified.", run: async () => { const path = await typed(term, "The export's path (the zip, its folder or conversations.json):", join(homedir(), "Downloads")); term.enter(); return path ? runShown(term, io, ["history", "--export", path]) : true; } },
     { label: "A copied session folder…", hint: "npx worktrust history --from-folder <dir>", info: "Your copy of a session folder. Reconstructed, not verified.", run: async () => { const path = await chooseFolder(term); term.enter(); return path ? runShown(term, io, ["history", "--from-folder", path]) : true; } },
     BACK,
-  ]);
-}
+  ];
+export const historyMenu = (term, io, header) => level(term, header, "Import earlier history", () => historyRows(term, io));
 
-export function preserveMenu(term, io, header) {
-  return level(term, header, "Preserve evidence", () => [
+const preserveRows = (term, io) => [
     { label: "How long each AI app keeps sessions", hint: "npx worktrust preserve", info: "Shows how long each AI app keeps sessions. Changes nothing.", run: () => runShown(term, io, ["preserve"]) },
     { label: "Keep them longer", hint: "npx worktrust preserve --apply", info: "Keeps sessions longer. Asks per change, backs up first.", run: () => runShown(term, io, ["preserve", "--apply"]) },
     { label: "Make a local archive", hint: "npx worktrust preserve --archive", info: "Writes a metadata-only record to ~/AI-Evidence. Not sent.", run: () => runShown(term, io, ["preserve", "--archive"]) },
     { label: "Check the archive", hint: "npx worktrust preserve --verify", info: "Checks that record's hashes and signatures. It only reads.", run: () => runShown(term, io, ["preserve", "--verify"]) },
     { label: "Count hours from the archive", hint: "npx worktrust preserve --summary", info: "Counts hours and tokens from that record. It only reads.", run: () => runShown(term, io, ["preserve", "--summary"]) },
     BACK,
-  ]);
+  ];
+export const preserveMenu = (term, io, header) => level(term, header, "Preserve evidence", () => preserveRows(term, io));
+
+/**
+ * EVERY MENU'S ROWS, FOR THE SEARCH (0.11.21, cli-menu-search.mjs): the rows each level draws, with where they live, read when a
+ * search runs (so their state is now). A row runs as it does in its own menu: the same command. Connections are left out (their
+ * rows are the devices of the moment, and each opens a step of its own).
+ */
+export function menuIndex(term, io, header) {
+  const at = (where, rows) => rows.filter((row) => !row.back).map((row) => ({ ...row, where }));
+  let settings = {};
+  try { settings = loadSettings(); } catch { settings = {}; }
+  const run = (args) => runShown(term, io, args);
+  return [
+    ...at("Remote Agent", [...switchItems(settings, run), { label: "Link a phone (QR here)", hint: "npx worktrust remote pair", info: "Shows a QR that links a phone to this computer.", run: () => run(["remote", "pair"]) }, { label: "Status of Remote Agent", hint: "npx worktrust remote status", info: "Shows if Remote Agent is on and what is linked. Only reads.", run: () => run(["remote", "status"]) }]),
+    ...at("Remote Agent › Roots", rootsRows(term, io, header)),
+    ...at("Import earlier history", historyRows(term, io)),
+    ...at("Preserve evidence", preserveRows(term, io)),
+  ];
 }

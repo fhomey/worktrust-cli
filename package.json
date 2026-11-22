@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.11.19",
+  "version": "0.11.20",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -119,7 +119,9 @@
     "remote-peers.mjs",
     "remote-history-mask.mjs",
     "remote-history-follow.mjs",
-    "remote-read-along.mjs"
+    "remote-read-along.mjs",
+    "remote-steer-mod.mjs",
+    "remote-desk-steer.mjs"
   ],
   "engines": {
     "node": ">=18"

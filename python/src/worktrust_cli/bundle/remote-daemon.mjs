@@ -12,7 +12,7 @@
  */
 import { basename } from "node:path";
 import * as P from "./remote-protocol.mjs";
-import { confirmedFingerprints, controllerKeys, deskReadOf, knownBrowser, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
+import { confirmedFingerprints, controllerKeys, deskReadOf, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
 import { acceptEndorsement } from "./remote-endorse.mjs";
 import { createProject, rootLabel, sessionProjects, worktreeMain } from "./remote-projects.mjs";
 import { agentOptionsOf } from "./remote-inventory.mjs";
@@ -22,6 +22,7 @@ import { createPeers } from "./remote-peers.mjs";
 import { createNotices, projectNameOf } from "./remote-notices.mjs";
 import { createCatchUp } from "./remote-catch-up.mjs";
 import { createHistory } from "./remote-history.mjs";
+import { createDeskSteer } from "./remote-desk-steer.mjs";
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
 const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
@@ -38,7 +39,7 @@ export function createDaemonCore(o) {
   const persist = () => saveChannels([...channels.values()]);
   let sessions = null, approvals = o.approvals ?? null, releases = null;
 
-  const peers = createPeers({ browser: (deviceId) => knownBrowser(deviceId) }); // what each phone asked to read, and what is sealed for it (remote-peers.mjs); a browser never reads along
+  const peers = createPeers(); // what each phone asked to read, and what is sealed for it (remote-peers.mjs); a browser reads along since 0.11.20 (its key reaches the relay only after its Remote PIN)
   // THE RESTART, SAID BEFORE IT HAPPENS (remote-service.mjs createHandover, remote-run.mjs stop): one ordinary inventory naming
   // `cli.restarting` (the relay lists what may be transient, and an inventory is not). announceRestart(false) withdraws it.
   let restarting = null;
@@ -56,12 +57,14 @@ export function createDaemonCore(o) {
     for (const [id, channel] of channels) {
       if (!confirmed().has(channel.peer_fingerprint)) { channels.delete(id); continue; } // a revoked phone hears nothing
       if (only !== null && channel.peer_device_id !== only) continue;
+      try { // one body the seal cannot take (review 2026-11-21, P2-2: half an emoji, canonicalBytes throws) is logged and skipped, never the end of every later inventory
       const notice = milestone ? notices.sealFor(channel.peer_device_id, record, milestone) : null;
       const draft = { protocol_version: channel.protocol_version, session_id: record.session_id, device_id: self, event_seq: record.event_seq, type: record.type, occurred_at: record.occurred_at, command_id: record.command_id, notify: record.notify, ...(record.lane ? { lane: record.lane } : {}), ...(notice ? { notice } : {}) };
       const sealed = P.sealEvent(channel, draft, peers.bodyFor(channel, record), o.random);
       if (!sealed.ok) { o.log("seal_refused", { type: record.type, code: sealed.code }); continue; }
       channels.set(id, sealed.value.channel);
       o.send({ frame: "event", envelope: sealed.value.envelope }, { replayed });
+      } catch { o.log("seal_refused", { type: record.type, code: "unsealable" }); }
     }
     persist();
   }
@@ -101,6 +104,10 @@ export function createDaemonCore(o) {
     projects: () => (o.projectSecret ? sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: o.projectSecret }) : loadProjects()),
     sealPage: (body, phone) => { if (phone) emit(null, "history.page", body, null, "none", { transient: true, only: phone }); } }); // the guard is `only` and confirmed() in sealAll: one channel, of a phone the keyboard still confirms
 
+  // STEERING A DESK SESSION (CLI 0.11.20, remote-desk-steer.mjs): its receipts name the command alone (device receipts), journaled as every other.
+  const steer = createDeskSteer({ desk: o.desk, settings: loadSettings, readsSteer: (phone) => peers.readsSteer(phone) && [...channels.values()].some((c) => c.peer_device_id === phone && confirmed().has(c.peer_fingerprint)), now: o.now, every: o.every, log: o.log,
+    settle: (id, outcome) => { if (outcome === "taken") { o.journal.advance(id, { kind: "agent_accepted" }, o.now()); emit(null, "command.agent_accepted", {}, id); } else { o.journal.advance(id, { kind: "device_rejected", expired: outcome === "expired" }, o.now(), outcome); emit(null, "command.rejected", { reason: outcome }, id); } } });
+
   function inventoryBody(refresh) {
     const settings = loadSettings();
     const inv = o.inventory(refresh);
@@ -127,7 +134,7 @@ export function createDaemonCore(o) {
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };
     // Release 36, read only while a phone that asked is linked: this computer's own Claude Code sessions, under the projects above.
-    if (o.desk && peers.readsDesk()) { try { body.desk_sessions = o.desk.list().filter((d) => body.projects.some((p) => p.project_id === d.project_id)); } catch { o.log("desk_unreadable", {}); } }
+    if (o.desk && peers.readsDesk()) { try { body.desk_sessions = o.desk.list().filter((d) => body.projects.some((p) => p.project_id === d.project_id)).map((d) => (peers.readsSteer() ? { ...d, steerable: steer.steerable(d, settings) } : d)); } catch { o.log("desk_unreadable", {}); } } // `steerable` sealed only for a phone that asked `desk_steer` (remote-peers.mjs)
     return body;
   }
 
@@ -257,6 +264,7 @@ export function createDaemonCore(o) {
     if (env.type === "attachment.put" || env.type === "attachment.clear") return o.attachments ? o.attachments.handle(env, payload) : "unsupported"; // remote-attachments.mjs
     if (env.type === "preview.targets" || env.type === "preview.render") return o.preview ? o.preview.handle(env, payload) : "unsupported"; // remote-preview.mjs
     if (LIVE_COMMANDS.has(env.type)) return o.live ? o.live.handle(env, payload) : "unsupported"; // remote-live-preview.mjs
+    if (env.type === "agent.prompt" && payload.desk_ref) return steer.prompt(env, payload); // into a session open at the desk (CLI 0.11.20): never a session of this daemon's
     const handled = await sessions.handle(env, payload);
     if (env.type === "session.close") await o.live?.sessionClosed(env.session_id); // its live preview ends with it
     return handled;
@@ -277,13 +285,14 @@ export function createDaemonCore(o) {
     // A payload refused AFTER the signature and the seal verified names its (authenticated) type, never a byte of the payload (0.11.15).
     if (!opened.ok && opened.code !== "expired") return o.log("command_dropped", { code: opened.code, command_id: envelope.command_id, ...(opened.code === "payload" ? { type: envelope.type } : {}) });
     if (opened.ok) { channels.set(channel.channel_id, opened.value.channel); persist(); }
-    const admitted = o.journal.admit(input, { type: envelope.type, session_id: envelope.session_id, now: o.now() });
+    const sid = opened.ok && opened.value.payload?.desk_ref ? null : envelope.session_id; // a prompt into a desk session: device receipts, no session made (remote-desk-steer.mjs)
+    const admitted = o.journal.admit(input, { type: envelope.type, session_id: sid, now: o.now() });
     if (admitted.verdict !== "new") return resendReceipts(admitted.entry);
-    emit(envelope.session_id, "command.device_received", {}, envelope.command_id);
+    emit(sid, "command.device_received", {}, envelope.command_id);
     if (!opened.ok) return reject(envelope, "expired"); // authentic (the signature verified first) but late
     const outcome = await dispatch(opened.value.envelope, opened.value.payload);
-    if (outcome === "taken") { o.journal.advance(envelope.command_id, { kind: "agent_accepted" }, o.now()); emit(envelope.session_id, "command.agent_accepted", {}, envelope.command_id); }
-    else if (outcome !== null) reject(envelope, outcome);
+    if (outcome === "taken") { o.journal.advance(envelope.command_id, { kind: "agent_accepted" }, o.now()); emit(sid, "command.agent_accepted", {}, envelope.command_id); }
+    else if (outcome !== null) reject({ ...envelope, session_id: sid }, outcome);
     if (outcome === "taken" && envelope.type === "pairing.revoke") dropPhone(envelope.sender_device_id, "phone");
   }
 

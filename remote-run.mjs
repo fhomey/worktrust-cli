@@ -55,6 +55,26 @@ const notice = (kind, fields) => {
 };
 const logged = (kind, fields = {}) => { log(kind, fields); notice(kind, fields); };
 
+/**
+ * THE GATEWAY'S ERRORS, WRITTEN ONCE AN HOUR PER REASON (CLI 0.11.20; the owner's log held `gateway_error not_paired` every 15
+ * seconds for days). The gateway keeps its channels in memory: after it restarts, a channel of a phone or browser that has not
+ * said hello since is unknown to it, and every event sealed for that channel (the health sample, every 15 seconds) is answered
+ * `not_paired`, without saying which channel. The first of a reason is written at once; the repeats within the hour are counted
+ * and said with the next one (`repeated`). Nothing else changes: what is sent and what is kept are as before.
+ */
+export function createErrorLog({ log, now = Date.now, quietMs = 60 * 60_000 }) {
+  const seen = new Map();
+  return {
+    note(reason) {
+      const at = now(), last = seen.get(reason);
+      if (last && at - last.since < quietMs) { last.count += 1; return false; }
+      log("gateway_error", { reason, ...(last?.count ? { repeated: last.count } : {}) });
+      seen.set(reason, { since: at, count: 0 });
+      return true;
+    },
+  };
+}
+
 export function agentEnv(settings, base = process.env) {
   const env = {};
   for (const [key, value] of Object.entries(base)) if (!/^WORKTRUST_/.test(key) && !/^CLAUDE_?CODE/.test(key) && key !== "CLAUDECODE") env[key] = value;
@@ -186,12 +206,13 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // hands over no command is taken (the phone resends it, unanswered, to the next daemon) and nothing new starts (hold).
   handover = version ? createHandover({ version, log, own: ownLauncher(HERE), announce: (to) => core.announceRestart(to), busy: () => daemonBusy({ sessions, journal, pipelines, terminal, approvals, live, attachments }) }) : null;
 
+  const gatewayErrors = createErrorLog({ log });
   const dispatchFrame = async (frame) => {
     if (frame.frame === "hello") core.receiveHello(frame.hello);
     else if (frame.frame === "command") { if (handover?.handing) return log("command_held", {}); await core.receiveCommand(frame.envelope); }
     else if (frame.frame === "relay") { log("relay", { type: frame.event?.type ?? null }); if (frame.event?.type === "device.revoked") core.peerRevoked(frame.event); }
     else if (frame.frame === "error") {
-      log("gateway_error", { reason: typeof frame.reason === "string" ? frame.reason.slice(0, 40) : null });
+      gatewayErrors.note(typeof frame.reason === "string" ? frame.reason.slice(0, 40) : null);
       // A gateway older than device.health answers it `error: shape` (and closes nothing): rest the samples half an hour.
       if (frame.reason === "shape" && Date.now() - healthSentAt < 5000) { healthRestUntil = Date.now() + 30 * 60_000; log("health_rested", { minutes: 30 }); }
     }

@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.19
+  WorkTrust CLI 0.11.20
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.19
+  WorkTrust CLI 0.11.20
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.19)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.20)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -219,7 +219,8 @@ that phone alone, with the same limits as earlier messages (previews, no thinkin
 not shown); a key in what you typed or in what the agent wrote is replaced by `[key hidden]`. That
 mask knows shapes only (a token by its prefix, a private key block, a password in an address or after a name such as
 `password=` or `api_key:`, an `Authorization` header): a password said in a sentence, or a customer's data, is sent as
-written. The terminal of
+written. Since 0.11.20 what you paste into a prompt is sent too, after your typed words, with the same mask on every
+page (a pasted log is where a key often lands); the same limit holds. The terminal of
 `remote run` says which phone reads along and in which folder, and when it stops. `read-along off` ends it within a
 second and also turns `desk-history` off; `read-along status` and `remote status` say where it stands and who reads
 along now. One follow lasts an hour at most; then the phone opens the session again. Reading along is

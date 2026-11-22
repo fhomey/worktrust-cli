@@ -49,7 +49,12 @@ export function pipelineRecordOk(r) {
 /** Canonical JSON for a flat record of strings, integers and null: keys sorted, no whitespace. */
 const canonical = (r) => `{${Object.keys(r).sort().map((k) => `${JSON.stringify(k)}:${JSON.stringify(r[k])}`).join(",")}}`;
 
-/** Every valid record by agent_session_ref, the widest window kept; unreadable lines counted, never fatal. */
+/**
+ * Every valid record by agent_session_ref: the widest span (as before) and, since the review of 2026-11-21 (P2-3), its
+ * WINDOWS: records of one session that overlap (the same turn marked at its start and again at its end, a remote session
+ * marked as it goes) are one window; records apart stay apart. A desk session steered from the phone on Monday morning
+ * and Wednesday evening is two windows, so Tuesday's own typing in it is the person's. Unreadable lines counted, never fatal.
+ */
 export function readSteered(file = steeredFile()) {
   const byRef = new Map();
   let unreadable = 0, pipelines = 0;
@@ -62,11 +67,24 @@ export function readSteered(file = steeredFile()) {
     if (pipelineRecordOk(record)) { pipelines += 1; continue; } // not agent work: no session for a reader to match
     if (!steeredRecordOk(record)) { unreadable += 1; continue; }
     const prior = byRef.get(record.agent_session_ref);
+    const windows = [...(prior?.windows ?? []), { first_steered_at: record.first_steered_at, last_steered_at: record.last_steered_at }];
     byRef.set(record.agent_session_ref, prior
-      ? { ...record, first_steered_at: Math.min(prior.first_steered_at, record.first_steered_at), last_steered_at: Math.max(prior.last_steered_at, record.last_steered_at) }
-      : record);
+      ? { ...record, first_steered_at: Math.min(prior.first_steered_at, record.first_steered_at), last_steered_at: Math.max(prior.last_steered_at, record.last_steered_at), windows }
+      : { ...record, windows });
   }
+  for (const record of byRef.values()) record.windows = mergeWindows(record.windows);
   return { byRef, unreadable, pipelines };
+}
+
+/** Windows that overlap (or touch) become one, the earliest start and the latest end; apart they stay apart. */
+function mergeWindows(windows) {
+  const out = [];
+  for (const w of [...windows].sort((a, b) => a.first_steered_at - b.first_steered_at)) {
+    const last = out.at(-1);
+    if (last && w.first_steered_at <= last.last_steered_at) last.last_steered_at = Math.max(last.last_steered_at, w.last_steered_at);
+    else out.push({ ...w });
+  }
+  return out;
 }
 
 /** The daemon's write: one canonical line, appended and flushed to disk before the agent is started. */
@@ -115,6 +133,7 @@ export function remoteSteeredOf(file, messages, ledger = null) {
   if (byRef.size === 0 || !Array.isArray(messages) || messages.length === 0) return false;
   const record = sessionRefsOf(file).map((ref) => byRef.get(ref)).find(Boolean);
   if (!record) return false;
-  const from = record.first_steered_at - STEERED_SLACK_MS, to = record.last_steered_at + STEERED_SLACK_MS;
-  return messages.some((m) => Number.isFinite(m?.at) && m.at >= from && m.at <= to);
+  // Each steered window alone (P2-3), with its slack: a day between two windows is the person's.
+  const windows = record.windows ?? [record];
+  return messages.some((m) => Number.isFinite(m?.at) && windows.some((w) => m.at >= w.first_steered_at - STEERED_SLACK_MS && m.at <= w.last_steered_at + STEERED_SLACK_MS));
 }

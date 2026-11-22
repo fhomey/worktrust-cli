@@ -27,6 +27,7 @@ import { canonicalProject } from "./remote-policy.mjs";
 import { probeFolders } from "./remote-service.mjs";
 import { checkRoot, MAX_ROOTS, rootIdOf } from "./remote-projects.mjs";
 import { agentOptionsOf } from "./remote-inventory.mjs";
+import { uninstallSteerMod } from "./remote-steer-mod.mjs"; import { deskSteerLine } from "./remote-desk-steer.mjs";
 import * as P from "./remote-protocol.mjs";
 import { deskReadOf, ensureRemoteDir, loadKeys, loadPhones, loadReadAlongAsk, readJson, saveReadAlongAsk, loadPreviewGrants, loadProjects, loadRoots, loadSettings, projectIdOf, savePreviewGrants, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
 
@@ -59,7 +60,7 @@ export function startChoice(payload, projectId, inventory, settings, known) {
 /**
  * The one door for a settings change. `change`: { what: "modes", allow|deny: "edit"|"auto" } | { what: "roots", add: dir,
  * git_init } | { what: "roots", remove: id|dir } | { what: "projects", add: dir } | { what: "projects", remove: id|dir } |
- * { what: "admin", on: boolean } | { what: "endorse", on: boolean } | { what: "desk_history", on: boolean } | { what: "desk_live", on: boolean } (all four this keyboard only) | { what: "connections", remove:
+ * { what: "admin", on: boolean } | { what: "endorse", on: boolean } | { what: "desk_history", on: boolean } | { what: "desk_live", on: boolean } | { what: "desk_steer", on: boolean } (all five this keyboard only) | { what: "connections", remove:
  * fingerprint } (resolved from the app's change only).
  * `source`: { kind: "keyboard" }, or { kind: "admin", proof, issuerKeys, claims, now, via } (part B; its change is
  * crypto/admin.ts's ADMIN_CHANGE_SPEC, resolved by id before it reaches the rules below).
@@ -107,15 +108,25 @@ function applyRules(change, fromApp) {
     // May a phone READ a session of this computer's own desk list that it never continued (remote-history.mjs)? This keyboard only.
     if (fromApp) return refused("reading this computer's own sessions changes at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
-    saveSettings({ ...settings, desk_history: change.on, ...(change.on ? {} : { desk_live: false }) }); // without the closed turns there is no reading along either
+    saveSettings({ ...settings, desk_history: change.on, ...(change.on ? {} : { desk_live: false, desk_steer: false }) }); // without the closed turns there is no reading along either, and no steering
+    if (!change.on) uninstallSteerMod();
     return { ok: true, message: change.on ? "Your paired phones and browsers may read the sessions you ran at this computer, in the folders you granted. Nothing is stored on a server." : "Sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
   }
   if (change?.what === "desk_live") {
     // May a phone READ ALONG, live, with a session running at this computer (remote-history-follow.mjs)? This keyboard only. On brings the closed turns with it.
     if (fromApp) return refused("reading along with this computer's own sessions changes at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
-    saveSettings({ ...settings, desk_history: change.on, desk_live: change.on });
-    return { ok: true, message: change.on ? "Your paired phones may read along, live and read-only, with the sessions you run at this computer. This covers EVERY folder you granted and every project inside a root you added, also one added later, from this keyboard or (while `remote admin` is on, the default) approved in the app or on the web. See them: npx worktrust remote projects list · npx worktrust remote roots list. Nothing is stored on a server, and nothing can be sent into a session from there." : "Nobody reads along, and sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
+    saveSettings({ ...settings, desk_history: change.on, desk_live: change.on, ...(change.on ? {} : { desk_steer: false }) }); // read along off takes steering with it (CLI 0.11.20)
+    if (!change.on) uninstallSteerMod();
+    return { ok: true, message: change.on ? "Your paired phones may read along, live and read-only, with the sessions you run at this computer. This covers EVERY folder you granted and every project inside a root you added, also one added later, from this keyboard or (while `remote admin` is on, the default) approved in the app or on the web. See them: npx worktrust remote projects list · npx worktrust remote roots list. Nothing is stored on a server, and nothing can be sent into a session from there (unless you also turn on npx worktrust remote desk-steer on)." : "Nobody reads along, and sessions you ran at this computer are not readable from a phone or a browser. One you continue from there is its own remote session and stays readable." };
+  }
+  if (change?.what === "desk_steer") {
+    // May a phone SEND a prompt into a session open at this computer (remote-desk-steer.mjs)? This keyboard only, and only on top of read along.
+    if (fromApp) return refused("sending into this computer's own sessions changes at this keyboard only");
+    if (typeof change.on !== "boolean") return refused("on or off");
+    if (change.on && (settings.desk_live !== true || settings.desk_history !== true)) return refused("steering needs read along on first: npx worktrust remote read-along on, then npx worktrust remote desk-steer on");
+    saveSettings({ ...settings, desk_steer: change.on });
+    return { ok: true, message: change.on ? "Your paired phones (and a browser after its Remote PIN) may send a prompt into a Claude Code session open at this computer, in the folders you granted. It runs with that session's own permission mode and is refused while the session bypasses permissions; questions still appear here. Restart open sessions (or update Claude Code to 2.1.304 or later) so they load the WorkTrust steer mod." : "Nobody can send a prompt into a session open at this computer. The WorkTrust steer mod is removed; sessions that loaded it stop taking prompts at once." };
   }
   if (change?.what === "admin") {
     if (fromApp) return refused("the admin switch changes at this keyboard only");
@@ -204,7 +215,7 @@ export function keptReaders(now = Date.now(), phones = loadPhones(), projects = 
 export function deskReadLine(settings = loadSettings(), now = Date.now()) {
   const read = deskReadOf(settings), readers = read === "live" ? keptReaders(now) : [];
   const clock = (at) => (at === null ? "" : ` since ${new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
-  return `  Reading this computer's own sessions from a phone: ${{ off: "off", history: "closed turns only", live: "live (read along) and closed turns" }[read]} (npx worktrust remote read-along on|off)${read === "live" ? `\n  Reading along now: ${readers.length ? readers.map((r) => `${r.phone} in ${r.project}${clock(r.since)}`).join("; ") : "nobody"}` : ""}`;
+  return `  Reading this computer's own sessions from a phone: ${{ off: "off", history: "closed turns only", live: "live (read along) and closed turns" }[read]} (npx worktrust remote read-along on|off)${read === "live" ? `\n  Reading along now: ${readers.length ? readers.map((r) => `${r.phone} in ${r.project}${clock(r.since)}`).join("; ") : "nobody"}` : ""}\n${deskSteerLine(settings)}`;
 }
 /** `remote read-along on|off | status` (CLI 0.11.19): may a paired phone read along, live and read-only, with a session running at this computer. */
 export function readAlongCommand(io, rest) {

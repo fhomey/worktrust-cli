@@ -9,9 +9,10 @@
  * Of a file only its first and last 64 KB are read, for the working folder, a title and the model.
  *
  * WHAT IS SENT, sealed in device.inventory and only to a phone that asked `desk_sessions` (remote-daemon.mjs): per session
- * its uuid, its project's id, the last activity time, a title (Claude Code's own name or summary line when the transcript
- * has one, else the first line the person typed, cut to 80 characters; since 0.11.19 with a key's shape in it replaced by the
- * history's mask, remote-history-mask.mjs) and the model when one is recorded. Never more of the
+ * its uuid, its project's id, the last activity time, a title (the person's own rename, `custom-title`; else Claude Code's own
+ * name for it, the latest `ai-title` line, which is what VS Code shows (0.11.20); else an older store's `summary` line; else the
+ * first line the person typed; cut to 80 characters, since 0.11.19 with a key's shape in it replaced by the history's mask,
+ * remote-history-mask.mjs) and the model when one is recorded. Never more of the
  * transcript. The last 20 by activity; sessions the remote already runs or ran (its journal) are its own rows.
  *
  * ONE OWNER PER CONVERSATION: a resume is refused (`in_use`) while the session is held on the computer: its transcript was
@@ -53,7 +54,9 @@ function headAndTail(file) {
 }
 
 const oneLine = (text) => text.replace(/\s+/g, " ").trim();
-const cut = (text, max) => { const t = oneLine(text); return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t; };
+// By code points, never code units (review 2026-11-21, P2-2): a cut through an emoji left half of it, which the seal refuses (canonicalBytes),
+// and the journal replayed that inventory to every phone that asks for the desk. `max` counts code units, as the protocol's text() does.
+const cut = (text, max) => { const t = oneLine(text); if (t.length <= max) return t; let out = ""; for (const ch of t) { if (out.length + ch.length > max - 1) break; out += ch; } return `${out.trimEnd()}…`; };
 /**
  * The words of a person's own message, for a title: the history's OWN typed words (remote-history-claude.mjs typedWords; review
  * 2026-11-21, P3-8: this had a filter of its own, which let an opened file, a selection, a paste and a notification through).
@@ -70,8 +73,10 @@ export function transcriptFacts(file) {
   const { head, tail } = headAndTail(file);
   const all = [...head, ...tail];
   const cwd = head.find((l) => typeof l.cwd === "string")?.cwd ?? null;
-  const named = all.filter((l) => l.type === "custom-title" && typeof l.customTitle === "string").at(-1)?.customTitle
-    ?? all.filter((l) => l.type === "summary" && typeof l.summary === "string").at(-1)?.summary ?? null;
+  const latest = (type, key) => all.filter((l) => l.type === type && typeof l[key] === "string" && oneLine(l[key])).at(-1)?.[key] ?? null;
+  // The person's own rename first, then Claude Code's own name for the conversation (2.1.x writes `ai-title` lines, many times,
+  // the name VS Code shows), then an older store's `summary` line; else the first words typed (below).
+  const named = latest("custom-title", "customTitle") ?? latest("ai-title", "aiTitle") ?? latest("summary", "summary");
   const first = head.map(typed).find(Boolean) ?? null;
   const title = named && oneLine(named) ? cut(maskKeys(named), P.MAX_DESK_TITLE) : first ? cut(first, P.MAX_DESK_TITLE) : null; // masked before the cut: a key the cut would split is not sent in part
   const models = all.filter((l) => l.type === "assistant" && typeof l.message?.model === "string" && /^[A-Za-z0-9._:@\[\]-]{1,128}$/.test(l.message.model) && l.message.model !== "<synthetic>");

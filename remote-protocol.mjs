@@ -2040,6 +2040,8 @@ export const DESK_SESSION_SPEC = object({
   last_activity_at: int(0),
   title: nullable(text(MAX_DESK_TITLE, 1)),
   model: nullable(text(128, 1)),
+  /** CLI 0.11.20 (STEER below): a prompt may be sent into this session now. Only for a phone that asked `desk_steer`. */
+  steerable: optional(bool()),
 });
 
 /**
@@ -2051,10 +2053,28 @@ export const DESK_SESSION_SPEC = object({
 export const DESK_READS = ["off", "history", "live"]         ;
 
 /** inventory.get's field (commands.ts spreads it): this phone reads `desk_read` and may follow a desk session. Only with `extended`. */
-export const DESK_GET_FIELDS = { desk_live: optional(bool()) }         ;
+export const DESK_GET_FIELDS = { desk_live: optional(bool()), desk_steer: optional(bool()) }         ;
 
 /** device.inventory's fields (events.ts spreads them): `desk_sessions` only for a phone that asked `inventory.get` `desk_sessions`, `desk_read` only for one that asked `desk_live`. */
 export const DESK_INVENTORY_FIELDS = { desk_sessions: optional(list(DESK_SESSION_SPEC, MAX_DESK_SESSIONS)), desk_read: optional(oneOf(DESK_READS)) }         ;
+
+/**
+ * STEER A DESK SESSION FROM THE PHONE (CLI 0.11.20, owner 2026-11-21; docs/remote-agents/DESK-STEERING.md). A prompt INTO a
+ * Claude Code session that stays open at the desk: `agent.prompt` with `desk_ref` (no new type, so no gateway change), sent
+ * only to a computer whose probe read `inventory.get` `desk_steer` (an older one refuses the unknown key and runs nothing).
+ * The envelope names a session id the phone minted for this one prompt; the computer answers it with device receipts
+ * (session_id null), so no session is made on either side. Words only: never `interrupt`, a file or another model. The
+ * computer checks everything again (its keyboard's switch, read along, the grant, the session's mod alive and its mode).
+ */
+export const DESK_REF_SPEC = object({ session_ref: text(36, 36), project_id: id("prj") });
+
+/** agent.prompt's rule for `desk_ref`: words alone, a Claude Code session id. → null, or what is wrong. */
+export function deskRefRule(p                                                                                                                                  )                {
+  if (p.desk_ref === undefined) return null;
+  if (!CLAUDE_SESSION_REF.test(p.desk_ref.session_ref)) return "desk_ref.session_ref: Claude Code's own uuid";
+  if (p.interrupt !== undefined || p.attachments !== undefined || p.model !== undefined) return "desk_ref: words alone (no interrupt, file or model)";
+  return null;
+}
 
 /** The rules between fields: a uuid each, each once, each under a project the same inventory lists. → null, or what is wrong. */
 export function deskRule(desk                                    , projects                                            )                {
@@ -2972,7 +2992,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * that adapter (an older computer refuses the unknown key and runs nothing). The computer checks it again
      * (checkModelSwitch) against its own list and its adapter; another agent is never a model: it is a new chat.
      */
-    model: optional(text(128, 1)),
+    model: optional(text(128, 1)), desk_ref: optional(DESK_REF_SPEC), // CLI 0.11.20: into a session open at the desk (desk.ts deskRefRule), only to a computer that read `desk_steer`
   }),
   /**
    * Words for an agent in the middle of a turn: redirect without stopping. Where the adapter reports steer_mode `live`
@@ -3213,14 +3233,14 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended");
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended");
   }
   if (type === "session.attach") {
     const a = payload                                    ;
     const given = [a.after, a.max_events, a.max_bytes].filter((v) => v !== undefined).length;
     if (given !== 0 && given !== 3) return refuse("payload", "$payload: after, max_events and max_bytes together, or none");
   }
-  if (type === "history.get") { const bad = historyGetRule(payload              ); if (bad) return refuse("payload", `$payload: ${bad}`); }
+  if (type === "history.get") { const bad = historyGetRule(payload              ); if (bad) return refuse("payload", `$payload: ${bad}`); } if (type === "agent.prompt") { const bad = deskRefRule(payload                                  ); if (bad) return refuse("payload", `$payload.${bad}`); }
   if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.live_start") { const bad = liveStartRule(payload             ); if (bad) return refuse("payload", `$payload: ${bad}`); }
@@ -3337,7 +3357,7 @@ export const REJECT_REASONS = [
   "busy", // the agent is mid-turn and the command needs it idle (a release: its tasks still run, or no slot for a pipeline)
   "unreviewed", // the project's pipeline file was not reviewed at the keyboard, or changed since (2026-11-07)
   "not_allowed", // the computer did not allow it at its keyboard (a browser endorsement without allow-endorse), or the sender may not (2026-11-09)
-  "in_use", // release 36: the desk session to continue is open on the computer; sent only to a phone that asked `desk_sessions` (others hear `busy`)
+  "in_use", "bypass_mode", "not_prompt", // in_use (release 36): the desk session to continue is open on the computer; sent only to a phone that asked `desk_sessions` (others hear `busy`). bypass_mode (CLI 0.11.20): a desk session that skips permission questions (or whose mode is unknown) takes no prompt from a phone; sent only to a phone that asked `desk_steer` (others hear `not_allowed`). not_prompt (CLI 0.11.20, review): a desk prompt that starts with `!` or `/` (a shell line or a command, perhaps run as such in the session) is not sent; the same rule for older phones
 ]         ;
 
 export const FAIL_REASONS = ["agent_exited", "adapter_error", "not_ready", "timeout", "internal"]         ;

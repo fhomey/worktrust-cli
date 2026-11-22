@@ -2,6 +2,50 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.20: a session's own name, a paste you can read, and the right answer for a session open at your desk
+
+**The name Claude Code gives a session.** The list of this computer's sessions (Continue a session, Read along) now
+shows the name VS Code shows: your own rename first, then Claude Code's own name for the conversation (current Claude
+Code writes it as `ai-title`, not as the summary this CLI read before), then an older summary, then your first words. It
+is cut at 80 characters with anything shaped like a key masked, as before. A paste is never a title.
+
+**A paste is readable.** A prompt you pasted (the VS Code extension wraps it as pasted content) was counted as a file
+and never sent, so a prompt of a paste alone showed on the phone as an empty message. Its text now comes along in your
+message, after anything you typed: the tags, colours and control characters taken out, cut at 16,384 characters like
+any message, and anything shaped like a key replaced by `[key hidden]` on every page, also in a session the phone
+started. That mask knows shapes only: a customer's name in a pasted log, or a password under a name that says nothing,
+is sent as written. No new field: an older phone reads it as the text it is.
+
+**A session open at your desk is "open on the computer".** Continue on this phone, on a session open in VS Code, was
+answered "This computer cannot continue that session": the start judged what Claude Code here could do before it
+asked whether the session was free, and a computer whose Claude Code report could not start or resume at that moment
+refused for that. The desk is now asked first: a session open here is refused as open on the computer (the phone says
+you can read along, or close it there), whatever else is true. A free session still passes every check before anything
+starts.
+
+**Quieter service log.** The gateway's errors are written once per reason per hour, with the number of repeats; a
+channel the gateway forgot after it restarted answered every health sample with `not_paired`, every 15 seconds.
+
+**Small.** `remote status` says "1 browser added by a phone", not "1 browsers".
+
+**Send a prompt from your phone into a session open at your desk, when you turn it on.** `npx worktrust remote
+desk-steer on` (off by default, and only once read along is on: `npx worktrust remote read-along on`) installs a second
+Claude Code mod, `worktrust-steer`, beside the measuring one. From then on your paired phone, or a browser after its
+Remote PIN, can type into a Claude Code session that is open here, in VS Code or a terminal, without closing it: the words
+arrive as yours, with that session's own permission mode. Before it writes anything this computer checks that steering
+and read along are on, that the session is in its own list under a folder you granted, that the mod is alive in that
+session (Claude Code 2.1.304 or later; restart a session that was open before you turned it on), that the session does
+not bypass permission questions, that no other prompt waits for it, and that fewer than ten were sent this minute. A
+prompt the session does not take within 60 seconds is withdrawn. Nothing listens on a port and the mod makes no network
+call: the two meet in files under `~/.worktrust/remote/desk-steer/`. `npx worktrust remote desk-steer off`, `read-along
+off` and `remote disable` remove the mod again. The measuring mod is unchanged: it still reads no text. A prompt that
+starts with `!` or `/` is not sent (it might run as a shell line or a command), a prompt still waiting when you pause,
+turn steering off or remove the phone is withdrawn, and one left waiting by a service that stopped is never delivered
+later. Your AI Hours: only the turn a prompt started is marked as steered from the phone, never the days around it.
+
+**A browser reads along too.** A browser reaches your computer only while its Remote PIN is unlocked, so a browser that
+asks now reads along with (and, with steering on, sends into) a session at your desk, as a phone does.
+
 ## 0.11.19: read along from your phone with a session at your desk, when you turn it on
 
 **Read along, live and read-only.** A phone you paired may read along with a Claude Code session you run at this

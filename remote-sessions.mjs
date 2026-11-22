@@ -201,10 +201,13 @@ export function createSessions(ctx) {
     // Project and extras by the ids of the computer's own list, never a path; the 0.11.7 options against its own ceiling.
     const known = ctx.projects(), project = known.find((p) => p.project_id === env.project_id);
     if (!project) return "not_found";
+    // A RESUME OF A DESK SESSION IS ASKED OF THE DESK FIRST (CLI 0.11.20; owner, 2026-11-21: a session open in VS Code was refused
+    // `unsupported`): held on the computer is the answer (`in_use`) whatever the options say, and an id outside its own list is
+    // `not_found`. A free, listed one still passes every check below before anything starts.
+    const desk = payload.resume !== null && env.task !== true ? (ctx.desk ? ctx.desk.resumable(payload.resume, project.project_id) : "not_found") : null; if (desk) return desk; // release 36: only a session of the computer's own list, free
     const refused = P.checkStart(payload, adapterOf(ctx.inventory(), payload.adapter)); if (refused) return refused;
     const choice = startChoice(payload, project.project_id, ctx.inventory(), ctx.settings(), known); if (typeof choice === "string") return choice;
     if (!AGENT_ID[payload.adapter] || (payload.resume !== null && !AGENT_ID[payload.adapter](payload.resume))) return "unsupported";
-    const desk = payload.resume !== null && env.task !== true ? (ctx.desk ? ctx.desk.resumable(payload.resume, project.project_id) : "not_found") : null; if (desk) return desk; // release 36: only a session of the computer's own list, free
     if (deskGranted(payload.adapter, project.path)) return "not_allowed"; // S0: Codex's own allow rules cannot be denied per session
     const s = { session_id: env.session_id, project_id: project.project_id, projectPath: project.path, adapter: payload.adapter, model: payload.model, mode: payload.permission_mode,
       agent_ref: payload.resume ?? (payload.adapter === "codex" ? null : payload.adapter === "opencode" ? mintOpenCodeSessionId(ctx.now(), ctx.random) : randomUUID()), how: payload.resume !== null && env.task !== true ? "attached" : "started", first: ctx.now(), queue: [], state: FRESH_STATE[payload.adapter](),

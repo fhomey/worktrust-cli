@@ -80,6 +80,9 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 // with a session running at this computer? OFF until a person says yes at this keyboard: by the question after a pairing (remote-read-along.mjs; Enter is yes) or by `worktrust remote read-along on` (
 // which turns desk_history on with it). A settings file of 0.11.17 or 0.11.18 with desk_history and no desk_live keeps
 // exactly what it had: closed turns, never the running one.
+// desk_steer (0.11.20; owner, 2026-11-21; docs/remote-agents/DESK-STEERING.md): may a paired phone (or a browser after its Remote PIN)
+// SEND a prompt into a Claude Code session open at this computer? OFF until `worktrust remote desk-steer on` at this keyboard, only
+// on top of read along; read along off (or desk-history off) turns it off (remote-settings.mjs).
 /**
  * Whether this computer knows a confirmed device as a BROWSER (CLI 0.11.19: reading along is for the phone app only). The
  * issuer binds a browser as kind `phone`, so the binding cannot tell them apart. What the computer itself wrote can: `how:
@@ -108,7 +111,7 @@ export const deskReadOf = (settings) => (settings?.desk_history !== true ? "off"
 export const PRODUCTION_GATEWAY = "wss://remote.worktrust.io";
 /** The relay this computer uses: its own saved choice, else WorkTrust's. */
 export const gatewayOf = (settings) => settings?.gateway ?? PRODUCTION_GATEWAY;
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false, desk_live: false });
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false, desk_live: false, desk_steer: false });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 

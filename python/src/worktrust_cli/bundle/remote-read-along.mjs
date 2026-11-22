@@ -25,7 +25,7 @@ import { deskReadOf, loadIdentity, loadPhones, loadReadAlongAsk, loadSettings, s
 export const ANSWER_WAIT_MS = 120_000;
 export const READ_ALONG_COMMAND = "npx worktrust remote read-along on";
 /** Commands after which a computer paired before this release is never asked: the service, internal jobs, the switch's own commands, a way out. */
-const NEVER_AFTER = new Set(["run", "folder-check", "handover", "help", "read-along", "desk-history", "disable", "pause", "attach"]);
+const NEVER_AFTER = new Set(["run", "folder-check", "handover", "help", "read-along", "desk-history", "desk-steer", "disable", "pause", "attach"]);
 let offered = false; // once per CLI process: a command that links a phone has asked already
 
 /** One line from the keyboard: the words typed, or null when the input ended or nothing came in time. */

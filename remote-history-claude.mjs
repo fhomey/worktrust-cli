@@ -5,6 +5,8 @@
  *
  *   transcript line                               item
  *   user, typed words                             user {text, attachments: its images and documents, counted, never sent}
+ *   user, a pasted block                          its words after the typed ones in the same `text`, cleaned and ALWAYS
+ *                                                 masked (CLI 0.11.20, owner 2026-11-21: a paste is readable)
  *   assistant text followed by more work          text
  *   assistant text, the turn's last               answer {model}       (only when the turn's end was SEEN; else text)
  *   assistant thinking                            thinking             (a marker; never a word of it)
@@ -49,13 +51,26 @@ const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
 export const LINE_ITEMS = 100;
 /** What stands beside a person's words and was never typed: a command's echo, a reminder, what the editor adds (the open file, a selection). */
 const ECHO = /^\s*<(command-|local-command-|bash-|system-reminder|task-notification|ide_selection|ide_opened_file)|^\s*Caveat:|^\[Request interrupted/;
-/** Pasted content: counted with the files, never sent. */
+/**
+ * Pasted content (an editor wraps a paste as `<pasted_content id="…">…</pasted_content id="…">`). Since CLI 0.11.20 (owner,
+ * 2026-11-21: a paste-only prompt drew an empty bubble) its inner words are sent in the person's own `text`, after what was
+ * typed: tags stripped, ANSI and control characters stripped, a key's shape masked on EVERY page (a paste is where a log or a
+ * config lands), cleaned, then cut at PASTE_READ, then masked. It is no longer counted as a file. No new key: an older phone reads text.
+ */
 const PASTED = /^\s*<pasted[_-]content/;
+const PASTE_TAGS = /^\s*<pasted[_-]content\b[^>]*>|<\/pasted[_-]content\b[^>]*>\s*$/g;
+/** What of one paste is read at most, before the mask: four times the text cap, so the mask's own work stays bounded and a key it
+ * might split at this edge lies far beyond the cut the page makes (HISTORY_MAX_TEXT). */
+const PASTE_READ = 4 * P.HISTORY_MAX_TEXT;
+// Cleaned WHOLE, then cut, then masked (review 2026-11-21, P3-1): cut first, an ANSI-heavy paste shrank below the page's cut and a
+// key straddling PASTE_READ crossed in part.
+const pasteWords = (t) => maskKeys(clean(t.replace(PASTE_TAGS, "")).slice(0, PASTE_READ)).trim();
 
 /**
- * The words a person typed and how many files they carried, or null: never a tool result, a command's echo, a caveat or a
- * summary. BLOCK BY BLOCK (review 2026-11-17, F2): a block that begins with one of those is dropped wherever it stands, so
- * a selection or an opened file beside typed words never crosses as typed words; a pasted block is counted, not sent.
+ * The words a person typed (`text`), what they pasted (`pasted`, masked, see PASTED) and how many files they carried, or null:
+ * never a tool result, a command's echo, a caveat or a summary. BLOCK BY BLOCK (review 2026-11-17, F2): a block that begins
+ * with one of those is dropped wherever it stands, so a selection or an opened file beside typed words never crosses as typed
+ * words. A title (remote-desk-sessions.mjs) reads `text` alone: a paste is never a title.
  */
 export function typedWords(line) {
   if (line?.type !== "user" || line.isMeta === true || line.isCompactSummary === true || line.isVisibleInTranscriptOnly === true || line.message?.role !== "user") return null;
@@ -63,9 +78,10 @@ export function typedWords(line) {
   if (blocks && blocks.some((b) => b?.type === "tool_result")) return null;
   const texts = (typeof c === "string" ? [c] : blocks ? blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text) : []);
   const text = texts.filter((t) => !ECHO.test(t) && !PASTED.test(t)).join("\n").trim();
-  const files = (blocks ? blocks.filter((b) => b?.type === "image" || b?.type === "document").length : 0) + texts.filter((t) => PASTED.test(t)).length;
-  if (!text && files === 0) return null;
-  return { text, files };
+  const pasted = texts.filter((t) => PASTED.test(t)).map(pasteWords).filter(Boolean).join("\n\n");
+  const files = blocks ? blocks.filter((b) => b?.type === "image" || b?.type === "document").length : 0;
+  if (!text && !pasted && files === 0) return null;
+  return { text, pasted, files };
 }
 
 const resultText = (content) => (typeof content === "string" ? content : Array.isArray(content) ? content.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n") : "");
@@ -186,7 +202,7 @@ export function mapTranscript(lines, { scope, cwd = null, mask = false, after = 
     if (words) {
       marks.push({ kind: "user" });
       if (!mine || side) continue;
-      const t = cutTo(prose(words.text), P.HISTORY_MAX_TEXT);
+      const t = cutTo([prose(words.text), words.pasted].filter(Boolean).join("\n\n"), P.HISTORY_MAX_TEXT); // both masked before the cut (a paste always)
       entries.push({ line: offset, item: { id: P.historyItemId(scope, key, 0), kind: "user", at, text: t.text, ...(t.cut ? { cut: true } : {}), from: "computer", ...(words.files > 0 ? { attachments: Math.min(99, words.files) } : {}) } });
       continue;
     }

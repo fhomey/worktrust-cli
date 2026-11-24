@@ -25,11 +25,11 @@
  * update's own re-install of a daemon that can hear it leaves restart.json for the seconds it takes (restartAsked), which
  * the daemon reads when the service manager ends it. A stop, a disable or a shutdown says nothing.
  */
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { verifyPackage, writePrivateFile } from "./package-integrity.mjs";
+import { refusedFor, systemRunner } from "./remote-service-home.mjs";
 import { RELEASE, installedRelease, isHandoverLauncher, launcherFor, launcherVersion, newerRelease } from "./remote-launchers.mjs";
 export * from "./remote-launchers.mjs"; // which launcher a unit may be handed to (the npm copies, a Python installation)
 
@@ -86,14 +86,16 @@ WantedBy=default.target
 `;
 }
 
-const run = (file, args) => { try { execFileSync(file, args, { stdio: "ignore", timeout: 15_000 }); return true; } catch { return false; } };
+// THE SERVICE MANAGER IS ASKED ONLY FOR THIS USER'S OWN HOME (2026-11-24): the guard and the one runner live in
+// remote-service-home.mjs; every runner default below is its systemRunner(home). Held by scripts/check-cli-service-home.mjs.
+export { NOT_THIS_HOME, ownHome } from "./remote-service-home.mjs";
 
 /**
  * Install and (re)start. `program` is [node, ...nodeArgs, launcher, "remote", "run"]; `runner` is how launchctl and
  * systemctl are run (tests pass a recorder). systemd: `enable --now` leaves a running daemon on its old program, so the
  * unit is restarted (which starts a stopped one); `self` (the daemon moving itself) does not wait for its own end.
  */
-export function installService({ program, path, platform = process.platform, home = homedir(), runner = run, self = false, fromHandover = false }) {
+export function installService({ program, path, platform = process.platform, home = homedir(), runner = systemRunner(home), self = false, fromHandover = false }) {
   const kind = servicePlatform(platform);
   if (kind === "launchd") {
     const file = plistPath(home);
@@ -104,18 +106,18 @@ export function installService({ program, path, platform = process.platform, hom
     if (!fromHandover) runner("launchctl", ["bootout", `${domain}/${HANDOVER_LABEL}`]);
     rmSync(handoverPlistPath(home), { force: true });
     runner("launchctl", ["bootout", `${domain}/${LABEL}`]);
-    return { kind, file, started: runner("launchctl", ["bootstrap", domain, file]) };
+    return { kind, file, started: runner("launchctl", ["bootstrap", domain, file]), why: refusedFor(runner, home) };
   }
   if (kind === "systemd") {
     const file = unitPath(home);
     mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
     writeFileSync(file, systemdUnit({ program, path }), { mode: 0o644 });
-    return { kind, file, started: runner("systemctl", ["--user", "daemon-reload"]) && runner("systemctl", ["--user", "enable", UNIT]) && runner("systemctl", ["--user", "restart", ...(self ? ["--no-block"] : []), UNIT]) };
+    return { kind, file, started: runner("systemctl", ["--user", "daemon-reload"]) && runner("systemctl", ["--user", "enable", UNIT]) && runner("systemctl", ["--user", "restart", ...(self ? ["--no-block"] : []), UNIT]), why: refusedFor(runner, home) };
   }
   return { kind, file: null, started: false };
 }
 
-export function removeService({ platform = process.platform, home = homedir(), runner = run } = {}) {
+export function removeService({ platform = process.platform, home = homedir(), runner = systemRunner(home) } = {}) {
   const kind = servicePlatform(platform);
   if (kind === "launchd") {
     for (const label of [HANDOVER_LABEL, LABEL]) runner("launchctl", ["bootout", `gui/${userInfo().uid}/${label}`]);
@@ -126,7 +128,7 @@ export function removeService({ platform = process.platform, home = homedir(), r
   return kind;
 }
 
-export function serviceState({ platform = process.platform, home = homedir(), runner = run } = {}) {
+export function serviceState({ platform = process.platform, home = homedir(), runner = systemRunner(home) } = {}) {
   const kind = servicePlatform(platform);
   if (kind === "launchd") return { kind, installed: existsSync(plistPath(home)), running: runner("launchctl", ["print", `gui/${userInfo().uid}/${LABEL}`]) };
   if (kind === "systemd") return { kind, installed: existsSync(unitPath(home)), running: runner("systemctl", ["--user", "is-active", "--quiet", UNIT]) };
@@ -195,7 +197,7 @@ export function restartAsked({ home = homedir(), now = Date.now() } = {}) {
  * cannot be asked, and one that stayed idle and unchanged for waitMs did not move (a release key it does not know): the
  * update, verified itself, re-installs it. Only what is true is said (review P3-3).
  */
-export async function serviceOnRelease({ program, version, platform = process.platform, home = homedir(), runner = run, direct = false, waitMs = 15_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+export async function serviceOnRelease({ program, version, platform = process.platform, home = homedir(), runner = systemRunner(home), direct = false, waitMs = 15_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   if (servicePlatform(platform) === "foreground") return null;
   const installed = installedProgram({ platform, home });
   if (!installed) return null;
@@ -224,7 +226,7 @@ export async function serviceOnRelease({ program, version, platform = process.pl
  * goes whatever happens (P3-2). The job does not boot itself out (that would end it mid-way): the next handover and
  * `remote app` boot it out first.
  */
-export async function handoverCommand(io, { home = homedir(), platform = process.platform, runner = run } = {}) {
+export async function handoverCommand(io, { home = homedir(), platform = process.platform, runner = systemRunner(home) } = {}) {
   try {
     const installed = installedProgram({ platform, home }), unit = installed ? launcherVersion(entryOf(installed.program)) : null;
     const why = installedRelease(home) !== io.version ? "not the installed release" : !installed ? "no service" : !unit || !newerRelease(io.version, unit) ? "not newer than the service" : daemonState(home)?.busy ? "a task is running" : null;
@@ -263,7 +265,7 @@ export const holdDuring = (holding) => ({
  * `own`: the launcher beside this release's modules (the launcher sets process.argv[1] to worktrust.mjs, so it is named, not
  * read); only the daemon the installed unit started (its entry) hands over, never one run by hand in a terminal. → { start, tick, stop, handing }.
  */
-export function createHandover({ version, busy, own = null, log = () => {}, announce = () => {}, home = homedir(), platform = process.platform, runner = run, verify = verifyPackage, now = Date.now, everyMs = 10 * 60_000, giveUpMs = 60_000 }) {
+export function createHandover({ version, busy, own = null, log = () => {}, announce = () => {}, home = homedir(), platform = process.platform, runner = systemRunner(home), verify = verifyPackage, now = Date.now, everyMs = 10 * 60_000, giveUpMs = 60_000 }) {
   const said = (to) => { try { announce(to); } catch { /* unsaid: the phones see it offline, then its new version */ } };
   let checked = -Infinity, handing = 0, saidBusy = null, lastBusy = null, waiting = null;
   const ours = () => { const current = installedProgram({ platform, home }); return current && entryOf(current.program) === own ? current : null; };
@@ -320,22 +322,22 @@ export function createHandover({ version, busy, own = null, log = () => {}, anno
  */
 export const CHECK_LABEL = "io.worktrust.remote.folder-check";
 export const folderCheckPlist = ({ program, path, home = homedir() }) => oneShotPlist(CHECK_LABEL, { program, path, home });
-export async function probeFolders({ program, path, home = homedir(), platform = process.platform, waitMs = 120_000 }) {
+export async function probeFolders({ program, path, home = homedir(), platform = process.platform, waitMs = 120_000, runner = systemRunner(home) }) {
   if (servicePlatform(platform) !== "launchd") return null;
   const out = join(home, ".worktrust", "remote", "folder-check.json"), file = join(home, "Library", "LaunchAgents", `${CHECK_LABEL}.plist`);
   const domain = `gui/${userInfo().uid}`;
   rmSync(out, { force: true });
   mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
   writeFileSync(file, folderCheckPlist({ program, path, home }), { mode: 0o644 });
-  run("launchctl", ["bootout", `${domain}/${CHECK_LABEL}`]);
+  runner("launchctl", ["bootout", `${domain}/${CHECK_LABEL}`]);
   let result = null;
-  if (run("launchctl", ["bootstrap", domain, file])) {
+  if (runner("launchctl", ["bootstrap", domain, file])) {
     for (const end = Date.now() + waitMs; Date.now() < end && result === null;) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       try { result = JSON.parse(readFileSync(out, "utf8")); } catch { result = null; }
     }
   }
-  run("launchctl", ["bootout", `${domain}/${CHECK_LABEL}`]);
+  runner("launchctl", ["bootout", `${domain}/${CHECK_LABEL}`]);
   rmSync(file, { force: true });
   return result;
 }

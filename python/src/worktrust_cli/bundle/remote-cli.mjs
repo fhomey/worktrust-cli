@@ -37,7 +37,7 @@
  *                                                     in tmux on WorkTrust's own socket, seen on the phone, attached here
  *                                                     (remote-terminal-cli.mjs; off by default)
  */
-import { basename } from "node:path"; import { hostname } from "node:os";
+import { basename } from "node:path"; import { homedir, hostname } from "node:os";
 import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
 import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, PRODUCTION_GATEWAY, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveSettings, writeJson } from "./remote-store.mjs";
@@ -45,7 +45,7 @@ import { canonicalProject } from "./remote-policy.mjs";
 import { CONFIRMATION_EXPIRED, IssuerMissing, PairingDenied, PairingExpired, PairingRefused, awaitConfirmation, compactForQr, oneScan, oneScanInvite, pairComputer } from "./remote-pairing.mjs";
 import { startCountdown, waitKey } from "./remote-countdown.mjs";
 import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSummary, linkPhone, reachStep, removeOneCommand, removePhones, withName } from "./remote-connections.mjs";
-import { handoverCommand, installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
+import { NOT_THIS_HOME, handoverCommand, installService, ownHome, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { terminalQr } from "./remote-qr.mjs";
 import { gatewayLine, keptGatewayState, webSocketAvailable } from "./remote-transport.mjs";
 import { healthLine, keptHealth } from "./remote-health.mjs";
@@ -133,7 +133,7 @@ async function approve(io, road) {
   if (servicePlatform() === "foreground") { io.say("  ✓ This computer is connected to Remote Agent."); io.say("  Windows: there is no service; run `npx worktrust remote run` and keep that terminal open."); return; }
   const runtime = await io.prepare();
   const service = installService({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "run"], path: process.env.PATH ?? "" });
-  io.say(service.started ? `  ✓ The service runs (${service.kind}, while you are logged in; linger stays off).` : `  ! The service file was written (${service.file}) but did not start; run \`npx worktrust remote run\` to see why.`);
+  io.say(service.started ? `  ✓ The service runs (${service.kind}, while you are logged in; linger stays off).` : service.why ? `  ! Not started (${service.why}): the service file is written (${service.file}); no service manager was asked.` : `  ! The service file was written (${service.file}) but did not start; run \`npx worktrust remote run\` to see why.`);
   if (service.started) io.say("  ✓ This computer is connected to Remote Agent.");
   if (waitingForPhone) return void io.say("  Once it is confirmed: npx worktrust remote pair links a phone, if none is linked yet."); // no relay yet: a phone could not reach it
   if (!io.has("no-pair")) await linkAndGrant(io, ready);
@@ -306,7 +306,7 @@ async function remoteDispatch(args, io) {
   if (sub === "disable") {
     const s = loadSettings();
     saveSettings({ ...s, enabled: false, paused: null, desk_steer: false, voice: false }); uninstallSteerMod(); // the hard off takes steering and its mod (CLI 0.11.20) and voice (0.11.21) with it
-    io.say(`  Off. The service is removed (${removeService()}); the daemon stops by itself within seconds.`);
+    const kind = removeService(); io.say(ownHome(homedir()) ? `  Off. The service is removed (${kind}); the daemon stops by itself within seconds.` : `  Off. The service files in this home are removed (${kind}); no service manager was asked (${NOT_THIS_HOME}).`);
     if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json", "readers.json", "read-along.json", "voice.json", "default-root.json", "steer-origins.json", "notice-keys.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
     return;
   }

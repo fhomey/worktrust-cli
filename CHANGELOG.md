@@ -2,6 +2,15 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.24: a test or tool running under another home can no longer stop or start your Remote service
+
+**Your Remote Agent service is asked only from your own home.** launchctl and systemctl reach the service of the user who is
+logged in, whatever the HOME of the program asking says. So a test, or a tool, that ran the CLI with a home of its own (a
+temporary folder) could stop or restart your running Remote Agent service while it changed only files in that folder. Now
+the CLI asks the service manager only when the home it works in is your own; under any other home it writes or removes the
+service files there and asks nothing (`remote disable` says so: "no service manager was asked"). Setting
+`WORKTRUST_NO_SERVICE_MANAGER=1` does the same on purpose. Nothing changes for you at your own computer.
+
 ## 0.11.23: only the turns your phone steered are agent work, and a new computer can wait for your phone
 
 0.11.22 was never published on its own: everything in its section below first reaches npm, PyPI and the site with 0.11.23.

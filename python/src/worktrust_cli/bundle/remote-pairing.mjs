@@ -31,6 +31,20 @@ export class PairingRefused extends Error {}
 export class PairingExpired extends PairingRefused {}
 /** The person denied it on the phone or in the browser (0.11.7). */
 export class PairingDenied extends PairingRefused {}
+/** A new computer the issuer held for the phone's confirmation was not confirmed in its window (CLI 0.11.23, ISSUER.md §11). */
+export class ConfirmationExpired extends PairingRefused {}
+
+/**
+ * THIS COMPUTER, NAMED TO THE ISSUER (CLI 0.11.23; owner, 2026-11-23; ISSUER.md §11 "A new computer waits for the phone"): the
+ * 43-character hash of the machine id, the same one `api/cli/renew` receives as `device_id` (worktrust.mjs computerIds), sent
+ * as `computer_id` in every POST /api/remote/token body, so the issuer computes this computer's machine reference itself
+ * (never sent by the CLI) and can hold the coupling key of a computer the phone has not confirmed yet. Anything not of that
+ * shape is not sent; an issuer before 2026-11-23 reads only its own fields and ignores it.
+ */
+export const COMPUTER_ID = /^[A-Za-z0-9_-]{43}$/;
+/** The words, said once, while the issuer holds a new computer for the phone's confirmation. */
+export const WAITING_FOR_PHONE = "  Waiting for confirmation on your phone.";
+export const CONFIRMATION_EXPIRED = "The confirmation on your phone expired. Run `npx worktrust remote app` again.";
 
 async function post(origin, path, body) {
   const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
@@ -113,8 +127,19 @@ export async function chooseRoad({ interactive = Boolean(process.stdin.isTTY), y
  * Pair, and return the verified binding. `keys` holds the secret pair (never sent), `issuerKeys` the pinned keys. `road`:
  * "web" opens the approval page in the browser; "app" draws its link with `showQr` for the WorkTrust app and opens nothing.
  */
-export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, road = "web", showQr = () => {}, issuerKeys, say, openBrowser, now = Date.now, countdown = null, once = null, showLink = false }) {
+export async function pairComputer({ origin, secret, publicKeys, host, os, device = false, road = "web", showQr = () => {}, issuerKeys, say, openBrowser, now = Date.now, countdown = null, once = null, showLink = false, computerId = null }) {
   const verifier = randomBytes(32).toString("base64url");
+  const named = typeof computerId === "string" && COMPUTER_ID.test(computerId) ? { computer_id: computerId } : {};
+  let pairingCode = null, waitingSaid = false;
+  const tokenAsk = (extra = {}) => post(origin, "/api/remote/token", { device_code: pairingCode, ...extra, code_verifier: verifier, ...named });
+  /** A token answer that names the phone's confirmation (CLI 0.11.23): said once, then polled on; its expiry ends the pairing. */
+  const confirming = (reply) => {
+    const error = reply?.json?.error;
+    if (error === "pending_expired") { settle(CONFIRMATION_EXPIRED); throw new ConfirmationExpired("pairing ended (pending_expired)"); }
+    if (error !== "pending_confirmation") return false;
+    if (!waitingSaid) { waitingSaid = true; say(WAITING_FOR_PHONE); }
+    return true;
+  };
   const code_challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = randomBytes(24).toString("base64url");
   const claim = { code_challenge, ed25519_pub: publicKeys.ed25519_pub, kind: "computer", x25519_pub: publicKeys.x25519_pub };
@@ -138,6 +163,7 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
     if (pairing.status === 404) throw new IssuerMissing(`${origin} has no remote-key issuer yet (POST /api/remote/pair answered 404). Nothing was changed; remote control needs a Passport app with the issuer (docs/remote-agents/ISSUER.md).`);
     if (pairing.status !== 200) throw new PairingRefused(`pairing refused (${pairing.json.error ?? pairing.status})`);
     const { device_code, user_code, expires_in = 600, interval = 3, authorize_url, verification_uri, features = [] } = pairing.json;
+    pairingCode = device_code;
     // THE WINDOW IS THE ISSUER'S (0.11.7): its expires_at when it says one, else its expires_in from now; the bar drains over it.
     const asked = now(), until = Number.isFinite(pairing.json.expires_at) ? pairing.json.expires_at : asked + expires_in * 1000;
     if (!features.includes("remote-binding-v1")) throw new PairingRefused(`${origin} does not offer remote bindings (remote-binding-v1)`);
@@ -168,8 +194,9 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
       while (!code && !exchanged && now() < until) {
         await Promise.race([answer, new Promise((resolve) => setTimeout(resolve, wait))]);
         if (code) break;
-        const reply = await post(origin, "/api/remote/token", { device_code, code_verifier: verifier }).catch(() => null);
+        const reply = await tokenAsk().catch(() => null);
         if (reply?.status === 200) exchanged = reply;
+        else if (confirming(reply)) continue;
         else if (reply?.json?.error === "slow_down") wait += 2000;
         else if (reply?.json?.error === "access_denied") { settle(`Denied ${road === "app" ? "on your phone" : "in the browser"}. Nothing was changed.`); throw new PairingDenied("pairing ended (access_denied)"); }
         else if (reply?.json?.error === "expired_token") { settle("This request expired."); throw new PairingExpired("pairing ended (expired_token)"); }
@@ -177,15 +204,17 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
       }
       if (!exchanged && !code) { settle("This request expired."); throw new PairingExpired("no approval arrived in time"); }
       settle(code || road !== "app" ? "✓ Approved in the browser" : "✓ Approved on your phone");
-      if (!exchanged) exchanged = await post(origin, "/api/remote/token", { device_code, code, code_verifier: verifier });
+      if (!exchanged) exchanged = await tokenAsk({ code });
+      if (exchanged?.json?.error === "pending_expired") confirming(exchanged); // a code's exchange is one ask: nothing to wait on, only the expiry to name
     } else {
       say(`  On any device open ${verification_uri} and type the code.`);
       bar = countdown?.({ expiresAt: until, windowMs: until - asked }) ?? null;
       let wait = interval * 1000;
       while (now() < until) {
         await new Promise((resolve) => setTimeout(resolve, wait));
-        const reply = await post(origin, "/api/remote/token", { device_code, code_verifier: verifier }).catch(() => null);
+        const reply = await tokenAsk().catch(() => null);
         if (reply?.status === 200) { exchanged = reply; settle("✓ Approved"); break; }
+        if (confirming(reply)) continue;
         if (reply?.json?.error === "slow_down") wait += 2000;
         else if (reply?.json?.error === "access_denied") { settle("Denied. Nothing was changed."); throw new PairingDenied("pairing ended (access_denied)"); }
         else if (reply?.json?.error === "expired_token") { settle("This request expired."); throw new PairingExpired("pairing ended (expired_token)"); }
@@ -198,7 +227,9 @@ export async function pairComputer({ origin, secret, publicKeys, host, os, devic
     const verified = P.verifyBinding(exchanged.json.binding, { issuerKeys, now: now(), kind: "computer", deviceId: exchanged.json.device_id });
     if (!verified.ok) throw new PairingRefused(`the binding does not verify (${verified.code}); nothing was saved`);
     if (verified.value.ed25519_pub !== publicKeys.ed25519_pub || verified.value.x25519_pub !== publicKeys.x25519_pub) throw new PairingRefused("the binding names other keys; nothing was saved");
-    return { binding: exchanged.json.binding, device_id: verified.value.device_id, sub: verified.value.sub, exp: verified.value.exp, account: typeof exchanged.json.account === "string" ? exchanged.json.account.slice(0, 120) : null };
+    // HELD FOR THE PHONE (CLI 0.11.23): the binding is issued, the computer waits until the person confirms it on the phone.
+    const pending = exchanged.json.confirmation === "phone" || exchanged.json.status === "pending_confirmation";
+    return { binding: exchanged.json.binding, device_id: verified.value.device_id, sub: verified.value.sub, exp: verified.value.exp, account: typeof exchanged.json.account === "string" ? exchanged.json.account.slice(0, 120) : null, pending };
   } finally { settle(); server?.close(); }
 }
 
@@ -216,7 +247,79 @@ export async function renewBinding({ origin, identity, secret, now = Date.now })
  * unreachable: the gateway then refuses this connection and the transport backs off; nothing else changes.
  */
 export async function requestAssertion({ origin, deviceId, secret, now = Date.now, random = (n) => new Uint8Array(randomBytes(n)) }) {
-  const body = { device_id: deviceId, iat: now(), nonce: P.toBase64Url(random(32)) };
-  const reply = await post(origin, "/api/remote/assertion", { ...body, signature: P.toBase64Url(P.ed25519Sign(P.assertionRequestBytes(body), secret.ed25519)) }).catch(() => null);
+  const reply = await assertionReply({ origin, deviceId, secret, now, random });
   return reply?.status === 200 && typeof reply.json.assertion === "string" && reply.json.assertion.length <= 4096 ? reply.json.assertion : null;
+}
+/** The issuer's whole answer to an assertion request, or null when it is unreachable. */
+async function assertionReply({ origin, deviceId, secret, now = Date.now, random = (n) => new Uint8Array(randomBytes(n)) }) {
+  const body = { device_id: deviceId, iat: now(), nonce: P.toBase64Url(random(32)) };
+  return post(origin, "/api/remote/assertion", { ...body, signature: P.toBase64Url(P.ed25519Sign(P.assertionRequestBytes(body), secret.ed25519)) }).catch(() => null);
+}
+
+export const CONFIRM_POLL_MS = 5_000;
+export const CONFIRM_WAIT_MS = 10 * 60_000;
+/**
+ * WAITING FOR THE PHONE (CLI 0.11.23; ISSUER.md §11): a computer the issuer created pending gets no assertion until the person
+ * confirms it on the phone (403 `pending_confirmation`), and is revoked when they say it is not theirs (403 `revoked`) or its
+ * window passed (403 `pending_expired`). This asks for an assertion every few seconds, as the pairing polls for an approval,
+ * and answers `confirmed`, `expired`, `refused`, `waiting` (this terminal's ten minutes passed; the service keeps asking), or
+ * another refusal's own word. Says the waiting line once. An assertion it is handed is not kept: the service asks its own.
+ */
+export async function awaitConfirmation({ origin, deviceId, secret, say, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), every = CONFIRM_POLL_MS, waitMs = CONFIRM_WAIT_MS, random }) {
+  say(WAITING_FOR_PHONE);
+  const until = now() + waitMs;
+  while (now() < until) {
+    const reply = await assertionReply({ origin, deviceId, secret, now, ...(random ? { random } : {}) });
+    if (reply?.status === 200 && typeof reply.json?.assertion === "string") return "confirmed";
+    const error = reply?.json?.error ?? null;
+    if (error === "pending_expired") return "expired";
+    if (error === "revoked") return "refused";
+    // Still pending, paced, or the issuer not answering: wait on. Anything else is the issuer's own word, returned.
+    if (error !== null && error !== "pending_confirmation" && error !== "rate_limited" && error !== "unavailable") return error;
+    await sleep(error === "rate_limited" ? every * 3 : every);
+  }
+  return "waiting";
+}
+
+/**
+ * THE DEVICES' COUNTS, REPORTED TO THE ISSUER (CLI 0.11.23; owner, 2026-11-23; ISSUER.md §13, POST /api/remote/counts). The
+ * daemon counts per phone and browser in memory (remote-store.mjs createDeviceCounts) and its flush, at most once a minute,
+ * hands the deltas here (`add`). `tick` sends them at most once a minute, only when something is owed: one report, a fresh
+ * `rpt_` id, at most fifty devices, signed by this computer's remote key over deviceCountsBytes. Counts only, never content.
+ *   200 ok / duplicate   forgotten
+ *   429 (paced, rate)    the deltas folded back into what is owed, sent next time under a NEW id
+ *   503, no answer, 401  the same report again next time, the same id (the issuer takes an id once)
+ *   400                  dropped (it can never be taken); 403 revoked or 404 (an issuer without the door): no report again
+ * Kept in memory only: a stop sends what it can once, and the local history keeps every count anyway.
+ */
+export const COUNTS_EVERY_MS = 60_000;
+const COUNT_KEYS = ["sessions", "commands", "prompts", "voice_prompts"];
+const foldCounts = (into, entry) => {
+  const c = into.get(entry.device_id) ?? { device_id: entry.device_id };
+  for (const k of COUNT_KEYS) if (Number.isSafeInteger(entry[k])) c[k] = Math.min(1_000_000, (c[k] ?? 0) + entry[k]);
+  if (Number.isSafeInteger(entry.last_seen)) c.last_seen = Math.max(c.last_seen ?? 0, entry.last_seen);
+  into.set(entry.device_id, c);
+};
+export function createCountsReporter({ origin, deviceId, secret, now = Date.now, random = (n) => new Uint8Array(randomBytes(n)), log = () => {}, everyMs = COUNTS_EVERY_MS }) {
+  const owed = new Map();
+  let report = null, sentAt = -Infinity, stopped = false, busy = false;
+  return {
+    add(entries) { if (!stopped) for (const e of entries ?? []) if (P.isOpaqueId(e?.device_id, "dev")) foldCounts(owed, e); },
+    async tick(force = false) {
+      if (stopped || busy || (!force && now() - sentAt < everyMs)) return null;
+      if (!report && owed.size === 0) return null;
+      if (!report) { const devices = [...owed.values()].slice(0, 50); for (const d of devices) owed.delete(d.device_id); report = { report_id: P.mintId("rpt", random), devices }; }
+      busy = true; sentAt = now();
+      try {
+        const body = { device_id: deviceId, devices: report.devices, iat: now(), report_id: report.report_id };
+        const reply = await post(origin, "/api/remote/counts", { ...body, signature: P.deviceSign(P.deviceCountsBytes(body), secret.ed25519) }).catch(() => null);
+        const error = reply?.json?.error ?? null;
+        if (reply?.status === 200) { report = null; return reply.json.outcome ?? "ok"; }
+        if (reply?.status === 429) { for (const d of report.devices) foldCounts(owed, d); report = null; return error ?? "paced"; }
+        if (reply?.status === 403 || reply?.status === 404) { stopped = true; owed.clear(); report = null; log("counts_stopped", { status: reply.status }); return "stopped"; }
+        if (reply?.status === 400) { report = null; log("counts_refused", {}); return "invalid"; }
+        return "retry"; // 503, 401, no answer: the same id next time
+      } finally { busy = false; }
+    },
+  };
 }

@@ -49,7 +49,7 @@ and show the ways forward, each with its exact command:
 
 1. Update this computer's Node. The CLI reads how Node is installed here and shows the matching command (nvm, fnm, Volta,
    asdf, Homebrew, winget, or the installer from nodejs.org). For fnm, Volta and Homebrew it can run the command for you,
-   after showing it and only when you type yes. It never uses sudo and never runs a system package manager. Afterwards it
+   after showing it and only when you answer y or yes. It never uses sudo and never runs a system package manager. Afterwards it
    runs `npx worktrust update`, so the session hook and your AI apps point at the new Node, and continues what you started.
 2. Use the Python package, which brings its own Node: `pipx run worktrust remote app`.
 
@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.21
+  WorkTrust CLI 0.11.23
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.21
+  WorkTrust CLI 0.11.23
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.21)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.23)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -99,7 +99,7 @@ Once it is connected (80 columns; on a wide terminal each row's sentence stands 
    7  Status                                   npx worktrust status
    8  Disconnect this computer                 npx worktrust disconnect
    9  Help · all commands                      npx worktrust help
-      Quit                                     q
+   0  Quit                                     q
 
   Shows what is coupled here and finishes what waits.
 
@@ -111,7 +111,13 @@ when there is nothing to update, and most of Remote Agent until this computer is
 menu comes from this computer's own files; it never shows the key. Sharing › says what this computer sends and holds the
 switches that exist: `mcp off | on` and Remote Agent's pause. Remote Agent › Connections lists every linked phone and
 browser, and disconnecting one runs `remote disconnect` with its typed confirmation. Esc quits at the top and goes back
-one level below it.
+one level below it; Backspace goes back one level too (0.11.23; built as 0.11.22, which was never published).
+
+**Every switch asks first (0.11.23).** Enter on an on/off row (read along, steering, voice, reading aloud, the default
+folder, WorkTrust in your AI apps, pause, a mode) shows what it does and what changes, then asks: `y` switches it; Enter,
+Esc or Backspace change nothing. A switch that needs your own yes at this keyboard to turn on still asks it after that (y or yes; 0.11.23). Remote Agent ›
+Permissions › holds read along, steering, voice, reading aloud and Modes, each after the one it needs, its row saying how
+many are on; every row of a menu has a digit (a tenth row answers 0).
 
 **Esc stops a running command.** While a command the menu started is busy (counting, reading, sending, waiting for an
 approval or a phone), Esc stops it and the menu says `Stopped. Enter: back to the menu · Esc: close`. A read or a wait
@@ -248,7 +254,9 @@ your linked phones and browsers only, and the relay keeps none of it. When memor
 5 % free while swap keeps growing), `remote status` and the menu say so in red, and a phone cannot start a new session
 until it eases; sessions already running continue.
 
-A session steered from a phone is recorded as an agent run. It never counts as your AI Hours.
+A session steered from a phone is recorded as an agent run. It never counts as your AI Hours. In a session you also type
+in at this computer, only the turns your phone, voice or browser started are the agent run (0.11.23); your own turns stay
+yours.
 
 The details: [Remote Agent: steer this computer's agents](#remote-agent-steer-this-computers-agents-from-your-phone-or-browser-npx-worktrust-remote).
 
@@ -641,7 +649,7 @@ give `conversations.json`. Every 64 MB a line on stderr says how many megabytes 
   kept, each with a correction row, so a day counts once; the command says how many. A connector line that arrives later
   for a day the export covers is held. Lines that connector reported earlier under no product may describe the same
   conversations: the command says how many lie on those days and asks once, `Also withdraw N earlier lines your Claude
-  connector reported for these days?`; Enter is No, `--yes` keeps No, `--dry-run` sends nothing, and only a typed yes or
+  connector reported for these days?`; Enter is No, `--yes` keeps No, `--dry-run` sends nothing, and only y or yes typed or
   `--withdraw-unknown` said in advance withdraws exactly those lines on exactly those days, the same way, never deleting.
   The count in the question is the door's own, and it is the count the yes withdraws. Never touched, whatever you answer
   (0.10.19, held on the server): any line a computer of yours wrote (measured sessions, a rebuilt or archived history, an
@@ -800,12 +808,17 @@ Off until you run `npx worktrust remote app` (or `remote web`) at this keyboard;
   the WorkTrust app scans it and you approve with your authenticator code. `npx worktrust remote web` opens the approval
   page in your browser. Both use WorkTrust's gateway unless `--gateway` chooses another, and take `--device`; `remote
   enable` (0.11.6 and before) is gone since 0.11.7.
+- A new computer can wait for your phone (0.11.23): when your account has an iPhone that can confirm it, WorkTrust holds a
+  newly approved computer until you say on the phone that it is yours. The terminal says "Waiting for confirmation on your
+  phone." and goes on the moment you confirm. "Not mine" on the phone, or no answer within the window, removes it here too;
+  run `npx worktrust remote app` again. To name this computer, the approval sends the same one-way hash of its machine id
+  that `connect` already sends, never the id itself.
 - `projects add <folder>` grants a folder (its real path; never your home folder, the disk's root or a folder holding
   keys, keychains, browser profiles or wallets). A phone starts agents only in granted folders, several at once (four by
   default).
 - `connections` lists every phone and browser linked to this computer (name, kind, fingerprint, since, last seen) and
   this computer's own link. `disconnect <number|name|fingerprint>` closes one after two confirmations (y, then the start
-  of its fingerprint or its name typed); `disconnect --all` closes every one after you type `close all`. Without a
+  of its fingerprint or its name typed); `disconnect --all` closes every one after you answer y or yes (0.11.23; it was `close all`). Without a
   terminal both refuse. `phones remove` does the same removal. End a key for your whole account in WorkTrust, Settings,
   Remote Agent.
 - `roots add <folder> [--git-init]` adds a folder your projects live in (the same rules). A phone may open the git
@@ -832,13 +845,17 @@ Off until you run `npx worktrust remote app` (or `remote web`) at this keyboard;
   by a running Claude Code, or in a Claude Code window open in that folder) is refused until you close it here.
 - A session steered from a phone is never your AI Hours: the service records it in `~/.worktrust/remote/steered.jsonl`
   before the agent starts, and the session hook sends it as an agent run (`session_kind` headless, `steered_from`
-  remote).
+  remote). Since 0.11.23 that is turn by turn: in a desk session your phone steered once, the steered turn (its prompt and
+  the agent's work answering it, until you type the next prompt here) is the agent run, and the rest of that session's day
+  stays your own work. No minute is counted twice.
 - `status`, `pause`, `resume`, `disable` (the hard off; `--forget` also deletes the remote keys), `phones`, `projects`.
 
 - From a browser (app.worktrust.io › Remote Agent): approve the browser in WorkTrust with your passkey, your
   authenticator and a 6-digit PIN (asked again after five minutes without your input; agents keep running meanwhile).
   Run `npx worktrust remote pair` here and paste the link it prints into the browser. Then confirm the browser's
-  fingerprint at this keyboard: `npx worktrust remote phones confirm <fingerprint>`. A browser is never confirmed by the
+  fingerprint at this keyboard: `npx worktrust remote phones confirm <fingerprint>`. `npx worktrust remote phones` lists the
+  devices linked now; `npx worktrust remote phones --history` every device ever linked here, how long, and how it ended
+  (0.11.23; a local file that is only ever added to, counts and ids only; since 0.11.23 the same counts also go to WorkTrust, at most once a minute, so the history survives this computer). A browser is never confirmed by the
   link alone. With `npx worktrust remote phones allow-endorse on`, a phone confirmed here may add a browser it scanned
   instead (off by default). A PIN reset in WorkTrust removes every browser link; phones keep theirs.
 

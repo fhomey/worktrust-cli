@@ -19,7 +19,7 @@
  *   remote projects add <folder> | remove <id> | list the folders a phone may steer an agent in
  *   remote run                                        the daemon in the foreground (Windows runs only this way)
  *   remote pipeline review <folder> | status          read a granted folder's .worktrust/pipeline.json, show every stage
- *                                                     and command, and on a typed yes let a phone start it (pins a hash)
+ *                                                     and command, and on a yes (y or yes) let a phone start it (pins a hash)
  *   remote roots add <dir> [--git-init] | remove <id|dir> | list | default on|off|status   parent folders where a phone may open the git projects
  *                                                     already in them (0.11.7) and create ONE new, empty project folder
  *                                                     (project.create); --git-init runs `git init` in it
@@ -42,9 +42,9 @@ import { createInterface } from "node:readline/promises";
 import * as P from "./remote-protocol.mjs";
 import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, PRODUCTION_GATEWAY, loadIdentity, loadKeys, loadPhones, loadProjects, loadSettings, newKeys, random, readJson, removeFile, saveIdentity, saveKeys, savePhones, saveSettings, writeJson } from "./remote-store.mjs";
 import { canonicalProject } from "./remote-policy.mjs";
-import { IssuerMissing, PairingDenied, PairingExpired, PairingRefused, compactForQr, oneScan, oneScanInvite, pairComputer } from "./remote-pairing.mjs";
+import { CONFIRMATION_EXPIRED, IssuerMissing, PairingDenied, PairingExpired, PairingRefused, awaitConfirmation, compactForQr, oneScan, oneScanInvite, pairComputer } from "./remote-pairing.mjs";
 import { startCountdown, waitKey } from "./remote-countdown.mjs";
-import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSummary, linkPhone, reachStep, removePhones, withName } from "./remote-connections.mjs";
+import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSummary, linkPhone, reachStep, removeOneCommand, removePhones, withName } from "./remote-connections.mjs";
 import { handoverCommand, installService, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
 import { terminalQr } from "./remote-qr.mjs";
 import { gatewayLine, keptGatewayState, webSocketAvailable } from "./remote-transport.mjs";
@@ -57,15 +57,16 @@ import { openJournal } from "./remote-journal.mjs";
 import { deskReadOf, loadPreviewGrants, savePreviewGrants, loadDeskMarks, loadPipelineReviews, loadRoots, remotePath, saveDeskMarks, savePipelineReviews } from "./remote-store.mjs";
 import { offerAfter, offerReadAlong } from "./remote-read-along.mjs"; import { deskSteerCommand, withdrawInboxes } from "./remote-desk-steer.mjs"; import { uninstallSteerMod } from "./remote-steer-mod.mjs"; import { voiceCommand, voiceLine } from "./remote-voice.mjs";
 import { rootLabel } from "./remote-projects.mjs"; import { defaultRootCommand, offerDefaultRoot } from "./remote-default-root.mjs"; import { adminCommand, deskHistoryCommand, deskReadLine, keptReaders, readAlongCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
+import { CONFIRM, confirmYes } from "./remote-keyboard.mjs"; // owner, 2026-11-24: every confirmation takes y / yes / n / no
 
 const fingerprintOf = (keys) => P.deviceFingerprint(keys.public);
-/** A question only a person at this keyboard answers: a terminal, a typed "yes"; --yes and Enter are No. */
+/** A question only a person at this keyboard answers: a terminal, then y or yes (confirmYes); --yes, Enter, n and no are No. */
 export async function askTyped(question) {
   if (!process.stdin.isTTY) return false;
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await prompt.question(`  ${question} Type yes to confirm: `)).trim().toLowerCase();
+  const answer = await prompt.question(`  ${question} ${CONFIRM} `);
   prompt.close();
-  return answer === "yes";
+  return confirmYes(answer);
 }
 
 function needPaired(io) {
@@ -91,7 +92,7 @@ async function approve(io, road) {
   io.say("    - mark every session it steers, so remote work never counts as your AI Hours");
   if (!(await io.ask("Continue?"))) return;
   ensureRemoteDir();
-  let identity = loadIdentity(), ready = null;
+  let identity = loadIdentity(), ready = null, waitingForPhone = false;
   if (!identity || io.has("repair")) {
     const keys = newKeys();
     const pub = P.publicKeysOf(P.importSecretKeys(keys));
@@ -103,7 +104,7 @@ async function approve(io, road) {
         // --no-pair links no phone, so it carries no pairing secret and writes no invite (review 2026-11-14, P3-6).
         once = road === "app" && !io.has("device") && !io.has("no-pair") ? oneScan({ gateway, publicKeys: pub, nowMs: Date.now(), random }) : null;
         try {
-          paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), road, once, showLink: io.has("show-link"), showQr: (link) => io.say(terminalQr(compactForQr(link), { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR })), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser, countdown: (w) => startCountdown(w) });
+          paired = await pairComputer({ origin: io.origin, secret: P.importSecretKeys(keys), publicKeys: pub, host: hostname(), os: io.os, device: io.has("device"), road, once, showLink: io.has("show-link"), showQr: (link) => io.say(terminalQr(compactForQr(link), { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR })), issuerKeys: issuerKeys(gateway), say: io.say, openBrowser: io.openBrowser, countdown: (w) => startCountdown(w), computerId: io.computerId?.() ?? null });
         } catch (error) {
           if (error instanceof PairingDenied) return;
           if (!(error instanceof PairingExpired) || !process.stdin.isTTY) throw error;
@@ -117,6 +118,11 @@ async function approve(io, road) {
       // The daemon confirms the phone that proves this QR's secret; read per hello, so it is there before the service starts.
       if (once && once.e * 1000 > Date.now()) writeJson("invite.json", (ready = oneScanInvite(once, paired.device_id, P.generatePairingCode(random), Date.now())));
       io.say(`  ✓ Paired${paired.account ? ` for ${paired.account}` : ""}. This computer's remote key: ${P.deviceFingerprint(pub)}`);
+      // A NEW COMPUTER WAITS FOR THE PHONE (CLI 0.11.23; ISSUER.md §11): until it is confirmed there, no assertion and no renewal.
+      const outcome = paired.pending ? await awaitConfirmation({ origin: io.origin, deviceId: paired.device_id, secret: P.importSecretKeys(keys), say: io.say }) : null;
+      if (outcome === "expired" || outcome === "refused") { for (const f of ["identity.json", "remote-keys.json", "invite.json"]) removeFile(f); return void io.say(outcome === "expired" ? `  ${CONFIRMATION_EXPIRED}` : "  Not confirmed: your phone said this is not your computer, so it is not connected. Run `npx worktrust remote app` again if it is."); }
+      if (outcome === "confirmed") io.say("  ✓ Confirmed on your phone.");
+      else if (outcome !== null) { io.say(`  Not confirmed yet${outcome === "waiting" ? "" : ` (${outcome})`}. This computer connects once you confirm it on your phone (within 24 hours of pairing).`); waitingForPhone = true; }
     } catch (error) {
       if (error instanceof IssuerMissing || error instanceof PairingRefused) io.fail(error.message);
       throw error;
@@ -129,6 +135,7 @@ async function approve(io, road) {
   const service = installService({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "run"], path: process.env.PATH ?? "" });
   io.say(service.started ? `  ✓ The service runs (${service.kind}, while you are logged in; linger stays off).` : `  ! The service file was written (${service.file}) but did not start; run \`npx worktrust remote run\` to see why.`);
   if (service.started) io.say("  ✓ This computer is connected to Remote Agent.");
+  if (waitingForPhone) return void io.say("  Once it is confirmed: npx worktrust remote pair links a phone, if none is linked yet."); // no relay yet: a phone could not reach it
   if (!io.has("no-pair")) await linkAndGrant(io, ready);
 }
 
@@ -180,16 +187,11 @@ async function phones(io, rest) {
   if (rest[0] === "remove" && (rest[1] === "--all" || io.has("all"))) { // EVERY DEVICE OFF, FROM THE SOURCE (owner, 2026-11-09): the daemon reads this list per message
     const all = [...list.confirmed, ...list.pending], at = Date.now(); if (all.length === 0) return io.say("  No phone or browser is connected to this computer.");
     if (process.stdin.isTTY && !(await askTyped(`  Disconnect all ${all.length} phones and browsers from this computer now?`))) return io.say("  Nothing changed.");
-    removePhones(all.map((p) => p.fingerprint), at);
+    removePhones(all.map((p) => p.fingerprint), at, "keyboard_all");
     return io.say(`  ✓ Disconnected ${all.length}: none of them can steer this computer any more. Live sessions they started keep running here; stop them with npx worktrust remote disable, or pause everything with npx worktrust remote pause.\n  End their keys for your whole account too: app.worktrust.io › Settings › Remote Agent, or Remote Agent settings on your phone.`);
   }
-  if (rest[0] === "remove") {
-    const phone = find(rest[1]);
-    if (!phone) io.fail("no phone by that fingerprint or id");
-    removePhones([phone.fingerprint]);
-    io.say(`  ✓ Removed ${phone.fingerprint}: it can no longer steer this computer. Revoke it in WorkTrust too.`);
-    return;
-  }
+  if (rest[0] === "remove") return removeOneCommand(io, rest[1], askLine); // 0.11.22: names the device and asks first in a terminal (Enter is no)
+  if (io.has("history")) return (await import("./remote-device-history.mjs")).historyCommand(io, { json: io.has("json") }); // 0.11.22: every device ever linked, newest first
   io.say(`  Confirmed phones (${list.confirmed.length}):`);
   const when = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
   const how = (p) => p.how === "endorsed" ? `a browser, added by phone ${p.endorsed_by?.fingerprint ?? "?"}${[...list.confirmed, ...list.removed].some((x) => x.device_id === p.endorsed_by?.device_id && !list.confirmed.includes(x)) ? " (since removed)" : ""} on ${when(p.confirmed_at)}` : p.how === "qr" ? "scanned the QR" : "confirmed at the keyboard";
@@ -197,11 +199,8 @@ async function phones(io, rest) {
   io.say(`  Phones may add a browser: ${loadSettings().allow_endorse ? "yes" : "no"} (npx worktrust remote phones allow-endorse on|off)`);
   io.say(`  Pending phones (${list.pending.length}):`);
   for (const p of list.pending) io.say(`    ${p.fingerprint}  ${p.device_id}   confirm: npx worktrust remote phones confirm ${p.fingerprint}`);
-  if (list.removed.length > 0) {
-    const WHY = { phone: "disconnected from the phone", revoked: "revoked in WorkTrust", keyboard: "removed here" };
-    io.say(`  Removed phones (${list.removed.length}):`);
-    for (const p of list.removed) io.say(`    ${p.fingerprint}  ${p.device_id}  (${WHY[p.how] ?? "removed"}, ${new Date(p.removed_at).toISOString().slice(0, 16).replace("T", " ")})`);
-  }
+  // 0.11.22 (owner, 2026-11-23): active devices only; a removed one leaves this list at once. Who was linked, and how long: --history.
+  io.say("  Every device ever linked here, with how long and how it ended: npx worktrust remote phones --history");
 }
 
 /** A change at this keyboard, through the one door (remote-settings.mjs); macOS is asked at once for a guarded folder. */
@@ -229,7 +228,7 @@ function roots(io, rest) {
   for (const r of list) io.say(`    ${r.path}  (${rootLabel(r.path)}${r.git_init ? ", git init" : ""})`);
 }
 
-/** `remote pipeline review <folder>`: the person reads every stage and command, then a typed yes pins what they read. */
+/** `remote pipeline review <folder>`: the person reads every stage and command, then a yes (y or yes) pins what they read. */
 async function pipeline(io, rest) {
   const reviews = loadPipelineReviews();
   if (rest[0] === "status" || rest[0] === undefined) {
@@ -256,7 +255,7 @@ async function pipeline(io, rest) {
   if (readProjectFile(project.path, ".npmrc", 65_536) !== null) io.say("    The project has an .npmrc: it is part of what you review (script-shell, node-options).");
   io.say("    What you review: this file, every package.json script, the .npmrc and the files the node stages run. A change to any needs a new review.");
   if (parsed.config.path_prepend.length > 0) io.say(`    PATH first: ${parsed.config.path_prepend.join(", ")}`);
-  if (!(await askTyped("  A phone may start these stages on this computer, as you. Type yes to allow: "))) io.fail("not reviewed");
+  if (!(await askTyped("  A phone may start these stages on this computer, as you. Allow it?"))) io.fail("not reviewed");
   savePipelineReviews({ ...reviews, [project.project_id]: { sha256: projectReviewHash(project), reviewed_at: Date.now(), stages: parsed.config.stages.length } });
   io.say("  ✓ Reviewed. A change to the file or to a script it names needs a new review.");
 }

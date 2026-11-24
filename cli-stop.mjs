@@ -105,6 +105,21 @@ export function watchKeys(stream = process.stdin) {
   };
 }
 
+/**
+ * ONE LETTER WHILE A COMMAND WAITS (CLI 0.11.22: `o` opens the pairing QR in a window). In a terminal only; raw mode is taken
+ * (and given back) unless watchKeys above already holds it, and Ctrl+C keeps its meaning (the command's own SIGINT path).
+ * → release().
+ */
+export function onLetter(letter, run, stream = process.stdin) {
+  if (!stream?.isTTY) return () => {};
+  const mine = !stream.isRaw;
+  if (mine) { try { stream.setRawMode(true); } catch { /* not a terminal after all */ } }
+  stream.resume();
+  const onData = (chunk) => { const text = String(chunk); if (text.includes("\x03")) process.emit("SIGINT", "SIGINT"); else if (text.toLowerCase() === letter) run(); };
+  stream.on("data", onData);
+  return () => { stream.off("data", onData); if (mine) { try { stream.setRawMode(false); } catch { /* gone */ } stream.pause(); } };
+}
+
 /** `work` with keys watched for its whole length; released also when it fails. */
 export async function watched(work) {
   const release = watchKeys();

@@ -5,9 +5,13 @@
  * The daemon (`worktrust remote`) writes one record per agent session it started or steered to
  * ~/.worktrust/remote/steered.jsonl (mode 0600), the protocol's STEERED_RECORD_SPEC as canonical JSON, BEFORE the agent
  * runs: it chooses Claude Code's session id itself (--session-id) or resumes a known one, so the ledger names the session
- * before its first line is written. The measurement readers (log-session.mjs) ask `remoteSteeredOf(file, messages)` for
- * each day of each session they read; a day that overlaps a steered window is measured as a headless session and sent
- * with steered_from "remote", so none of its seconds is the person's.
+ * before its first line is written. The measurement readers (log-session.mjs) ask `steeredTurnsOf(file, messages, isPrompt)`
+ * for each day of each session they read (CLI 0.11.23; owner, 2026-11-23): only the STEERED TURNS (a prompt inside a steered
+ * window, and the agent work answering it until the next prompt typed at the desk) are measured as a headless session and
+ * sent with steered_from "remote", so none of their seconds is the person's; the rest of that session's day stays the
+ * person's own work. Until 0.11.23 one message inside a window made the WHOLE day steered (`remoteSteeredOf`, kept for a
+ * client whose running totals cannot be cut per turn), so the person's own typing in a desk session steered once that day
+ * counted as steered.
  *
  * Self-contained on purpose: the session hook imports it on every run, and a measurement that fails open because a
  * larger module did not load would count remote work as a person's. scripts/test-remote-steered-hours.mjs holds this
@@ -25,6 +29,12 @@ const KEYS = "adapter,agent_session_ref,first_steered_at,how,last_steered_at,pro
 const time = (n) => Number.isSafeInteger(n) && n >= 0;
 /** A message's time may lead or trail the daemon's own stamps by this much and still be the steered run. */
 export const STEERED_SLACK_MS = 5 * 60_000;
+/**
+ * A PROMPT is the steered turn's when it lies this close to a window (CLI 0.11.23): the daemon stamps the window as it hands the
+ * words over (`submitted`, a session's start) and widens it at the turn's end, and the client writes the prompt's line within
+ * seconds on the same clock. A prompt typed at the desk a minute or more after a steered turn ended is the person's.
+ */
+export const STEERED_PROMPT_SLACK_MS = 60_000;
 
 /** The protocol's validateSteeredRecord, without the protocol module (held equal by the test). */
 export function steeredRecordOk(r) {
@@ -136,4 +146,76 @@ export function remoteSteeredOf(file, messages, ledger = null) {
   // Each steered window alone (P2-3), with its slack: a day between two windows is the person's.
   const windows = record.windows ?? [record];
   return messages.some((m) => Number.isFinite(m?.at) && windows.some((w) => m.at >= w.first_steered_at - STEERED_SLACK_MS && m.at <= w.last_steered_at + STEERED_SLACK_MS));
+}
+
+/**
+ * ONLY THE STEERED TURNS (CLI 0.11.23; owner, 2026-11-23: "only the steered turns are steered; the rest of that session stays
+ * the person's own work"). One day's messages of one session, sorted, split by TURN: a turn opens at a prompt (`isPrompt`, the
+ * reader's own rule for a person's message) and runs until the next prompt. A turn whose prompt lies inside a steered window
+ * (STEERED_PROMPT_SLACK_MS) is steered, with every message answering it (the agent's answers, its tool calls and results, an
+ * interruption) up to the next prompt; every other turn is the person's. Messages before the day's first prompt answer a turn
+ * opened before this read: their first moment decides, with the reader's old slack (STEERED_SLACK_MS). The day before's
+ * BRIDGE goes with the message after it, so it stays the first step of whichever part holds it.
+ * Null when the ledger names no window for this session or no turn of the day is steered; else `{ steered, own, flags }`:
+ * the steered messages, the person's, and per message (in the order given) whether it is steered. Read once per process.
+ */
+export function steeredTurnsOf(file, messages, isPrompt, ledger = null) {
+  const { byRef } = ledger ?? (cached ??= readSteered());
+  if (byRef.size === 0 || !Array.isArray(messages) || messages.length === 0) return null;
+  const record = sessionRefsOf(file).map((ref) => byRef.get(ref)).find(Boolean);
+  if (!record) return null;
+  const windows = record.windows ?? [record];
+  const inside = (at, slack) => Number.isFinite(at) && windows.some((w) => at >= w.first_steered_at - slack && at <= w.last_steered_at + slack);
+  const flags = new Array(messages.length).fill(null);
+  let turn = null; // the open turn: true steered, false the person's, null before the day's first prompt
+  for (let i = 0; i < messages.length; i += 1) {
+    const m = messages[i];
+    if (m?.bridge) continue;
+    if (isPrompt(m)) turn = inside(m?.at, STEERED_PROMPT_SLACK_MS);
+    else if (turn === null) turn = inside(m?.at, STEERED_SLACK_MS);
+    flags[i] = turn;
+  }
+  for (let i = flags.length - 1, next = false; i >= 0; i -= 1) { if (flags[i] === null) flags[i] = next; else next = flags[i]; } // a bridge: its next message's
+  if (!flags.some(Boolean)) return null;
+  return { steered: messages.filter((_, i) => flags[i]), own: messages.filter((_, i) => !flags[i]), flags };
+}
+
+/**
+ * A SESSION'S DAY IN PARTS, FOR THE HOOK (CLI 0.11.23; log-session.mjs dayParts). One part, as before, when the ledger names no
+ * steered turn of the day: the day's ref, the session's own kind and steering. One part, headless and steered_from "remote",
+ * under the day's ref, when every turn of it was steered. Else two: the person's turns under the day's ref with the session's
+ * kind, steering and the mod's counts, and the steered turns, headless and steered_from "remote", under `steeredRef` (a process
+ * run, folded into its folder's Agent-operations line as any headless run). Nothing is counted twice: each message is in one
+ * part, the pause across a steered turn is one gap of the person's timeline, capped by the server's clock as any pause is, and
+ * where the two parts overlap on the wall clock the server gives the time to the interactive line (20261027130600,
+ * `analysis.exclusive_measured_share`). A client's running token totals (`cumulative`) cannot be cut per turn: such a day is
+ * steered whole when any message is in a window, as before 0.11.23.
+ */
+export function steeredParts(file, messages, { session, steered, isPrompt, ref, steeredRef, ledger = null }) {
+  const split = messages.some((m) => m?.cumulative) ? (remoteSteeredOf(file, messages, ledger) ? { own: [] } : null) : steeredTurnsOf(file, messages, isPrompt, ledger);
+  if (!split) return [{ messages, session, steered, ref, own: true, flags: null }];
+  if (!split.own.some((m) => !m.bridge)) return [{ messages, session: "headless", steered: "remote", ref, own: false, flags: null }];
+  return [{ messages: split.own, session, steered, ref, own: true, flags: split.flags, flag: false }, { messages: split.steered, session: "headless", steered: "remote", ref: steeredRef, own: false, flags: split.flags, flag: true }];
+}
+
+/** A day's subagent runs (the hook's agentsByDay entry) for one part of a split day: each run with the part of the last message at or before its start. */
+export function agentsOfPart(entry, messages, part, peakOf) {
+  if (!entry || !part.flags) return entry;
+  const steeredAt = (at) => { let flag = part.flags[0]; for (let i = 0; i < messages.length && messages[i].at <= at; i += 1) flag = part.flags[i]; return flag; };
+  const keep = entry.list.map((run, i) => (steeredAt(run.stamps[0]) === part.flag ? i : -1)).filter((i) => i >= 0);
+  if (keep.length === 0) return null;
+  const spans = keep.map((i) => entry.spans[i]);
+  return { runs: keep.length, spans, list: keep.map((i) => entry.list[i]), peak: peakOf(spans) };
+}
+
+/**
+ * The parts → the hook's stretches (`measure(part)`, the mod's `live()` for the person's part only, the day's subagent runs per
+ * part), in the order they end. A split day's stretches carry `dayTo` (the day's last message) and all but the last `holdMark`:
+ * the hook's live loop waits for the whole day and moves its watermark only past the last part, so a part refused never leaves
+ * the other part's earlier messages behind the mark.
+ */
+export function steeredStretches(parts, messages, { measure, live, agents, peakOf }) {
+  const out = parts.map((part) => { const stretch = measure(part); return stretch && { ...stretch, ref: part.ref, steered: part.steered, session: part.session, agents: agentsOfPart(agents, messages, part, peakOf), live: part.own ? live() : null }; }).filter(Boolean).sort((a, b) => a.to - b.to);
+  if (out.length > 1) out.forEach((stretch, i) => { stretch.dayTo = messages[messages.length - 1].at; if (i < out.length - 1) stretch.holdMark = true; });
+  return out;
 }

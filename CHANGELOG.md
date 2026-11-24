@@ -2,6 +2,83 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.23: only the turns your phone steered are agent work, and a new computer can wait for your phone
+
+0.11.22 was never published on its own: everything in its section below first reaches npm, PyPI and the site with 0.11.23.
+
+**Your own typing stays yours.** Until now, one prompt from your phone, voice or browser into a session you also use at this
+computer made that whole day of the session an agent run, so everything you typed there yourself that day was left out of
+your AI Hours. Now only the steered turns are the agent run: a turn starts with its prompt, and a turn whose prompt came
+from your phone (the steered ledger, `~/.worktrust/remote/steered.jsonl`) runs, with all the agent's work answering it,
+until you type the next prompt here. The rest of the day is your own interactive work, as it was before the phone stepped
+in. Every message is in one of the two, so nothing is counted twice; the pause around a steered turn counts in your own
+timeline as any pause does (at most five minutes), and where the two overlap on the clock WorkTrust gives the time to your
+own work, as it always has. A session started from the phone stays an agent run whole. Days already sent stay as they were.
+
+**A new computer can wait for your phone.** When your account has an iPhone that can confirm it, WorkTrust holds a computer
+you just approved until you say on the phone that it is yours. The terminal says "Waiting for confirmation on your phone."
+and carries on the moment you confirm. "Not mine", or no answer in time, removes it here too and says to run `npx worktrust
+remote app` again. The approval now also sends the one-way hash of this computer's machine id that `connect` already sends
+(`computer_id`), so WorkTrust can tell its coupling apart while it waits; never the id itself. A WorkTrust without this step
+ignores the extra field and answers as before.
+
+**Every confirmation takes y or yes.** Each question the CLI asks you to confirm now ends in "Confirm? (y/n)" and takes
+`y`, `yes`, `n` or `no`, in any case. That includes the switches that open this computer a little further to a phone
+(`remote read-along on`, `desk-steer on`, `voice on`, `voice read on`, `roots default on`, `phones allow-endorse on`),
+confirming a phone, removing one or all (`disconnect --all` no longer asks you to type `close all`), and the menu's
+confirmation step. Enter alone keeps each question's own default, which for all of these is No. What protects them is
+unchanged: they still turn on only in your own terminal, never in an AI agent's shell, and never under `--yes`, `--json`
+or a pipe.
+
+**The device history on WorkTrust too.** The counts this computer keeps for each linked phone and browser (sessions,
+commands, prompts, voice prompts and when it was last heard) now also go to WorkTrust, so the history of your devices
+survives this computer (Remote Agent › Devices › History on the web). Counts only, never a prompt, a project or a path:
+what changed since the last report, at most once a minute and once when the service stops, signed with this computer's
+remote key. A WorkTrust without this step answers that it has none, and this computer stops asking until the service
+restarts.
+
+## 0.11.22: not published, included in 0.11.23 (Continue no longer says "cannot" on a busy computer, and no refusals in the log after a relay restart)
+
+This version was built and tested but never published; its changes ship in 0.11.23.
+
+**A busy computer is asked again.** When Remote Agent started on a loaded computer, its one check of Claude Code (`claude
+--version` and `--help`) could run out of time. That empty answer was kept until the service restarted, so every Continue
+from your phone said "This computer cannot continue that session" (14 minutes on the owner's computer). An answer that
+did not come is no longer kept: the next inventory asks again after 15 seconds, then after longer pauses up to five minutes,
+and a start or a Continue asks once more before it refuses anything. If Claude Code still does not answer, a phone with the
+next app build says "Could not check Claude Code on this computer. Try again."; an older app hears "busy", never "cannot".
+
+**Nothing more is sent to a connection the relay forgot.** The relay keeps its connections in memory. After it restarts, a
+phone or browser that has not connected again since is unknown to it, and everything this computer sent for that
+connection was refused: the health sample every 15 seconds, for days (15,509 lines `gateway_error not_paired` in one log).
+A relay with this release names the connection it refused, and this computer stops sending to it until that phone or
+browser says hello again. With an older relay, the health sample and other live-only updates go only to a phone or browser
+heard from in the last three days; receipts and inventories go as before.
+
+**Every switch in the menu asks first.** Enter on an on/off row no longer flips it: it says what the switch does and what
+changes, then asks. `y` switches it; Enter, Esc or Backspace change nothing. A switch that needs your typed yes to turn on
+still asks for it after that. Read along, steering from the phone, voice prompts, reading answers aloud and Modes moved
+into Remote Agent › Permissions ›, in the order each needs the one before (a row whose prerequisite is off says what it
+needs), so Remote Agent fits in nine numbered rows. Backspace goes back one level everywhere, like Esc.
+
+**Removing a phone or browser names it.** `npx worktrust remote disconnect` and the menu's Connections say the device's
+kind, name, the start of its fingerprint and when it was last seen ("today 11:20", "6 days ago"), mark the one seen last
+as in use, and say so when the device you are removing is the one you use now or your only phone. `npx worktrust remote
+phones remove <fingerprint>` used to remove at once; in a terminal it now asks the same way. Enter is no.
+
+**Active devices in the list, every device in its history.** `npx worktrust remote phones` and the menu's Connections list
+only the phones and browsers that are linked now; a removed one leaves the list at once. `npx worktrust remote phones
+--history` (or Connections › History ›) lists every device ever linked here, newest first: its kind, name, fingerprint and
+device id, when it was linked and when the link ended (or that it is still active), how long, how it was linked and how it
+ended, how many sessions, commands and prompts it sent, and when it was last seen. `--json` gives the records. The history is
+a file on this computer that is only ever added to, with counts and ids only: never a prompt, a project, a path or a key.
+Devices from before this version start without counts ("not counted").
+
+**A pairing QR that scans in VS Code.** VS Code's terminal draws a small gap between lines, so the QR turned into stripes.
+Where the terminal is not known to draw it whole, press `o` and the same code opens as an image in a window. The image is a
+temporary file that only this computer sees, deleted when the pairing ends or you press Ctrl+C. The typed code works as
+before.
+
 ## 0.11.21: a spoken prompt from your phone with Siri, only if you say yes here
 
 **Voice prompts, off until you turn them on at this keyboard.** `npx worktrust remote voice on` lets a phone you confirmed

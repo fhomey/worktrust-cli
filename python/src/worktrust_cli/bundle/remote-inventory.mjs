@@ -139,18 +139,28 @@ function listModels(adapter, file, env, now) {
   return { models, models_status: "listed", models_at: now };
 }
 
-let cache = null;
+/**
+ * A PROBE THAT FAILED IS NEVER KEPT FOR THE PROCESS'S LIFE (CLI 0.11.22; the owner's "This computer cannot continue that
+ * session" for 14 minutes): 0.11.19 started on a loaded machine, `claude --version` and `--help` both ran out their 10 s, and the
+ * report (installed, no version, nothing it can start) was cached until the daemon restarted. An agent found on the PATH that
+ * answered NEITHER its version NOR its help is listed in `failed`; the next inventory asks again after PROBE_RETRY_MS, doubling
+ * to PROBE_RETRY_MAX_MS, and a start asks once more before it refuses (checkStartProbed). A good answer is kept as before.
+ */
+export const PROBE_RETRY_MS = 15_000, PROBE_RETRY_MAX_MS = 5 * 60_000;
+let cache = null, retryAt = 0, retryWait = 0;
 /** Every known agent: installed or not, version, capabilities, models. `refresh` re-runs the probes and the listers. */
 export function inventory({ env = process.env, refresh = false, now = Date.now() } = {}) {
-  if (cache && !refresh) return cache;
-  const reports = [], features = {};
+  if (cache && !refresh && !(cache.failed.length > 0 && now >= retryAt)) return cache;
+  const reports = [], features = {}, failed = [];
   for (const [adapter, bin] of Object.entries(AGENTS)) {
     const file = findOnPath(bin, env.PATH);
     if (!file) { reports.push({ adapter, mode: "structured", installed: false, version: null, signed_in: null, capabilities: NO, models: null, models_status: "not_listed", models_at: null, default_model: null }); continue; }
     const version = probe(file, ["--version"], env);
-    if (adapter === "claude-code") { const help = probe(file, ["--help"], env); features["claude-code"] = claudeFeatures(help); reports.push(claudeReport(version, help, now)); continue; }
+    if (adapter === "claude-code") { const help = probe(file, ["--help"], env); if (version === null && help === null) failed.push(adapter); features["claude-code"] = claudeFeatures(help); reports.push(claudeReport(version, help, now)); continue; }
     // Codex (2026-11-07): its app-server, when this version has one (remote-adapter-codex.mjs); models from `codex debug models`.
-    const codex = adapter === "codex" ? codexReport(version, probe(file, ["app-server", "--help"], env)) : adapter === "opencode" ? openCodeReport(version, probe(file, ["run", "--help"], env)) : null;
+    const help = adapter === "codex" ? probe(file, ["app-server", "--help"], env) : adapter === "opencode" ? probe(file, ["run", "--help"], env) : undefined;
+    if (version === null && help === null) failed.push(adapter);
+    const codex = adapter === "codex" ? codexReport(version, help) : adapter === "opencode" ? openCodeReport(version, help) : null;
     reports.push({ adapter, mode: "structured", installed: true, version: version ? version.trim().slice(0, 200) : null, signed_in: null, capabilities: codex?.usable ? { ...NO, ...codex.capabilities } : NO, ...listModels(adapter, file, env, now), default_model: null });
   }
   for (const report of reports) {
@@ -162,10 +172,24 @@ export function inventory({ env = process.env, refresh = false, now = Date.now()
   const terminal = terminalReport({ claude: claude?.installed ? { ...claude, features: features["claude-code"] } : null, tmux: tmux ? tmuxVersion(probe(tmux, ["-V"], env)) : null });
   const checkedTerminal = P.validateAdapterReport(terminal);
   if (!checkedTerminal.ok) throw new Error(`inventory: claude-code (terminal): ${checkedTerminal.detail}`);
-  cache = { reports, features, terminal, files: { ...Object.fromEntries(Object.keys(AGENTS).map((a) => [a, findOnPath(AGENTS[a], env.PATH)])), tmux }, at: now };
+  cache = { reports, features, terminal, files: { ...Object.fromEntries(Object.keys(AGENTS).map((a) => [a, findOnPath(AGENTS[a], env.PATH)])), tmux }, at: now, failed };
+  retryWait = failed.length ? Math.min(PROBE_RETRY_MAX_MS, retryWait ? retryWait * 2 : PROBE_RETRY_MS) : 0;
+  retryAt = now + retryWait;
   return cache;
 }
 export const adapterOf = (inv, id) => inv.reports.find((r) => r.adapter === id);
+
+/**
+ * checkStart (protocol start-options.ts) against a report whose probe did not fail: an agent in `failed` is asked once more
+ * (`inv(true)`) before anything is refused, and still unanswered the start is refused `probe_failed` (a phone that did not ask
+ * that reason hears `busy`, remote-peers.mjs), never `unsupported`, which says the agent cannot do it. → null or a reason.
+ */
+export function checkStartProbed(payload, inv) {
+  const first = P.checkStart(payload, adapterOf(inv(), payload.adapter));
+  if (first === null || !inv().failed?.includes(payload.adapter)) return first;
+  const again = inv(true), second = P.checkStart(payload, adapterOf(again, payload.adapter));
+  return second !== null && again.failed?.includes(payload.adapter) ? "probe_failed" : second;
+}
 
 /**
  * What this computer OFFERS a phone (review 2026-11-07, P1-3): Codex runs the reads it deems safe without asking, so

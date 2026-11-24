@@ -66,7 +66,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, createHmac, createPrivateKey, createPublicKey, randomBytes, sign as cryptoSign } from "node:crypto";
 
-import { readProjectModes, projectModeOf, confidentialPayload, CONFIDENTIAL_REPO_CODE } from "./project-modes.mjs"; import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs"; import { remoteSteeredOf } from "./remote-steered.mjs"; // 2026-11-07: a day steered from a phone is measured headless, steered_from "remote", never the person's hours (owner decision 1)
+import { readProjectModes, projectModeOf, confidentialPayload, CONFIDENTIAL_REPO_CODE } from "./project-modes.mjs"; import { moduleArgs, moduleExecutable, readPrivateFile, createPrivateFile } from "./package-integrity.mjs"; import { steeredParts, steeredStretches } from "./remote-steered.mjs"; // 2026-11-07: what is steered from a phone is measured headless, steered_from "remote", never the person's hours (owner decision 1); 0.11.23: only the steered turns
 import { READ_FAILURES, READ_BYTES, claudeLinesFrom, fileLines, transcriptLines, sessionFinders } from "./session-readers.mjs"; // 0.11.10: the readers the hook and `look` share
 
 async function main() {
@@ -398,7 +398,7 @@ function stretchesOf(file, since, saved = null) {
   messages.sort((a, b) => a.at - b.at);
   const byDay = byDayOf(messages);
   const agents = agentsByDay(file, since), session = kind.kind();
-  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const remote = remoteSteeredOf(file, ofDay), kindOf = remote ? "headless" : session; const stretch = measure(cwd, ofDay, kindOf); return stretch && { ...stretch, ref: stretchRef(file, day), steered: remote ? "remote" : steered, session: kindOf, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+  return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).flatMap(([day, ofDay]) => dayStretches(file, cwd, day, ofDay, session, steered, agents.get(day) ?? null));
 }
 /** stretchesOf for a Claude Code transcript, from its read position when `saved` holds a usable one; `positionAt(t)` on the list is the position to keep. */
 function claudeStretchesOf(file, since, saved) {
@@ -430,7 +430,7 @@ function claudeStretchesOf(file, since, saved) {
     const byDay = byDayOf(messages), positions = {};
     const agents = agentsByDay(file, since, saved?.a ?? null, positions), session = kind.kind();
     subs = positions;
-    stretches = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, ofDay]) => { const remote = remoteSteeredOf(file, ofDay), kindOf = remote ? "headless" : session; const stretch = measure(cwd, ofDay, kindOf); return stretch && { ...stretch, ref: stretchRef(file, day), steered: remote ? "remote" : steered, session: kindOf, agents: agents.get(day) ?? null, live: liveOf(file, day) }; }).filter(Boolean);
+    stretches = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).flatMap(([day, ofDay]) => dayStretches(file, cwd, day, ofDay, session, steered, agents.get(day) ?? null));
   }
   // A read that failed keeps no position: the next run reads the file whole.
   if (!at.failed && at.end !== undefined && carry !== null) {
@@ -729,6 +729,8 @@ const grownBy = (stretch, reported) => { if (!stretch.cumulative || !stretch.sha
 // the same on any computer, so a restored backup is never counted twice; `remote` only when the session runs over SSH, otherwise nothing is said.
 const stretchRef = (file, day) => createHash("sha256").update(`worktrust-stretch|${ANTIGRAVITY_TRANSCRIPT.test(file) ? antigravityIdOf(file) : String(file).split(/[\\/]/).pop().replace(/\.jsonl?$/, "")}|${day}`).digest("base64url");
 const STEERED_HERE = process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY ? "remote" : null;
+const opensTurn = (message) => message.kind === "user" && !message.meta && !message.bridge && isHumanTurn(message.content) && !INTERRUPTED.test(textOf(message.content).trim()), dayParts = (file, day, messages, session, steered) => steeredParts(file, messages, { session, steered, isPrompt: opensTurn, ref: stretchRef(file, day), steeredRef: stretchRef(file, `${day}|remote`) });
+const dayStretches = (file, cwd, day, messages, session, steered, agents) => steeredStretches(dayParts(file, day, messages, session, steered), messages, { measure: (part) => measure(cwd, part.messages, part.session), live: () => liveOf(file, day), agents, peakOf }); // ONLY THE STEERED TURNS ARE REMOTE (CLI 0.11.23; owner, 2026-11-23; remote-steered.mjs steeredParts): a day's steered turns are one headless part, steered_from "remote", under the day's ref with `|remote`; the rest keeps the day's ref, kind, steering and the mod's counts
 
 /** The one payload shape this script can build. Every key is a number, a date or an enum value. */
 function payloadFor(stretch) {
@@ -1209,30 +1211,26 @@ function historyEntries(floor = null, all = false) {
       read.push(messageOf(line, at));
     }
     read.sort((a, b) => a.at - b.at);
-    const byDay = byDayOf(read);
-    const agents = agentsByDay(file, null), session = kind.kind();
+    const byDay = byDayOf(read), agents = agentsByDay(file, null), session = kind.kind(), source = CODEX_ROLLOUT.test(file) ? "codex" : ANTIGRAVITY_TRANSCRIPT.test(file) ? "antigravity" : DATABASE_SESSION.test(file) ? file.slice(0, file.indexOf(":")) : null;
     for (const [day, messages] of byDay) {
       if (messages.length === 0) continue;
       // Under-reporting is the safe side (THE FLOORS): a day that began before the account changed is not offered at all.
       if (floor !== null && firstOf(messages) < floor) continue;
-      const last = messages[messages.length - 1].at;
-      // The live window belongs to the hook: a stretch that log_work may still report is not history.
+      const last = messages[messages.length - 1].at; // the live window belongs to the hook: a stretch that log_work may still report is not history
       if (!all && Date.now() - last < WINDOW_HOURS * 3600_000) continue;
       // The same measure as a live day (seconds, layers, tokens, turns, model); history differs only in the door it goes through.
-      const remote = remoteSteeredOf(file, messages), kindOf = remote ? "headless" : session; const stretch = { ...measure(cwd, messages, kindOf), ref: stretchRef(file, day), steered: remote ? "remote" : steered, session: kindOf, agents: agents.get(day) ?? null, live: liveOf(file, day) };
-      // ONE LINE PER PROCESS PER DAY (0.10.33), as live: an autonomous run joins its process's day, sent below as one line.
-      if (isProcessRun(stretch)) {
-        const key = processKey(CODEX_ROLLOUT.test(file) ? "codex" : ANTIGRAVITY_TRANSCRIPT.test(file) ? "antigravity" : DATABASE_SESSION.test(file) ? file.slice(0, file.indexOf(":")) : null, stretch, false);
-        const group = processGroups.get(key.ref) ?? { ...key, runs: [], file, from: stretch.from, folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null };
-        group.runs.push(processRun(file, stretch)); processGroups.set(key.ref, group);
-        continue;
+      for (const stretch of dayStretches(file, cwd, day, messages, session, steered, agents.get(day) ?? null)) {
+        // ONE LINE PER PROCESS PER DAY (0.10.33), as live: an autonomous run joins its process's day, sent below as one line.
+        if (isProcessRun(stretch)) {
+          const key = processKey(source, stretch, false);
+          const group = processGroups.get(key.ref) ?? { ...key, runs: [], file, from: stretch.from, folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null };
+          group.runs.push(processRun(file, stretch)); processGroups.set(key.ref, group); continue;
+        }
+        const entry = payloadFor(stretch);
+        if (source) entrySource.set(entry, source);
+        entryFile.set(entry, { file, from: stretch.from, folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null });
+        entries.push(entry);
       }
-      const entry = payloadFor(stretch);
-      if (CODEX_ROLLOUT.test(file)) entrySource.set(entry, "codex");
-      if (ANTIGRAVITY_TRANSCRIPT.test(file)) entrySource.set(entry, "antigravity");
-      if (DATABASE_SESSION.test(file)) entrySource.set(entry, file.slice(0, file.indexOf(":")));
-      entryFile.set(entry, { file, from: firstOf(messages), folder: cwd ? String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? null : null });
-      entries.push(entry);
     }
   }
   for (const group of processGroups.values()) PROCESS.processParts(group.runs).forEach((runs, i) => { const entry = processPayload(group, i + 1, runs); entryFile.set(entry, { file: group.file, from: group.from, folder: group.folder }); entries.push(entry); });
@@ -1362,11 +1360,13 @@ function folderEntries(given) {
       report.stretches += 1;
       if (present.has(ref) || seen.has(ref)) { report.skipped += 1; continue; }
       seen.add(ref);
-      const remote = remoteSteeredOf(file, messages), rest = payloadFor({ ...measure(cwd, messages, remote ? "headless" : null), ref, steered: remote ? "remote" : null, session: remote ? "headless" : null, agents: null }); // a copied steered session stays out of the person's hours (P2-d)
-      const entry = { ...rest, title: rest.layer ? `AI-assisted work from a copied session folder · ${rest.layer}` : "AI-assisted work from a copied session folder", ...(rest.timeline ? { duration_basis: "reconstructed" } : {}) };
-      if (client !== "claude") entrySource.set(entry, client);
-      entryFile.set(entry, { file, from: firstOf(messages), folder: null });
-      report.days.add(day); entries.push(entry);
+      for (const part of dayParts(file, day, messages, null, null)) { // a copied steered turn stays out of the person's hours (P2-d); 0.11.23: only the steered turns
+        const rest = payloadFor({ ...measure(cwd, part.messages, part.session), ref: part.ref, steered: part.steered, session: part.session, agents: null });
+        const entry = { ...rest, title: rest.layer ? `AI-assisted work from a copied session folder · ${rest.layer}` : "AI-assisted work from a copied session folder", ...(rest.timeline ? { duration_basis: "reconstructed" } : {}) };
+        if (client !== "claude") entrySource.set(entry, client);
+        entryFile.set(entry, { file, from: firstOf(part.messages), folder: null }); entries.push(entry);
+      }
+      report.days.add(day);
     }
   }
   const days = [...report.days].sort();
@@ -1663,25 +1663,25 @@ for (const entry of work) {
   for (const stretch of stretches) {
     // The day still being worked in is not finished. A fortnight-long session therefore reports
     // every day but today, on whichever run comes first — it no longer waits for its own end.
-    if (Date.now() - stretch.to < IDLE_BEFORE_SWEEP) break;
-    const total = grownBy(stretch, reported);
+    if (Date.now() - (stretch.dayTo ?? stretch.to) < IDLE_BEFORE_SWEEP) break; // 0.11.23: a split day's parts go when the whole day is quiet
+    const total = grownBy(stretch, reported), markTo = stretch.holdMark ? through : stretch.to; // 0.11.23 (dayStretches): only a split day's last part moves the mark
     // THE TIMER'S SCHEDULE (0.10.32) travels with the run, so a scheduled process-day is its own process and its line names it.
     const timed = { ...stretch, schedule: state[entry.id]?.schedule ?? null };
     // ONE LINE PER PROCESS PER DAY (0.10.33): a finished autonomous run waits on disk for its day's line; the mark passes it once it is there.
     if (isProcessRun(timed)) {
-      if (DRY) { console.log(JSON.stringify({ process_run: true, session_kind: timed.session, stretch_ref: timed.ref ?? null, at: new Date(timed.to).toISOString() })); through = timed.to; reported = total; continue; }
-      try { PROCESS.foldProcessRun(processKey(LIVE_SOURCE.exec(String(entry.id))?.[1], timed, String(entry.id).startsWith("codex:")), processRun(entry.id, timed)); through = timed.to; reported = total; folded += 1; continue; } catch { break; }
+      if (DRY) { console.log(JSON.stringify({ process_run: true, session_kind: timed.session, stretch_ref: timed.ref ?? null, at: new Date(timed.to).toISOString() })); through = markTo; reported = total; continue; }
+      try { PROCESS.foldProcessRun(processKey(LIVE_SOURCE.exec(String(entry.id))?.[1], timed, String(entry.id).startsWith("codex:")), processRun(entry.id, timed)); through = markTo; reported = total; folded += 1; continue; } catch { break; }
     }
     const payload = payloadFor(timed);
     const source = LIVE_SOURCE.exec(String(entry.id))?.[1];
     if (source) entrySource.set(payload, source);
-    if (DRY) { console.log(JSON.stringify({ ...payload, client: source ?? "claude", route: Date.now() - stretch.to > WINDOW_HOURS * 3600_000 ? "history" : "log_work" }, null, 1)); through = stretch.to; reported = total; continue; }
+    if (DRY) { console.log(JSON.stringify({ ...payload, client: source ?? "claude", route: Date.now() - stretch.to > WINDOW_HOURS * 3600_000 ? "history" : "log_work" }, null, 1)); through = markTo; reported = total; continue; }
     // MEASURED TIME IS NEVER DROPPED. The live door refuses anything older than two days, which is right, and used to mean a machine closed
     // for a fortnight lost the fortnight. The same numbers go through the history door instead, standing as history stands. Late is not untrue.
-    if (Date.now() - stretch.to > WINDOW_HOURS * 3600_000) { before ??= { mark: through === null ? state[entry.id] : { ...state[entry.id], through: new Date(through).toISOString() } }; late.push(payload); through = stretch.to; reported = total; continue; }
+    if (Date.now() - stretch.to > WINDOW_HOURS * 3600_000) { before ??= { mark: through === null ? state[entry.id] : { ...state[entry.id], through: new Date(through).toISOString() } }; late.push(payload); through = markTo; reported = total; continue; }
     // A LIMIT SAID WHEN (0.10.33): while WorkTrust asked to wait, nothing is sent; the mark stays and the next run sends it.
     if (liveWaiting()) break;
-    try { await send(doorFor(entry), payload); through = stretch.to; reported = total; sent += 1; } catch (error) {
+    try { await send(doorFor(entry), payload); through = markTo; reported = total; sent += 1; } catch (error) {
       if (error.retryAfter) liveWait(error.retryAfter);
       if (process.env.WORKTRUST_HOOK_DEBUG) console.error(`worktrust: ${error.message}`);
       break;

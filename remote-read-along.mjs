@@ -20,6 +20,7 @@
  */
 import { createInterface } from "node:readline";
 import { applySettingsChange } from "./remote-settings.mjs";
+import { answerWord } from "./remote-keyboard.mjs"; // owner, 2026-11-24: y / yes / n / no, any case
 import { deskReadOf, loadIdentity, loadPhones, loadReadAlongAsk, loadSettings, saveReadAlongAsk } from "./remote-store.mjs";
 
 export const ANSWER_WAIT_MS = 120_000;
@@ -58,15 +59,15 @@ export async function offerReadAlong(io, { at = "paired" } = {}) {
   io.say("  can be read live on the phones you paired. Read-only: nothing can be sent into a session from there.");
   io.say("  Turn it off any time: npx worktrust remote read-along off");
   const said = await (io.prompt ?? askKeyboard)("  Turn read along on? [Y/n] ");
-  const answer = typeof said === "string" ? said.trim().toLowerCase() : null;
-  if (answer === "" || answer === "y" || answer === "yes") {
+  const answer = answerWord(said);
+  if (answer === "" || answer === "yes") {
     const done = applySettingsChange({ what: "desk_live", on: true }, { kind: "keyboard" });
     if (!done.ok) { io.say(`  ! Not turned on: ${done.reason}`); return "unanswered"; }
     saveReadAlongAsk({ answer: "yes", at: Date.now() });
     io.say(`  ✓ ${done.message}`);
     return "yes";
   }
-  if (answer === "n" || answer === "no") {
+  if (answer === "no") {
     saveReadAlongAsk({ answer: "no", at: Date.now() });
     io.say(`  Read along stays off. Later: ${READ_ALONG_COMMAND}`);
     return "no";

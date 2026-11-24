@@ -16,7 +16,7 @@ import { loadIdentity, loadProjects, loadRoots, loadSettings } from "./remote-st
 import { allowedModes, ceilingOf } from "./remote-settings.mjs";
 import { HEALTH_REFUSAL, keptHealth } from "./remote-health.mjs";
 import { defaultRootOf } from "./remote-store.mjs";
-import { defaultRootItem, switchItems } from "./cli-menu-switches.mjs";
+import { ask, defaultRootItem, permissionsRow, switchItems } from "./cli-menu-switches.mjs";
 
 const BACK = { label: "← Back", hint: "Esc", back: true }; // its name and its key say it: no sentence of its own (owner, 2026-11-14)
 const tilde = (path) => (path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path);
@@ -86,7 +86,8 @@ function modesMenu(term, io, header) {
   return level(term, header, "Agent modes a phone may start here", () => {
     const allowed = allowedModes(loadSettings());
     const toggle = (mode, words) => ({ label: `${words}: ${allowed.includes(mode) ? "allowed" : "not allowed"}`, hint: `npx worktrust remote modes ${allowed.includes(mode) ? "deny" : "allow"} ${mode}`, info: allowed.includes(mode) ? `Stops a phone from starting this mode${mode === "edit" ? "; auto goes too" : ""}.` : `Lets a phone start this mode${mode === "auto" ? "; that allows edit too" : ""}.`,
-      run: () => runShown(term, io, ["remote", "modes", allowed.includes(mode) ? "deny" : "allow", mode]) });
+      run: () => runShown(term, io, ["remote", "modes", allowed.includes(mode) ? "deny" : "allow", mode]),
+      confirm: { ...ask(words.toLowerCase(), `A phone may start an agent in ${words.toLowerCase()} mode here.`, `Phones may start it from now on${mode === "auto" ? ", and edit automatically too" : ""}.`, `Phones can no longer start it${mode === "edit" ? "; auto mode goes too" : ""}. Running sessions keep their mode.`, !allowed.includes(mode)), question: allowed.includes(mode) ? `Stop phones starting ${words.toLowerCase()}?` : `Let phones start ${words.toLowerCase()}?` } });
     return [
       { label: "Manual: always allowed", info: "Always there: the agent asks before every change.", disabled: true },
       { label: "Plan: always allowed", info: "Always there: the agent reads and plans, changes nothing.", disabled: true },
@@ -108,8 +109,9 @@ function connectionsMenu(term, io, header) {
   return level(term, header, "Connections to this computer", () => {
     const list = connections(), wide = Math.min(20, Math.max(4, ...list.map((c) => c.name.length))), last = term.size().columns >= 72; // a narrow terminal keeps name, kind and since
     if (list.length === 0) return [
-      { label: "No phone or browser is linked yet.", info: "Link one with the row below.", disabled: true, quiet: "Nothing to open here." },
+      { label: "Nothing is linked now.", info: "Link a phone with the row below.", disabled: true, quiet: "Nothing to open here." },
       { label: "Link a phone (QR here)", hint: "npx worktrust remote pair", info: "Shows a QR that links a phone to this computer.", run: () => runShown(term, io, ["remote", "pair"]) },
+      { label: "History ›", hint: "npx worktrust remote phones --history", info: "Every device ever linked here: how long, how it ended.", run: () => runShown(term, io, ["remote", "phones", "--history"]) }, // 0.11.22: who was linked, and how long
       BACK,
     ];
     const acts = (c) => () => level(term, header, `${c.name} · ${c.kind} · ${c.fingerprint}`, () => [
@@ -118,8 +120,9 @@ function connectionsMenu(term, io, header) {
       BACK,
     ], io);
     return [
-      ...list.map((c) => ({ label: `${c.name.length > wide ? `${c.name.slice(0, wide - 1)}…` : c.name.padEnd(wide)}  ${c.kind.padEnd(7)}  since ${day(c.since)}${last ? `  last ${day(c.last_seen)}` : ""}${c.state === "pending" ? "  pending" : ""}`, hint: `npx worktrust remote disconnect ${c.n}`, info: `Enter opens ${c.name} · ${c.fingerprint}.`, run: acts(c) })),
+      ...list.map((c) => ({ label: `${c.name.length > wide ? `${c.name.slice(0, wide - 1)}…` : c.name.padEnd(wide)}  ${c.kind.padEnd(7)}  since ${day(c.since)}${last ? `  last ${day(c.last_seen)}` : ""}${c.state === "pending" ? "  pending" : ""}${c.inUse ? "  in use" : ""}`, hint: `npx worktrust remote disconnect ${c.n}`, info: `Enter opens ${c.name} · ${c.fingerprint}.`, run: acts(c) })),
       { label: "Disconnect all…", hint: "npx worktrust remote disconnect --all", info: "Closes every connection. You type close all to confirm.", run: () => runShown(term, io, ["remote", "disconnect", "--all"]) },
+      { label: "History ›", hint: "npx worktrust remote phones --history", info: "Every device ever linked here: how long, how it ended.", run: () => runShown(term, io, ["remote", "phones", "--history"]) },
       BACK,
     ];
   }, io);
@@ -131,15 +134,19 @@ function connectionsMenu(term, io, header) {
  * paused in WorkTrust under Sources, and `disconnect` takes it out), so its row says so and cannot be chosen. One app alone
  * cannot be coupled or uncoupled by a command today, so there is no row per app. The state is read again at every draw.
  */
+/** Pause and resume ask first too (0.11.22): one wording, in Sharing and in Remote Agent. */
+const pauseAsk = (paused) => ({ name: "Remote Agent", what: "Linked phones and browsers steer the agents on this computer.", change: paused ? "Phones can steer agents here again." : "No phone steers agents here until you resume. Links and sessions stay.", question: paused ? "Resume Remote Agent?" : "Pause Remote Agent?" });
+
 export function sharingItems(state, remote, act = {}) {
   const doorOn = state.door === "on", live = ["approved", "paused"].includes(remote.word), paused = remote.word === "paused";
   return [
     { label: `Session hook: ${state.hook === true ? "on" : state.hook === false ? "not installed" : "not known"}`, note: { text: "no switch here", tone: "dim" }, info: "Sends times, tokens, models and tools. Never content.", disabled: true, quiet: "Pause it under Sources." },
     state.door === "on" || state.door === "off"
-      ? { label: `WorkTrust in your AI apps: ${doorOn ? `on${Number.isInteger(state.apps) ? ` (${state.apps} app${state.apps === 1 ? "" : "s"})` : ""}` : "off"}`, hint: `npx worktrust mcp ${doorOn ? "off" : "on"}`, info: doorOn ? "On: your AI logs finished work. Enter takes the door out." : "Off: hours only. Enter puts the door back in your AI apps.", run: () => act.door?.(doorOn ? "off" : "on") }
+      ? { label: `WorkTrust in your AI apps: ${doorOn ? `on${Number.isInteger(state.apps) ? ` (${state.apps} app${state.apps === 1 ? "" : "s"})` : ""}` : "off"}`, hint: `npx worktrust mcp ${doorOn ? "off" : "on"}`, info: doorOn ? "On: your AI logs finished work. Enter takes the door out." : "Off: hours only. Enter puts the door back in your AI apps.", run: () => act.door?.(doorOn ? "off" : "on"),
+        confirm: ask("WorkTrust in your AI apps", "Your AI apps can log a piece of finished work through WorkTrust's door. Never its content.", "The door goes back into your AI apps.", "The door comes out of your AI apps. Your hours are still measured.", !doorOn) }
       : { label: "WorkTrust in your AI apps: not known", hint: "npx worktrust mcp status", info: "Its state could not be read. Enter shows it.", run: () => act.door?.("status") },
     live
-      ? { label: `Remote Agent: ${paused ? "paused" : "on"}`, hint: `npx worktrust remote ${paused ? "resume" : "pause"}`, info: paused ? "Paused: no phone steers agents here. Enter resumes." : "On: linked phones steer agents here. Enter pauses.", run: () => act.remote?.(paused ? "resume" : "pause") }
+      ? { label: `Remote Agent: ${paused ? "paused" : "on"}`, hint: `npx worktrust remote ${paused ? "resume" : "pause"}`, info: paused ? "Paused: no phone steers agents here. Enter resumes." : "On: linked phones steer agents here. Enter pauses.", run: () => act.remote?.(paused ? "resume" : "pause"), confirm: pauseAsk(paused) }
       : { label: `Remote Agent: ${remote.word}`, hint: "npx worktrust remote …", info: "Lets your phone steer this computer's agents.", disabled: true, quiet: remote.word === "not known" ? "Its state could not be read." : "Set it up under Remote Agent." },
     BACK,
   ];
@@ -173,24 +180,30 @@ export function approval() { try { return Boolean(loadIdentity()); } catch { ret
  * (`access`, from api/cli/door: the switch on and the account Free), the first row is "Upgrade to Premium ›" and every other
  * row stays visible and cannot be chosen (the one disabled-row mechanism). Any other answer, or none, is the list as above.
  */
+/**
+ * PERMISSIONS › (0.11.22, owner 2026-11-23): what a phone may do here, in the order each needs the one before (read along,
+ * steering, voice, answers aloud), a row whose prerequisite is off says what it needs and stays visible; then Modes ›.
+ */
+export const permissionItems = (switches, modes) => [...switches, modes, BACK];
+export const modesRow = (act) => ({ label: "Modes ›", hint: "npx worktrust remote modes", info: "Agent modes a phone may start. This computer is the limit.", run: act.modes, ...(act.modesNote ? { note: { text: act.modesNote, tone: "dim" } } : {}) });
+
 export function remoteItems(approved, paused, act = {}, access = null) {
   if (access === "premium_required") return [
     { label: "Upgrade to Premium ›", hint: act.upgradeHint ?? undefined, info: "Remote Agent is part of Premium. Opens the upgrade page.", run: act.upgrade },
-    ...remoteItems(approved, paused).filter((item) => !item.back).map((item) => ({ label: item.label, hint: item.hint, info: item.info, disabled: true, quiet: "Part of Premium: upgrade first.", note: { text: "Premium", tone: "dim" } })),
+    ...remoteItems(approved, paused).filter((item) => !item.back && !item.approve).map((item) => ({ label: item.label, hint: item.hint, info: item.info, disabled: true, quiet: "Part of Premium: upgrade first.", note: { text: "Premium", tone: "dim" } })),
     BACK,
   ];
   const wait = approved === false ? { disabled: true, quiet: "Approve this computer first.", note: { text: "not yet", tone: "dim" } } : {};
-  const approve = { label: approved ? "Approved ✓ · approve again ›" : "Approve this computer ›", hint: approved ? "npx worktrust remote app --repair" : "npx worktrust remote app | web", info: approved ? "Approve again: new keys, and linked phones link again." : "Needed once: your account allows steering this computer.", run: act.approve };
+  const approve = { approve: true, label: approved ? "Approved ✓ · approve again ›" : "Approve this computer ›", hint: approved ? "npx worktrust remote app --repair" : "npx worktrust remote app | web", info: approved ? "Approve again: new keys, and linked phones link again." : "Needed once: your account allows steering this computer.", run: act.approve };
   const link = { label: "Link a phone (QR here)", hint: "npx worktrust remote pair", info: "Shows a QR that links a phone to this computer.", run: act.link, ...wait };
   return [
     ...(approved ? [link, approve] : [approve, link]),
     { label: "Projects ›", hint: "npx worktrust remote projects", info: "Folders a phone may steer an agent in.", run: act.projects, ...wait },
     { label: "Roots for new projects ›", hint: "npx worktrust remote roots", info: "Where a phone may open and create projects.", run: act.roots, ...wait },
-    { label: "Modes ›", hint: "npx worktrust remote modes", info: "Agent modes a phone may start. This computer is the limit.", run: act.modes, ...(act.modesNote ? { note: { text: act.modesNote, tone: "dim" } } : {}) },
     { label: "Connections ›", hint: "npx worktrust remote connections", info: "Phones and browsers linked here.", run: act.connections, ...wait },
-    { label: paused ? "Resume" : "Pause", hint: `npx worktrust remote ${paused ? "resume" : "pause"}`, info: paused ? "Lets linked phones steer agents here again." : "Stops every phone until you resume. Links stay.", run: act.pause, ...wait },
-    { label: "Status", hint: "npx worktrust remote status", info: "Shows if Remote Agent is on and what is linked. Only reads.", run: act.status },
-    ...(act.switches ?? []), // 0.11.21 (owner, 2026-11-22): read along, steering, voice, answers aloud, after Status so every digit above keeps its row (cli-menu-switches.mjs)
+    { label: paused ? "Resume" : "Pause", hint: `npx worktrust remote ${paused ? "resume" : "pause"}`, info: paused ? "Lets linked phones steer agents here again." : "Stops every phone until you resume. Links stay.", run: act.pause, confirm: pauseAsk(paused), ...wait },
+    act.health ?? { label: "Status", hint: "npx worktrust remote status", info: "Shows if Remote Agent is on and what is linked. Only reads.", run: act.status }, // 0.11.22: heavy memory load takes Status's row (the same command)
+    act.permissions ?? permissionsRow({}, undefined), // 0.11.22 (owner, 2026-11-23): read along, steering, voice, answers aloud and Modes in one row, so nine rows and every digit reach all
     BACK,
   ];
 }
@@ -218,20 +231,21 @@ export async function remoteMenu(term, io, header) {
     const road = (which) => async () => ((await runShown(term, io, ["remote", which, ...(approved ? ["--repair"] : [])])) === false ? false : approved === false && approval() === true ? "back" : true);
     // 0.11.12: a linked phone with no reach chosen yet is said first, and its row opens the access step (awaitingRow).
     const waiting = state?.remoteAccess === "premium_required" ? null : awaitingName();
-    // HEAVY MEMORY LOAD (remote-health.mjs): the remote service's newest sample, red, is said first, in red; Enter shows the figures.
+    // HEAVY MEMORY LOAD (remote-health.mjs): the remote service's newest sample, red, said in red in Status's row (0.11.22: it ran the same command); Enter shows the figures.
     const red = keptHealth()?.level === "red" ? [{ label: "Health: heavy memory load", note: { text: "red", tone: "red" }, hint: "npx worktrust remote status", info: `${HEALTH_REFUSAL}. New sessions wait; running ones continue. Enter shows the figures.`, run: () => runShown(term, io, ["remote", "status"]) }] : [];
-    return [...red, ...(waiting ? [awaitingRow(waiting, (args) => runShown(term, io, args))] : []), ...remoteItems(approved, paused, {
+    const settings = (() => { try { return loadSettings(); } catch { return {}; } })(), run = (args) => runShown(term, io, args);
+    const modesNote = (() => { try { return { plan: "Manual, Plan", edit: "+ Edit", auto: "+ Auto" }[ceilingOf(allowedModes(loadSettings()))]; } catch { return null; } })(); // 0.11.14: the ceiling in a word
+    return [...(waiting ? [awaitingRow(waiting, run)] : []), ...remoteItems(approved, paused, {
+      health: red[0], permissions: permissionsRow(settings, () => level(term, header, "Permissions", () => permissionItems(switchItems((() => { try { return loadSettings(); } catch { return {}; } })(), run), modesRow({ modes: () => modesMenu(term, io, header), modesNote })), io)),
       approve: () => level(term, header, approved ? "Approve this computer again (new keys)" : "Approve this computer", () => [
         { label: "With the WorkTrust app", hint: `npx worktrust remote app${approved ? " --repair" : ""}`, info: "One QR: the app approves and links this phone.", run: road("app") },
         { label: "In the browser", hint: `npx worktrust remote web${approved ? " --repair" : ""}`, info: "Opens WorkTrust in your browser, where you approve.", run: road("web") },
         BACK,
       ], io),
       link: () => runShown(term, io, ["remote", "pair"]),
-      projects: () => projectsMenu(term, io, header), roots: () => rootsMenu(term, io, header), modes: () => modesMenu(term, io, header), connections: () => connectionsMenu(term, io, header),
-      modesNote: (() => { try { return { plan: "Manual, Plan", edit: "+ Edit", auto: "+ Auto" }[ceilingOf(allowedModes(loadSettings()))]; } catch { return null; } })(), // 0.11.14: the ceiling in a word
+      projects: () => projectsMenu(term, io, header), roots: () => rootsMenu(term, io, header), connections: () => connectionsMenu(term, io, header),
       pause: () => runShown(term, io, ["remote", paused ? "resume" : "pause"]),
       status: () => runShown(term, io, ["remote", "status"]),
-      switches: switchItems((() => { try { return loadSettings(); } catch { return {}; } })(), (args) => runShown(term, io, args)),
       upgrade: () => showUpgrade(term, io, state?.upgrade ?? null), upgradeHint: state?.upgrade ? String(state.upgrade).replace(/^https?:\/\//, "") : undefined,
     }, state?.remoteAccess ?? null)];
   }, reading);
@@ -267,7 +281,8 @@ export function menuIndex(term, io, header) {
   try { settings = loadSettings(); } catch { settings = {}; }
   const run = (args) => runShown(term, io, args);
   return [
-    ...at("Remote Agent", [...switchItems(settings, run), { label: "Link a phone (QR here)", hint: "npx worktrust remote pair", info: "Shows a QR that links a phone to this computer.", run: () => run(["remote", "pair"]) }, { label: "Status of Remote Agent", hint: "npx worktrust remote status", info: "Shows if Remote Agent is on and what is linked. Only reads.", run: () => run(["remote", "status"]) }]),
+    ...at("Remote Agent › Permissions", switchItems(settings, run)),
+    ...at("Remote Agent", [{ label: "Link a phone (QR here)", hint: "npx worktrust remote pair", info: "Shows a QR that links a phone to this computer.", run: () => run(["remote", "pair"]) }, { label: "Status of Remote Agent", hint: "npx worktrust remote status", info: "Shows if Remote Agent is on and what is linked. Only reads.", run: () => run(["remote", "status"]) }]),
     ...at("Remote Agent › Roots", rootsRows(term, io, header)),
     ...at("Import earlier history", historyRows(term, io)),
     ...at("Preserve evidence", preserveRows(term, io)),

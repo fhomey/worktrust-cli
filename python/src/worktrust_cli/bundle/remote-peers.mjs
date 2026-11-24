@@ -26,6 +26,8 @@
  *   default_root    CLI 0.11.21: device.inventory `default_root` (the root the keyboard made at ~/Desktop/WorkTrust, or null;
  *                   remote-default-root.mjs), so a phone starts a session without choosing a project (protocol phone-start.ts)
  *   agent_ref       CLI 0.11.21: a claude-code session row's `agent_ref` (Claude Code's own uuid, for `claude --resume`)
+ *   probe_failed    CLI 0.11.22: the reject reason `probe_failed` (remote-inventory.mjs checkStartProbed: Claude Code's version and
+ *                   help could not be read, asked again once); every other phone hears `busy` ("try again"), never `unsupported`
  *
  * The daemon seals NOTHING for a channel that did not pass through `bodyFor` (remote-daemon.mjs sealAll).
  */
@@ -41,6 +43,8 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false } = 
   const livePeers = new Set(); // CLI 0.11.19: `desk_read`, and reading along (history.get `follow`): only for a phone that asked `desk_live`
   const steerPeers = new Set(); // CLI 0.11.20: `steerable`, `bypass_mode`, and agent.prompt `desk_ref`: only for a phone that asked `desk_steer`
   const rootPeers = new Set(), refPeers = new Set(), readyPeers = new Set(); // readyPeers (build 31): a phone that asked `voice_notice` hears "Answer ready" as a device notice // CLI 0.11.21: `default_root` (asked `default_root`) and a session row's `agent_ref` (asked `agent_ref`)
+  const probePeers = new Set(); // CLI 0.11.22: the reject reason `probe_failed`, only for a phone that asked it (others hear `busy`)
+  const probeBodyFor = (peer, type, body) => (type === "command.rejected" && body?.reason === "probe_failed" && !probePeers.has(peer) ? { ...body, reason: "busy" } : body);
   const voicePeers = new Set(), readPeers = new Set(), viaPeers = new Set(); // CLI 0.11.21: `voice` { on, enrolled }, its `read` (asked `voice_read`), and a user turn's `via` (asked `steer_via`)
   // `via` on a desk session's user turn (CLI 0.11.21, remote-desk-steer.mjs withOrigins): only for a phone or browser that asked `steer_via`.
   const withoutVia = (body) => ({ ...body, items: body.items.map(({ via: _drop, ...item }) => item) });
@@ -50,7 +54,7 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false } = 
   const withoutRoot = ({ default_root: _drop, ...body }) => body;
   const withoutRefs = (body) => ({ ...body, sessions: body.sessions.map(({ agent_ref: _drop, ...row }) => row) });
   const startBodyFor = (peer, type, body) => {
-    if (type !== "device.inventory") return body;
+    if (type !== "device.inventory") return probeBodyFor(peer, type, body); // CLI 0.11.22: `probe_failed` becomes `busy` last, for every peer that did not ask it
     const rooted = "default_root" in body && !rootPeers.has(peer) ? withoutRoot(body) : body;
     return !refPeers.has(peer) && Array.isArray(rooted.sessions) && rooted.sessions.some((row) => "agent_ref" in row) ? withoutRefs(rooted) : rooted;
   };
@@ -81,7 +85,36 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false } = 
     if (payload.extended === true && payload.default_root === true && env.sender_device_id) rootPeers.add(env.sender_device_id);
     if (payload.extended === true && payload.agent_ref === true && env.sender_device_id) refPeers.add(env.sender_device_id);
     if (payload.extended === true && payload.voice_notice === true && env.sender_device_id) readyPeers.add(env.sender_device_id);
+    if (payload.extended === true && payload.probe_failed === true && env.sender_device_id) probePeers.add(env.sender_device_id);
   }
   // CLI 0.11.21: `default_root` and a row's `agent_ref` leave every inventory last, for a phone that did not ask each (asking needs `extended`, so a phone that never asked that loses both too).
   return { bodyFor: (channel, record) => startBodyFor(channel.peer_device_id, record.type, bodyFor(channel, record)), note, readsDesk: () => deskPeers.size > 0, readsCli: () => cliPeers.size > 0, readsLive: (peer) => (peer === undefined ? livePeers.size > 0 : livePeers.has(peer)), readsSteer: (peer) => (peer === undefined ? steerPeers.size > 0 : steerPeers.has(peer)), readsVoice: () => voicePeers.size > 0, readsDefaultRoot: () => rootPeers.size > 0, readsVoiceNotice: (peer) => readyPeers.has(peer) };
+}
+
+/**
+ * CHANNELS NOTHING SHOULD BE SEALED FOR (CLI 0.11.22; the owner's log: 15,509 lines of `not_paired`). The gateway keeps its
+ * channels in memory: after it restarts, a channel whose phone or browser has not said hello since is unknown to it, and every
+ * event sealed for that channel (the health sample every 15 seconds, each receipt and inventory) is refused `not_paired`.
+ *
+ *   forgotten   a newer gateway (with CLI 0.11.22) names the channel it refused (`channel_id`): nothing more is sealed for it. It is never
+ *               learnt again (a hello opens a NEW channel, and the daemon drops the old one); `drop` forgets it with its channel.
+ *   quiet       an older gateway names none, so the transient lane (the health sample, a pushed screen, a history page) is not
+ *               sealed for a channel whose peer was not heard (a hello, or a command on that channel) for QUIET_AFTER_MS. A phone
+ *               or browser that watches says something at every connect and whenever the computer returns (an inventory ask),
+ *               so three days covers a weekend of a tab left open; a peer silent longer is gone or will speak at its next connect,
+ *               and then hears the next sample. Receipts and inventories still go: a peer that just sent a command was heard.
+ * Kept in memory: after a daemon restart a forgotten channel costs one refusal again; the quiet clock starts at the peer's last
+ * hello (phones.json `seen_at`), or, for a peer with none recorded (paired before 0.11.7), when this daemon first seals for it.
+ */
+export const QUIET_AFTER_MS = 3 * 86_400_000;
+export function createQuietChannels({ now, seenAt = () => null }) {
+  const forgotten = new Set(), heard = new Map();
+  const heardAt = (c) => { if (!heard.has(c.channel_id)) heard.set(c.channel_id, seenAt(c.peer_device_id) ?? now()); return heard.get(c.channel_id); };
+  return {
+    /** The gateway refused this channel by name. → whether it is news. */
+    forgot: (id) => !forgotten.has(id) && Boolean(forgotten.add(id)),
+    heard: (id) => { heard.set(id, now()); },
+    drop: (id) => { forgotten.delete(id); heard.delete(id); },
+    skip: (channel, record) => forgotten.has(channel.channel_id) || (record.lane === "transient" && now() - heardAt(channel) > QUIET_AFTER_MS),
+  };
 }

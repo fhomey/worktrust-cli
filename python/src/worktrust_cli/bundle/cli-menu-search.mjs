@@ -40,7 +40,7 @@ export function searchKey(query, k, { multi = false, top = false } = {}) {
     return { query: null, consumed: false };
   }
   if (k?.name === "escape") return { query: null, consumed: true };
-  if (k?.name === "backspace") return { query: query.slice(0, -1), consumed: true };
+  if (k?.name === "backspace") return { query: query === "" ? null : query.slice(0, -1), consumed: true }; // 0.11.22: on an empty search it ends it (Backspace again goes back)
   if (multi && k?.name === "space") return { query, consumed: false }; // Space still ticks in a picker
   if (ch && ch >= " " && ch !== "\x7f") return { query: query + ch, consumed: true };
   return { query, consumed: false };

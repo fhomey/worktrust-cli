@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.11.21",
+  "version": "0.11.23",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -123,6 +123,7 @@
     "remote-steer-mod.mjs",
     "remote-desk-steer.mjs",
     "remote-voice.mjs",
+    "remote-device-history.mjs",
     "remote-voice-speech.mjs",
     "remote-keyboard.mjs",
     "remote-default-root.mjs",

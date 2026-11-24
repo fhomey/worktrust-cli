@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { appendSteered } from "./remote-steered.mjs";
-import { adapterOf } from "./remote-inventory.mjs";
+import { adapterOf, checkStartProbed } from "./remote-inventory.mjs";
 import { allowedModes, startChoice } from "./remote-settings.mjs";
 import { claudeArgs, isClaudeSessionId, removeQuietly, startClaude, writeMcpConfig } from "./remote-adapter-claude-code.mjs";
 import { backgroundJobs, emptyClaudeState, endClaudeRun, mapClaudeLine } from "./remote-claude-events.mjs";
@@ -205,7 +205,7 @@ export function createSessions(ctx) {
     // `unsupported`): held on the computer is the answer (`in_use`) whatever the options say, and an id outside its own list is
     // `not_found`. A free, listed one still passes every check below before anything starts.
     const desk = payload.resume !== null && env.task !== true ? (ctx.desk ? ctx.desk.resumable(payload.resume, project.project_id) : "not_found") : null; if (desk) return desk; // release 36: only a session of the computer's own list, free
-    const refused = P.checkStart(payload, adapterOf(ctx.inventory(), payload.adapter)); if (refused) return refused;
+    const refused = checkStartProbed(payload, ctx.inventory); if (refused) return refused; // CLI 0.11.22: an agent whose probe failed is asked once more first
     const choice = startChoice(payload, project.project_id, ctx.inventory(), ctx.settings(), known); if (typeof choice === "string") return choice;
     if (!AGENT_ID[payload.adapter] || (payload.resume !== null && !AGENT_ID[payload.adapter](payload.resume))) return "unsupported";
     if (deskGranted(payload.adapter, project.path)) return "not_allowed"; // S0: Codex's own allow rules cannot be denied per session

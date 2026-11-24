@@ -8,6 +8,9 @@
  * Held by scripts/test-remote-qr.mjs against reference matrices from an independent encoder (recorded fixtures) and an
  * independent structural decoder in the test itself.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Level M, per version: [error correction codewords per block, blocks in group 1, data codewords each, group 2, each].
 const EC_M = [null,
@@ -228,4 +231,39 @@ export function renderQr(modules, { color = true } = {}) {
  */
 export function terminalQr(text, { color = true } = {}) {
   return renderQr(qrMatrix(text, null, "L", segmentsOf(text)).modules, { color });
+}
+
+/**
+ * THE QR IN A WINDOW (CLI 0.11.22; owner, 2026-11-23: VS Code's terminal draws a gap between text lines, so the half blocks
+ * become striped bars no phone decodes; Terminal.app is fine). `qrSvg` draws the SAME code as an image (four modules of quiet
+ * zone, white ground); `qrWindow` writes it, on `o`, into a new folder under the system's temp folder (0700 by mkdtemp, the file
+ * 0600) and opens it with the system's opener, and removes the folder when the wait ends and on every exit, Ctrl+C included.
+ * Why that is safe: the code it holds is the one already on the screen, an invite that links ONE phone ONCE within ten minutes;
+ * the file is never served on a port, never uploaded, and gone with the command. `qrHelp` says the way out under the code where
+ * the terminal is not known to draw it whole.
+ */
+export function qrSvg(text, scale = 8) {
+  const modules = qrMatrix(text, null, "L", segmentsOf(text)).modules, q = 4, size = (modules.length + q * 2) * scale;
+  const dark = modules.flatMap((row, r) => row.map((on, c) => (on ? `<rect x="${(c + q) * scale}" y="${(r + q) * scale}" width="${scale}" height="${scale}"/>` : "")).filter(Boolean));
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="white"/><g fill="black">${dark.join("")}</g></svg>\n`;
+}
+/** Terminals known to draw the half blocks without a gap between lines. */
+export const QR_WHOLE_IN = new Set(["Apple_Terminal", "iTerm.app", "WezTerm", "ghostty"]);
+export function qrHelp({ tty = false, program = "" } = {}) {
+  if (!tty || QR_WHOLE_IN.has(program)) return [];
+  return [program === "vscode" ? "  QR looks striped? Press o, type the code in the app, or run this in Terminal." : "  The QR does not scan? Press o to open it in a window."];
+}
+export function qrWindow(text, { open = () => {}, dir = tmpdir() } = {}) {
+  let folder = null;
+  const remove = () => { process.off("exit", remove); if (folder) { try { rmSync(folder, { recursive: true, force: true }); } catch { /* gone */ } folder = null; } };
+  return {
+    open() {
+      if (!folder) { folder = mkdtempSync(join(dir, "worktrust-qr-")); writeFileSync(join(folder, "pairing-qr.svg"), qrSvg(text), { mode: 0o600 }); process.on("exit", remove); }
+      const file = join(folder, "pairing-qr.svg");
+      open(file);
+      return file;
+    },
+    remove,
+    get folder() { return folder; },
+  };
 }

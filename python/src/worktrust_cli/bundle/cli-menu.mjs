@@ -7,7 +7,7 @@
  *
  * Each item runs the direct command it shows in its muted line, as a child of this CLI with the terminal handed over
  * (io.runCli), so people learn the short form and every command keeps its own questions and its own guards. Keys: ↑/↓
- * move, Enter opens, Esc or ← goes back one level, q quits from the top, 1 to 9 jump, Ctrl+C quits. Raw mode and the
+ * move, Enter opens, Esc, ⌫ or ← goes back one level, q quits from the top, 1 to 9 (and 0, a tenth row) jump, Ctrl+C quits. Raw mode and the
  * cursor are restored on every way out (quit, Ctrl+C, an error). 0.11.12: Esc while a command runs stops it (cli-stop.mjs).
  * 0.11.8 (owner, 2026-11-13): Update comes first and says whether there is something to update; every item carries one plain
  * sentence under it; the menu is redrawn IN PLACE (createTerminal) and never left in the scrollback; colours carry meaning
@@ -30,7 +30,7 @@ import { busyWith, clip, coloursFor, visibleLength } from "./cli-colour.mjs";
 import { STOPPED } from "./cli-stop.mjs";
 import { loadIdentity, loadPhones, loadSettings } from "./remote-store.mjs";
 import { awaitingName, awaitingRow } from "./remote-connections.mjs";
-import { searchFooter, searchItems, searchKey, setSearchIndex } from "./cli-menu-search.mjs";
+import { searchFooter, searchItems, searchKey, setSearchIndex } from "./cli-menu-search.mjs"; import { confirmStep } from "./cli-menu-switches.mjs";
 /** Whether bare `npx worktrust` opens the menu here. Pure: the caller passes what it knows. */
 export function menuWanted({ args: given = [], env = {}, stdinTTY = false, stdoutTTY = false, agentShell = null } = {}) {
   const args = given.filter((arg) => arg !== "--no-color" && arg !== "--no-colour"); // how it looks, not what it does
@@ -99,7 +99,7 @@ const wrap = (text, width) => { const out = []; let line = ""; for (const word o
 export function menuFrame({ header = [], title = null, items, at = 0, ticked = new Set(), multi = false, top = false, footer = null, asked = null }, { rows = 24, columns = 100, p = paint } = {}) {
   const width = columns - 1;
   const heads = (lines) => [...lines, ...(title ? ["", `  ${p.bold(title)}`] : []), ""];
-  const keys = `  ${p.dim(footer ?? (multi ? "↑/↓ move · Space tick · Enter confirm · Esc back" : `↑/↓ move · Enter open · Esc ${top ? "quit" : "back"} · 1-9 jump`))}`;
+  const keys = `  ${p.dim(footer ?? (multi ? "↑/↓ move · Space tick · Enter confirm · Esc/⌫ back" : `↑/↓ move · Enter open · ${top ? "Esc quit" : "Esc/⌫ back"} · 1-9 jump`))}`;
   const box = (item) => (multi && item.tick ? `[${ticked.has(item.label) ? "x" : " "}] ` : "");
   const size = (item) => visibleLength(`${box(item)}${item.label}${item.note ? ` · ${item.note.text}` : ""}`);
   // The commands stand in one column beside the names (a name longer than 64 pushes only its own command; a table row is a name).
@@ -107,7 +107,7 @@ export function menuFrame({ header = [], title = null, items, at = 0, ticked = n
   const upTo = (item) => 6 + Math.max(nameCol, size(item)) + 3; // where this row's command starts
   const wide = columns >= 60 && items.every((item) => !item.info || upTo(item) + hintCol + 3 + item.info.length <= width);
   const line = (item, i) => {
-    const label = ` ${i < 9 ? i + 1 : " "}  ${box(item)}${item.label} `;
+    const label = ` ${i < 9 ? i + 1 : i === 9 ? 0 : " "}  ${box(item)}${item.label} `; // 0.11.22: a tenth row (an alert above a full menu) answers 0
     const note = item.note ? `· ${p[item.note.tone]?.(item.note.text) ?? item.note.text}` : "";
     const name = i === at ? p.inverse(label) : item.disabled ? p.dim(label) : p.bold(label);
     const gap = " ".repeat(Math.max(0, nameCol - size(item)) + (item.note ? 3 : 2)); // a name without a note ends in its own space
@@ -143,16 +143,18 @@ export async function choose(term, { header = [], title, items: base, top = fals
     if (k.name === "resize") { term.reset(); continue; }
     const s = searchKey(query, k, { multi, top });
     if (s.consumed) { query = s.query; items = searchItems(base, query, { multi }); at = Math.max(0, items.findIndex((i) => !i.disabled)); asked = null; continue; }
-    asked = /^[1-9]$/.test(k.str ?? "") && items[Number(k.str) - 1]?.disabled ? Number(k.str) - 1 : null;
+    const digit = /^[0-9]$/.test(k.str ?? "") ? (Number(k.str) + 9) % 10 : null; asked = digit !== null && items[digit]?.disabled ? digit : null; // 1 is the first row, 0 the tenth (0.11.22)
     if (k.ctrl && k.name === "c") return "quit";
     if (k.name === "up" || k.name === "k") { move(-1); continue; }
     if (k.name === "down" || k.name === "j") { move(1); continue; }
     if (k.name === "escape") return top ? "quit" : "back"; // 0.11.9: Esc leaves the top like q (a lone Esc: readline tells it from an arrow's sequence)
-    if (k.name === "left") { if (!top) return "back"; continue; }
+    if (k.name === "left" || k.name === "backspace") { if (!top) return "back"; continue; } // 0.11.22: Backspace goes back one level too
     if (k.name === "q" && top) return "quit";
     if (multi && k.name === "space" && items[at]?.tick) { ticked.has(items[at].label) ? ticked.delete(items[at].label) : ticked.add(items[at].label); continue; }
-    if (/^[1-9]$/.test(k.str ?? "") && items[Number(k.str) - 1] && !items[Number(k.str) - 1].disabled) { at = Number(k.str) - 1; if (!multi) return { item: items[at] }; continue; }
-    if ((k.name === "return" || k.name === "enter") && items[at] && !items[at].disabled) return { item: items[at], ticked: base.filter((i) => ticked.has(i.label)) };
+    const chosen = digit !== null && items[digit] && !items[digit].disabled ? digit : (k.name === "return" || k.name === "enter") && items[at] && !items[at].disabled ? at : null;
+    if (chosen !== null) at = chosen; if (chosen === null || (multi && digit !== null)) continue;
+    if (items[at].confirm && !multi && !(await confirmStep(term, { header: typeof header === "function" ? header() : header, title, item: items[at] }, paint))) continue; // 0.11.22: a switch asks first (cli-menu-switches.mjs)
+    return { item: items[at], ticked: base.filter((i) => ticked.has(i.label)) };
   }
 }
 
@@ -169,7 +171,6 @@ export async function typed(term, question, value = "") {
 }
 
 let busy = false; // while a command runs, Ctrl+C is the command's (it reaches the child too) and Esc stops it (cli-stop.mjs); the menu stays
-
 /**
  * Run one direct command with the terminal handed over, then wait for a key before the menu comes back. The menu's own
  * lines are taken away first, so the scrollback reads: the command, its output, how it ended. The menu is then drawn once
@@ -198,7 +199,6 @@ export async function stoppedAsk(term) {
 
 /** What the Remote Agent item says where this Node has no WebSocket; Enter opens the ways forward (node-guide.mjs). */
 export const REMOTE_NEEDS = "Needs Node 22.4 or later. Enter shows the ways to get it.";
-
 const newer = (a, b) => { const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number); for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 
 /**

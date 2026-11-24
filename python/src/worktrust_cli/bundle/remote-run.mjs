@@ -16,7 +16,8 @@ import * as P from "./remote-protocol.mjs";
 import { deskReadOf, loadPreviewGrants, loadRoots } from "./remote-store.mjs";
 import { keepReaders, readAlongLine } from "./remote-settings.mjs";
 import { sessionProjects } from "./remote-projects.mjs";
-import { ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
+import { loadVoice } from "./remote-voice.mjs";
+import { createDeviceCounts, ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { inventory as listAgents, offered } from "./remote-inventory.mjs";
 
@@ -60,7 +61,8 @@ const logged = (kind, fields = {}) => { log(kind, fields); notice(kind, fields);
  * seconds for days). The gateway keeps its channels in memory: after it restarts, a channel of a phone or browser that has not
  * said hello since is unknown to it, and every event sealed for that channel (the health sample, every 15 seconds) is answered
  * `not_paired`, without saying which channel. The first of a reason is written at once; the repeats within the hour are counted
- * and said with the next one (`repeated`). Nothing else changes: what is sent and what is kept are as before.
+ * and said with the next one (`repeated`). Since CLI 0.11.22 a newer gateway names the refused channel and nothing more is sealed
+ * for it (remote-peers.mjs createQuietChannels), so the refusals stop at the first instead of only being counted.
  */
 export function createErrorLog({ log, now = Date.now, quietMs = 60 * 60_000 }) {
   const seen = new Map();
@@ -172,8 +174,11 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   const live = createLivePreview({ emit: (...a) => core.emit(...a), grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log, now: Date.now, sessionProject: grantedProject });
   // Continue a session on this computer (release 36): its own Claude Code sessions in the projects a phone may reach.
   const desk = createDesk({ projects: reachable, journal });
+  const { createCountsReporter } = await import("./remote-pairing.mjs"); // 0.11.23: the same counts to the issuer (ISSUER.md §13), deltas at most once a minute
+  const reporter = identity.origin ? createCountsReporter({ origin: identity.origin, deviceId: identity.device_id, secret: keys.secret, log }) : null;
+  const counts = createDeviceCounts({ parentOf: (id) => { try { return loadVoice().peers.find((v) => v.device_id === id)?.parent?.device_id ?? null; } catch { return null; } }, onFlush: (entries) => reporter?.add(entries) }); // 0.11.22: the device history's counts, flushed by the tick below
   let health = null; // the sampler below (remote-health.mjs): every 15 s, local numbers, no model
-  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, agentEnv: () => agentEnv(loadSettings()), now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null });
+  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, agentEnv: () => agentEnv(loadSettings()), now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null, counts });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
@@ -181,7 +186,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   let handover = null; const hold = holdDuring(() => Boolean(handover?.handing)); // 0.11.15: nothing new starts while it hands over
   const sessions = createSessions({ ...ctx, approvals, runDir, node: process.execPath, bridgePath: join(HERE, "remote-approval-bridge.mjs"), socket: () => socket,
     // A session runs in a granted project or in an existing project inside a root (0.11.7), each by the inventory's id.
-    settings: loadSettings, projects: reachable, inventory: () => inventory({ env: agentEnv(loadSettings()) }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
+    settings: loadSettings, projects: reachable, inventory: (refresh = false) => inventory({ env: agentEnv(loadSettings()), refresh }), agentEnv: () => agentEnv(loadSettings()), replay: core.replay,
     onTaskEnded: (id, outcome) => releases.taskEnded(id, outcome), onActivity: () => releases?.activity(),
     onSessionsChanged: () => core.emit(null, "device.inventory", core.inventoryBody(false)), attachments, desk });
   ctx.onApprovalOpened = sessions.onApprovalOpened; ctx.onApprovalSettled = sessions.onApprovalSettled;
@@ -213,6 +218,8 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
     else if (frame.frame === "relay") { log("relay", { type: frame.event?.type ?? null }); if (frame.event?.type === "device.revoked") core.peerRevoked(frame.event); }
     else if (frame.frame === "error") {
       gatewayErrors.note(typeof frame.reason === "string" ? frame.reason.slice(0, 40) : null);
+      // CLI 0.11.22: a newer gateway names the channel it does not know (it restarted, and that peer has not said hello since).
+      if (frame.reason === "not_paired" && typeof frame.channel_id === "string") core.channelForgotten(frame.channel_id);
       // A gateway older than device.health answers it `error: shape` (and closes nothing): rest the samples half an hour.
       if (frame.reason === "shape" && Date.now() - healthSentAt < 5000) { healthRestUntil = Date.now() + 30 * 60_000; log("health_rested", { minutes: 30 }); }
     }
@@ -247,6 +254,8 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
     if (signal && version) { try { const to = restartAsked(); if (to !== null) core.announceRestart(to); } catch { /* unsaid: the phone sees it offline */ } }
     approvals.close();
     health.stop();
+    try { counts.flush(true); } catch { /* the history is a record, never a reason a stop fails */ }
+    await Promise.race([reporter?.tick(true), new Promise((resolve) => setTimeout(resolve, 3000))]).catch(() => null); // once, briefly: a paced report is in the local history anyway
     await pipelines.stopAll();
     await live.stopAll(); // the browser ended, its profile removed
     await registry.stopAll(); // the structured agents; a terminal session lives on in tmux
@@ -263,7 +272,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // The baseline is what stood when the daemon started (0.11.19: until then it was taken at the first tick, so a change in the first three seconds was never told).
   const reach = () => [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id), "|", deskReadOf(loadSettings()) /* 0.11.19: also what the keyboard lets a phone read of the desk */].join(","); let grants = null; try { grants = reach(); } catch { /* unreadable now: the first tick that reads it is the baseline */ } const grantsChanged = () => { const now = reach(); const changed = grants !== null && now !== grants; grants = now; return changed; };
   keepReaders([]); // nobody reads along yet: an older daemon's list is not this one's
-  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); if (readers.size > 0) keepReaders([...readers.values()]); registerCode(); releases.poll(); try { handover?.tick(); } catch { log("handover_error", {}); } try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
+  setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); if (readers.size > 0) keepReaders([...readers.values()]); registerCode(); releases.poll(); try { counts.flush(); } catch { /* next tick */ } reporter?.tick().catch(() => log("counts_error", {})); try { handover?.tick(); } catch { log("handover_error", {}); } try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
   releases.schedule(); // queued tasks a restart kept
   handover?.start();
   health.start();

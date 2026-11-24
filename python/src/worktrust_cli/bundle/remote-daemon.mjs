@@ -18,7 +18,7 @@ import { createProject, rootLabel, sessionProjects, worktreeMain } from "./remot
 import { agentOptionsOf } from "./remote-inventory.mjs";
 import { allowedModes, applySettingsChange } from "./remote-settings.mjs";
 import { adminInventory } from "./remote-admin.mjs";
-import { createPeers } from "./remote-peers.mjs";
+import { createPeers, createQuietChannels } from "./remote-peers.mjs";
 import { createNotices, projectNameOf } from "./remote-notices.mjs";
 import { createCatchUp } from "./remote-catch-up.mjs";
 import { createHistory } from "./remote-history.mjs";
@@ -34,11 +34,11 @@ export function createDaemonCore(o) {
   // o: { local, issuerKeys, journal, now, random, send(frame, { replayed }), room?() (the pacer, remote-pace.mjs), inventory(refresh), log(kind, fields), sessions?, approvals?, health?(), version? (this release: device.inventory `cli`) }
   const channels = new Map(loadChannels().map((c) => [c.channel_id, c]));
   const confirmed = () => new Set([...confirmedFingerprints(loadPhones()), ...voice.fingerprints()]); // a channel stays while its peer is confirmed here: a phone or browser at this keyboard, or (CLI 0.11.21) a voice key one of them enrolled
-  const self = o.local.claims.device_id;
-  const persist = () => saveChannels([...channels.values()]);
+  const self = o.local.claims.device_id, persist = () => saveChannels([...channels.values()]);
   let sessions = null, approvals = o.approvals ?? null, releases = null;
 
   const peers = createPeers({ voiceOf: (phone) => voice.enrolledFor(phone), voiceKey: (peer) => voice.isVoice(peer) }); // what each phone asked to read, and what is sealed for it (remote-peers.mjs); a browser reads along since 0.11.20 (its key reaches the relay only after its Remote PIN)
+  const quiet = createQuietChannels({ now: o.now, seenAt: (peer) => loadPhones().confirmed.find((p) => p.device_id === peer)?.seen_at ?? null }); // CLI 0.11.22: a channel the gateway refused by name, or (an older gateway) a peer silent for days, gets no transient event (remote-peers.mjs)
   // THE RESTART, SAID BEFORE IT HAPPENS (remote-service.mjs createHandover, remote-run.mjs stop): one ordinary inventory naming
   // `cli.restarting` (the relay lists what may be transient, and an inventory is not). announceRestart(false) withdraws it.
   let restarting = null;
@@ -56,6 +56,7 @@ export function createDaemonCore(o) {
     for (const [id, channel] of channels) {
       if (!confirmed().has(channel.peer_fingerprint)) { channels.delete(id); continue; } // a revoked phone hears nothing
       if (only !== null && channel.peer_device_id !== only) continue;
+      if (quiet.skip(channel, record)) continue; // CLI 0.11.22: a channel the gateway forgot, or a silent peer's transient lane
       const voiced = voice.gate(channel, record); // a voice key hears its own receipts alone, and its channel ends with its last one (remote-voice.mjs)
       if (voiced === "drop") { channels.delete(id); continue; } if (voiced === "skip") continue;
       try { // one body the seal cannot take (review 2026-11-21, P2-2: half an emoji, canonicalBytes throws) is logged and skipped, never the end of every later inventory
@@ -280,7 +281,7 @@ export function createDaemonCore(o) {
     if (!shaped.ok) return o.log("command_dropped", { code: shaped.code });
     const channel = channels.get(envelope.payload_ciphertext.channel_id);
     if (!channel) return o.log("command_dropped", { code: "wrong_channel" });
-    if (!confirmed().has(channel.peer_fingerprint) || voice.gate(channel, null) === "drop") { channels.delete(channel.channel_id); persist(); return o.log("command_dropped", { code: "not_confirmed" }); }
+    if (!confirmed().has(channel.peer_fingerprint) || voice.gate(channel, null) === "drop") { channels.delete(channel.channel_id); persist(); return o.log("command_dropped", { code: "not_confirmed" }); } quiet.heard(channel.channel_id);
     const input = { command_id: envelope.command_id, idempotency_key: envelope.idempotency_key, sender_device_id: envelope.sender_device_id, digest: P.envelopeDigest(envelope) };
     const found = o.journal.find(input);
     if (found === "conflict") return resealed(channel, envelope, input);
@@ -294,7 +295,7 @@ export function createDaemonCore(o) {
     if (admitted.verdict !== "new") return resendReceipts(admitted.entry);
     emit(sid, "command.device_received", {}, envelope.command_id);
     if (!opened.ok) return reject(envelope, "expired"); // authentic (the signature verified first) but late
-    const outcome = await dispatch(opened.value.envelope, opened.value.payload);
+    const outcome = await dispatch(opened.value.envelope, opened.value.payload); o.counts?.note(envelope.sender_device_id, outcome === "taken" ? envelope.type : null); // 0.11.22: counts only, in memory (remote-store.mjs createDeviceCounts)
     if (outcome === "taken") { o.journal.advance(envelope.command_id, { kind: "agent_accepted" }, o.now()); emit(sid, "command.agent_accepted", {}, envelope.command_id); }
     else if (outcome !== null) reject({ ...envelope, session_id: sid }, outcome);
     if (outcome === "taken" && envelope.type === "pairing.revoke") dropPhone(envelope.sender_device_id, "phone");
@@ -321,9 +322,8 @@ export function createDaemonCore(o) {
     }
     const spoken = accepted.value.phone.kind === "voice"; // a voice key: its one short channel, no inventory, no last seen (CLI 0.11.21). Last seen (0.11.7, `remote connections`): the moment this phone last opened a channel, kept on this computer only
     if (spoken) voice.opened(accepted.value.phone); else { const now = loadPhones(); savePhones({ ...now, confirmed: now.confirmed.map((p) => (p.fingerprint === phone.fingerprint ? { ...p, seen_at: o.now() } : p)) }); }
-    for (const [id, c] of channels) if (c.peer_device_id === phone.device_id) channels.delete(id);
-    channels.set(accepted.value.channel.channel_id, accepted.value.channel);
-    persist();
+    for (const [id, c] of channels) if (c.peer_device_id === phone.device_id) { channels.delete(id); quiet.drop(id); }
+    channels.set(accepted.value.channel.channel_id, accepted.value.channel); quiet.heard(accepted.value.channel.channel_id); persist();
     o.send({ frame: "welcome", welcome: accepted.value.welcome });
     if (!spoken) emit(null, "device.inventory", inventoryBody(false));
   }
@@ -340,8 +340,8 @@ export function createDaemonCore(o) {
     },
     /** The computer's health (remote-health.mjs): device-wide on the transient lane, to every open channel, never journaled. */
     emitHealth(body) { if (channels.size > 0) emit(null, "device.health", body, null, "none", { transient: true }); },
-    /** The gateway's device.revoked: a phone this computer will no longer hear from. */
-    peerRevoked(event) { return dropPhone(event.device_id, event.reason === "unpaired" ? "phone" : "revoked"); },
+    channelForgotten(id) { if (channels.has(id) && quiet.forgot(id)) o.log("channel_forgotten", { channel_id: id }); }, // the gateway's `not_paired` naming a channel (CLI 0.11.22): nothing more is sealed for it until its peer says hello again
+    peerRevoked(event) { return dropPhone(event.device_id, event.reason === "unpaired" ? "phone" : "revoked"); }, // the gateway's device.revoked: a phone this computer will no longer hear from
     attach(s, a, r = null) { sessions = s; approvals = a; releases = r; },
     controllers: () => controllerKeys(loadPhones()),
     phoneOnline: () => channels.size > 0 && (o.online?.() ?? true),

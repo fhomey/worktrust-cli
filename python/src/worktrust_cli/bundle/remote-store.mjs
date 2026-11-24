@@ -15,9 +15,10 @@
  *   projects.json       the folders a phone may steer an agent in, canonical paths
  *   channels.json       the open end-to-end channels (their keys are secrets)
  *   journal.jsonl       the command journal (remote-journal.mjs); steered.jsonl the steered ledger (remote-steered.mjs)
+ *   devices-history.jsonl  every phone and browser ever linked here, append-only (CLI 0.11.22, below savePhones)
  */
 import { createHmac, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, chmodSync, rmSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, chmodSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readPrivateFile, writePrivateFile } from "./package-integrity.mjs";
@@ -127,7 +128,72 @@ export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 
 export const loadPhones = () => ({ pending: [], confirmed: [], removed: [], ...(readJson("phones.json") ?? {}) });
-export const savePhones = (phones) => writeJson("phones.json", phones);
+export const savePhones = (phones) => { const before = loadPhones(); writeJson("phones.json", phones); try { trackDevices(before, phones); } catch { /* the history is a record, never a reason a link fails */ } };
+
+/**
+ * THE DEVICE HISTORY (CLI 0.11.22; owner, 2026-11-23): ~/.worktrust/remote/devices-history.jsonl, 0600, APPEND-ONLY. Never
+ * rewritten; a compaction may only append a summary. One record when a phone or browser is linked, one when it ends, its name
+ * when it gets one, and the daemon's counts (deltas, flushed at most once a minute: createDeviceCounts). Ids, fingerprints, a
+ * kind, a name, how and when, and counts only: never content, a project, a path, a title or a key. savePhones is the one writer
+ * of phones.json, so every link and every end anywhere (the daemon's QR, a typed code confirmed here, a browser a phone added,
+ * a removal here, a phone that disconnected itself, a revocation) is seen here by comparing the lists. The first write backfills
+ * once from phones.json: confirmed and removed devices, their known times, and NO counts (unknown is absent, never 0).
+ * remote-device-history.mjs reads and shows it (`remote phones --history`).
+ */
+export const HISTORY_FILE = "devices-history.jsonl";
+const kindOf = (p) => (p.how === "endorsed" || p.kind === "browser" ? "browser" : "phone");
+const linkedRecord = (p, extra = {}) => ({ t: "linked", device_id: p.device_id, fingerprint: p.fingerprint, kind: kindOf(p), ...(p.name ? { name: String(p.name).slice(0, 64) } : {}), how: p.how ?? null, ...(p.endorsed_by?.fingerprint ? { endorsed_by: p.endorsed_by.fingerprint } : {}), linked_at: p.confirmed_at ?? null, ...extra });
+export function appendHistory(records) {
+  if (!records.length) return;
+  ensureRemoteDir();
+  const fd = openSync(remotePath(HISTORY_FILE), "a", 0o600);
+  try { writeSync(fd, records.map((r) => JSON.stringify(r)).join("\n") + "\n"); } finally { closeSync(fd); }
+}
+/** Once per computer: the file is created exclusively, so two processes never both backfill. */
+export function ensureHistory(phones = loadPhones(), now = Date.now()) {
+  ensureRemoteDir();
+  let fd;
+  try { fd = openSync(remotePath(HISTORY_FILE), "wx", 0o600); } catch { return false; }
+  const removed = (phones.removed ?? []).filter((r) => !phones.confirmed.some((p) => p.device_id === r.device_id));
+  const records = [...phones.confirmed.map((p) => linkedRecord(p, { backfill: true })), ...removed.flatMap((r) => [{ t: "linked", device_id: r.device_id, fingerprint: r.fingerprint, linked_at: null, backfill: true }, { t: "ended", device_id: r.device_id, how: r.how ?? null, ended_at: r.removed_at ?? null }]), { t: "backfill", at: now }];
+  try { writeSync(fd, records.map((r) => JSON.stringify(r)).join("\n") + "\n"); } finally { closeSync(fd); }
+  return true;
+}
+export function trackDevices(before, after, now = Date.now()) {
+  ensureHistory(before, now);
+  const was = new Map(before.confirmed.map((p) => [p.device_id, p])), is = new Map(after.confirmed.map((p) => [p.device_id, p]));
+  const out = [];
+  for (const [id, p] of is) if (!was.has(id)) out.push(linkedRecord(p, { linked_at: p.confirmed_at ?? now }));
+  for (const [id, p] of is) if (was.has(id) && p.name && p.name !== was.get(id).name) out.push({ t: "named", device_id: id, name: String(p.name).slice(0, 64) });
+  for (const [id] of was) if (!is.has(id)) { const r = (after.removed ?? []).find((x) => x.device_id === id); out.push({ t: "ended", device_id: id, how: r?.how ?? null, ended_at: r?.removed_at ?? now }); }
+  appendHistory(out);
+}
+export const readHistory = () => { try { return readFileSync(remotePath(HISTORY_FILE), "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }); } catch { return []; } };
+/**
+ * THE DAEMON'S COUNTS (0.11.22): sessions started, commands, prompts and voice prompts per device, and when it was last heard,
+ * kept in memory where the commands already pass (remote-daemon.mjs receiveCommand) and appended as deltas by `flush`, which the
+ * daemon's existing three-second tick calls (at most once a minute) and its stop: no disk write per frame. A voice key's prompt
+ * counts on its phone (`parentOf`). Since 0.11.23 the same deltas go to `onFlush`, the issuer's report (ISSUER.md §13).
+ */
+export function createDeviceCounts({ now = Date.now, parentOf = () => null, everyMs = 60_000, onFlush = null } = {}) {
+  const pending = new Map();
+  let flushedAt = 0;
+  return {
+    note(sender, type) {
+      const parent = parentOf(sender), id = parent ?? sender, c = pending.get(id) ?? { sessions: 0, commands: 0, prompts: 0, voice_prompts: 0 };
+      c.commands += 1; if (type === "agent.start") c.sessions += 1; if (type === "agent.prompt") { if (parent) c.voice_prompts += 1; else c.prompts += 1; } // `type` null: received, not taken (only the command counts)
+      c.last_seen = now(); pending.set(id, c);
+    },
+    flush(force = false) {
+      if (pending.size === 0 || (!force && now() - flushedAt < everyMs)) return false;
+      flushedAt = now();
+      appendHistory([...pending].map(([device_id, c]) => ({ t: "counts", device_id, ...c, at: now() })));
+      try { onFlush?.([...pending].map(([device_id, c]) => ({ device_id, ...c }))); } catch { /* the report is the issuer's copy; the local history is written */ } // 0.11.23: the same deltas to the issuer (remote-pairing.mjs createCountsReporter)
+      pending.clear();
+      return true;
+    },
+  };
+}
 export const loadEndorsements = () => readJson("endorsements.json", { spent: [] }) ?? { spent: [] };
 export const saveEndorsements = (value) => writeJson("endorsements.json", value);
 export const confirmedFingerprints = (phones = loadPhones()) => new Set(phones.confirmed.map((p) => p.fingerprint));

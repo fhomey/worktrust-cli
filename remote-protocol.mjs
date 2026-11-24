@@ -465,6 +465,7 @@ export const ID_PREFIXES = {
   jti: "a token's single-use id",
   nky: "a phone's notice key for one computer (notice.ts): which key opens a sealed notice, nothing more",
   hit: "an item of a session's history (history.ts): derived from its source, the same on every read and device, only ever inside a sealed body",
+  rpt: "a computer's report of its devices' counts to the issuer (CLI 0.11.23, ISSUER.md §13): sent once, answered once",
 }         ;
 
 const ID_BYTES = 16;
@@ -2256,10 +2257,13 @@ export const voiceLifetimeOk = (issuedAt        , expiresAt        )          =>
  *   agent_ref      CONTINUE AT THE COMPUTER: a Claude Code session started from the phone names its own session uuid on its
  *                  device.inventory row (`agent_ref`), so the phone can show `claude --resume <uuid>` for the desk once its
  *                  turn has ended. Claude Code's id only (the uuid's shape), never another agent's, never a path.
+ *   probe_failed   CLI 0.11.22: this phone words the reject reason `probe_failed` (events.ts): the computer could not ask its
+ *                  agent for its version and help (a loaded machine, a probe that timed out), so it does not know whether the
+ *                  start can run. A phone that did not ask hears `busy` instead ("try again"), never the false `unsupported`.
  */
 
 /** inventory.get's fields (commands.ts spreads them), each only with `extended`. */
-export const START_GET_FIELDS = { default_root: optional(bool()), agent_ref: optional(bool()) }         ;
+export const START_GET_FIELDS = { default_root: optional(bool()), agent_ref: optional(bool()), probe_failed: optional(bool()) }         ;
 /** device.inventory's field (events.ts spreads it): only for a phone that asked `default_root`. */
 export const START_INVENTORY_FIELDS = { default_root: optional(nullable(id("rot"))) }         ;
 /** The one command that turns the default root on, typed at the computer (the phone shows it; it can never send it). */
@@ -3448,7 +3452,7 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref", "probe_failed"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
   }
   if (type === "session.attach") {
     const a = payload                                    ;
@@ -3572,7 +3576,7 @@ export const REJECT_REASONS = [
   "busy", // the agent is mid-turn and the command needs it idle (a release: its tasks still run, or no slot for a pipeline)
   "unreviewed", // the project's pipeline file was not reviewed at the keyboard, or changed since (2026-11-07)
   "not_allowed", // the computer did not allow it at its keyboard (a browser endorsement without allow-endorse), or the sender may not (2026-11-09)
-  "in_use", "bypass_mode", "not_prompt", "locked_mode", // locked_mode (CLI 0.11.21, voice.ts): a voice prompt sent while the phone was locked reaches only a desk session in `default` or `plan`; sealed only for a voice key (others hear `not_allowed`). in_use (release 36): the desk session to continue is open on the computer; sent only to a phone that asked `desk_sessions` (others hear `busy`). bypass_mode (CLI 0.11.20): a desk session that skips permission questions (or whose mode is unknown) takes no prompt from a phone; sent only to a phone that asked `desk_steer` (others hear `not_allowed`). not_prompt (CLI 0.11.20, review): a desk prompt that starts with `!` or `/` (a shell line or a command, perhaps run as such in the session) is not sent; the same rule for older phones
+  "probe_failed", "in_use", "bypass_mode", "not_prompt", "locked_mode", // probe_failed (CLI 0.11.22, phone-start.ts): the computer could not ask the agent for its version and help (a loaded machine), asked again once before this; sealed only for a phone that asked `probe_failed` (others hear `busy`). locked_mode (CLI 0.11.21, voice.ts): a voice prompt sent while the phone was locked reaches only a desk session in `default` or `plan`; sealed only for a voice key (others hear `not_allowed`). in_use (release 36): the desk session to continue is open on the computer; sent only to a phone that asked `desk_sessions` (others hear `busy`). bypass_mode (CLI 0.11.20): a desk session that skips permission questions (or whose mode is unknown) takes no prompt from a phone; sent only to a phone that asked `desk_steer` (others hear `not_allowed`). not_prompt (CLI 0.11.20, review): a desk prompt that starts with `!` or `/` (a shell line or a command, perhaps run as such in the session) is not sent; the same rule for older phones
 ]         ;
 
 export const FAIL_REASONS = ["agent_exited", "adapter_error", "not_ready", "timeout", "internal"]         ;
@@ -5229,6 +5233,7 @@ export function isBindingRevoked(list                     , binding             
  *   relay-auth         the answer to the gateway's challenge (gateway.ts), bound to that gateway's origin
  *   voice-bind         a phone's voice key (CLI 0.11.21, voice.ts): signed TWICE over the same bytes, by the new voice key
  *                      (it holds it) and by its parent phone's bound key (the phone asks for it), under the phone's session
+ *   device-counts      a computer's counts of its phones and browsers (CLI 0.11.23, POST /api/remote/counts, ISSUER.md §13)
  */
 
 const requestDomain = (name        ) => utf8Encode(`worktrust-remote/v1/${name}\n`);
@@ -5262,6 +5267,18 @@ export const selfRevokeBytes = (b                                    )          
   concatBytes(REQ_SELF_REVOKE, canonicalBytes({ device_id: b.device_id, iat: b.iat }));
 export const relayAuthBytes = (b                                                      )             =>
   concatBytes(REQ_RELAY, canonicalBytes({ device_id: b.device_id, nonce: b.nonce, origin: b.origin }));
+
+/** One device's counts in a computer's report: deltas since its last report taken, each present only when counted. */
+
+const REQ_COUNTS = requestDomain("device-counts");
+/**
+ * WHAT A COMPUTER SIGNS TO REPORT ITS DEVICES' COUNTS (CLI 0.11.23; ISSUER.md §13): `"worktrust-remote/v1/device-counts\n" ||
+ * canonicalJson({ device_id, devices, iat, report_id })`. Moved here byte for byte from the app's lib/remote/device-counts.ts
+ * (branch device-history), which re-exports it, so the computer that signs and the issuer that checks share one function;
+ * pinned on device-history's vector (scripts/lib/remote-protocol-counts-cases.mjs).
+ */
+export const deviceCountsBytes = (b                                                                                              )             =>
+  concatBytes(REQ_COUNTS, canonicalBytes({ device_id: b.device_id, devices: b.devices, iat: b.iat, report_id: b.report_id }));
 
 /** A device signs one of the requests above with its remote Ed25519 secret: base64url, 64 bytes. */
 export const deviceSign = (bytes            , secret            )         => toBase64Url(ed25519Sign(bytes, secret));
@@ -5410,7 +5427,13 @@ export const GATEWAY_OUTBOUND_SPECS = {
   event: GATEWAY_INBOUND_SPECS.event,
   relay: object({ frame: gwWord("relay"), event: union("type", RELAY_EVENT_SPECS) }),
   ticket: object({ frame: gwWord("ticket"), ticket: gwTicket, device_id: gwDev }),
-  error: object({ frame: gwWord("error"), reason: oneOf(GATEWAY_ERRORS) }),
+  /**
+   * `not_paired` names what it refused (CLI 0.11.22, both optional: an older gateway names neither, an older device reads only
+   * `reason`): `channel_id`, the channel of a computer's event or a phone's command this gateway holds no open channel for
+   * (it keeps channels in memory: a restart forgets them, the grants stay); `device_id`, the computer a phone's replay or follow
+   * named. The computer stops sealing for that channel until its peer says hello again; the phone says hello again.
+   */
+  error: object({ frame: gwWord("error"), reason: oneOf(GATEWAY_ERRORS), channel_id: optional(id("chn")), device_id: optional(gwDev) }),
   /** Said before the gateway closes a socket on purpose, with when to come back. */
   closing: object({ frame: gwWord("closing"), reason: oneOf(CLOSING_REASONS), retry_after_ms: int(0, 3_600_000) }),
 }                                                  ;

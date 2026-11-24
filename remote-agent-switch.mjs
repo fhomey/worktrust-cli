@@ -1,7 +1,7 @@
 /**
  * `npx worktrust remote codex on | off` and `npx worktrust remote opencode on | off` (2026-11-07; OpenCode 2026-11-09, owner:
  * "the same on/off switch as Codex"). An agent that reads without asking is offered to a phone only after the person turned it
- * on at this keyboard, the gap stated and a typed yes; until then the inventory lists it as installed and offers it nothing
+ * on at this keyboard, the gap stated and a yes (y or yes); until then the inventory lists it as installed and offers it nothing
  * (remote-inventory.mjs `offered`, settings.codex / settings.opencode, off by default in remote-store.mjs).
  *
  *   agentSwitch(io, agent, rest, askTyped)    agent: "codex" | "opencode"
@@ -27,7 +27,7 @@ export async function agentSwitch(io, agent, rest, askTyped) {
   if (rest[0] === "off") { saveSettings({ ...s, [agent]: false }); io.say(`  ${name} is no longer offered to a phone.`); return; }
   if (rest[0] !== "on") { io.say(`  ${name} is ${s[agent] ? "on" : "off"} for remote. npx worktrust remote ${agent} on | off`); return; }
   for (const line of gap) io.say(line);
-  if (!(await askTyped(`  Offer ${name} to your phones anyway? Type yes: `))) io.fail(`${name} stays off`);
+  if (!(await askTyped(`  Offer ${name} to your phones anyway?`))) io.fail(`${name} stays off`);
   saveSettings({ ...s, [agent]: true });
   io.say(`  ✓ ${name} is offered to your phones. npx worktrust remote ${agent} off takes it back.`);
 }

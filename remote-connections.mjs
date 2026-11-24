@@ -2,7 +2,7 @@
  * WHAT IS LINKED TO THIS COMPUTER, AND CLOSING IT (CLI 0.11.7, owner 2026-11-12). `remote connections` lists every phone and
  * browser linked to this computer (name, kind, fingerprint, since, last seen) and this computer's own link; `remote
  * disconnect <number | name | fingerprint>` closes one after TWO confirmations (y, then its short fingerprint or its name
- * typed), and `remote disconnect --all` closes every one after `close all` typed exactly. Both are the same removal as
+ * typed), and `remote disconnect --all` closes every one after y or yes (owner, 2026-11-24; it was `close all` typed exactly). Both are the same removal as
  * `remote phones remove` (kept, and folded onto removePhones here): the phone leaves the confirmed and pending lists for
  * `removed`, which the daemon reads per message, so it can no longer steer this computer. Its key for the whole account
  * is ended in WorkTrust (Settings › Remote Agent), as before. No prompt without a terminal: the command refuses instead.
@@ -16,12 +16,13 @@ import { join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { gatewayOf, loadIdentity, loadKeys, loadPhones, loadProjects, loadRoots, loadSettings, random, removeFile, savePhones, writeJson } from "./remote-store.mjs";
 import * as P from "./remote-protocol.mjs";
-import { terminalQr } from "./remote-qr.mjs";
+import { qrHelp, qrWindow, terminalQr } from "./remote-qr.mjs";
 import { pairingQrText, seededInvite } from "./remote-pairing.mjs";
-import { watchKeys } from "./cli-stop.mjs";
+import { onLetter, watchKeys } from "./cli-stop.mjs";
 import { startCountdown } from "./remote-countdown.mjs";
 import { suggestedFolders } from "./folder-picker.mjs";
 import { dropNoticeKeysOf } from "./remote-notices.mjs";
+import { CONFIRM, confirmYes } from "./remote-keyboard.mjs"; // owner, 2026-11-24: every confirmation takes y / yes / n / no
 
 const KEEP_REMOVED = 20;
 const when = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "never");
@@ -35,13 +36,43 @@ export async function askLine(question) {
   return answer;
 }
 
-/** Every phone and browser, numbered from 1: confirmed first, then pending. */
+/** Every phone and browser, numbered from 1: confirmed first, then pending. `inUse` (0.11.22): the confirmed one seen most recently. */
 export function connections(phones = loadPhones()) {
   const row = (p, state) => {
     const kind = p.how === "endorsed" ? "browser" : p.kind === "browser" ? "browser" : "phone";
     return { device_id: p.device_id, fingerprint: p.fingerprint, kind, state, name: p.name ?? `${kind === "browser" ? "Browser" : "Phone"} ${shortPrint(p.fingerprint)}`, since: p.confirmed_at ?? p.seen_at ?? null, last_seen: p.seen_at ?? null };
   };
-  return [...phones.confirmed.map((p) => row(p, "confirmed")), ...phones.pending.map((p) => row(p, "pending"))].map((c, i) => ({ n: i + 1, ...c }));
+  const newest = Math.max(...phones.confirmed.map((p) => (Number.isFinite(p.seen_at) ? p.seen_at : -Infinity)));
+  return [...phones.confirmed.map((p) => row(p, "confirmed")), ...phones.pending.map((p) => row(p, "pending"))].map((c, i) => ({ n: i + 1, ...c, inUse: c.state === "confirmed" && Number.isFinite(newest) && c.last_seen === newest }));
+}
+
+/**
+ * A REMOVAL NAMES THE DEVICE (CLI 0.11.22; the owner removed his iPhone meaning an old browser, 2026-11-23): its kind, name, the
+ * start of its fingerprint and when it was last seen, in words; and when it was seen in the last hour or is the only phone, that it
+ * is the one in use and how to link it again. Enter is no at every step that uses it.
+ */
+export function seenWords(ms, now = Date.now()) {
+  if (!Number.isFinite(ms)) return "never";
+  const at = new Date(ms), hm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`, day = (d) => new Date(d).toDateString();
+  if (day(ms) === day(now)) return `today ${hm}`;
+  if (day(ms) === day(now - 86_400_000)) return `yesterday ${hm}`;
+  return `${Math.max(2, Math.round((now - ms) / 86_400_000))} days ago`;
+}
+export function removalWords(c, list, now = Date.now()) {
+  const line = `${c.kind === "browser" ? "Browser" : "Phone"} · ${c.name} · ${shortPrint(c.fingerprint)} · last seen ${seenWords(c.last_seen, now)}${c.inUse ? " · in use" : ""}`;
+  const recent = Number.isFinite(c.last_seen) && now - c.last_seen < 3_600_000, only = c.kind === "phone" && c.state === "confirmed" && list.filter((x) => x.kind === "phone" && x.state === "confirmed").length === 1;
+  const again = "it can no longer reach this computer until you link it again with `npx worktrust remote pair`.";
+  return { line, warning: recent ? `This is the ${c.kind} you use now: ${again}` : only ? `This is the only phone linked here: ${again}` : null };
+}
+const describe = (io, c, list) => { const w = removalWords(c, list); io.say(`  ${w.line}`); if (w.warning) io.say(`  ! ${w.warning}`); };
+
+/** `remote phones remove <fingerprint>` (0.11.22): in a terminal it names the device and asks first, Enter is no; a script removes as before. */
+export async function removeOneCommand(io, key, ask, tty = Boolean(process.stdin.isTTY)) {
+  const list = connections(), c = list.find((x) => x.fingerprint === String(key ?? "").toUpperCase() || x.device_id === key);
+  if (!c) return io.fail("no phone by that fingerprint or id");
+  if (tty) { describe(io, c, list); if (!confirmYes(await ask(`  Remove it? It can no longer steer this computer. ${CONFIRM}`))) return io.say("  Cancelled. Nothing was removed."); }
+  removePhones([c.fingerprint]);
+  io.say(`  ✓ Removed ${c.name} (${c.fingerprint}): it can no longer steer this computer. Revoke it in WorkTrust too.`);
 }
 
 /** One connection by its number in the list, its name, its fingerprint (whole, or its first four) or its device id. */
@@ -55,11 +86,11 @@ export function findConnection(list, key) {
 }
 
 /** Take phones off this computer, the one removal `remote phones remove` and `remote disconnect` share; their notice keys go too. */
-export function removePhones(fingerprints, at = Date.now()) {
+export function removePhones(fingerprints, at = Date.now(), how = "keyboard") { // how: "keyboard_all" for --all (0.11.22: the device history says which)
   const phones = loadPhones(), gone = new Set(fingerprints);
   const out = [...phones.confirmed, ...phones.pending].filter((p) => gone.has(p.fingerprint));
   savePhones({ ...phones, pending: phones.pending.filter((p) => !gone.has(p.fingerprint)), confirmed: phones.confirmed.filter((p) => !gone.has(p.fingerprint)),
-    removed: [...phones.removed.filter((p) => !out.some((x) => x.device_id === p.device_id)), ...out.map((p) => ({ device_id: p.device_id, fingerprint: p.fingerprint, how: "keyboard", removed_at: at }))].slice(-KEEP_REMOVED) });
+    removed: [...phones.removed.filter((p) => !out.some((x) => x.device_id === p.device_id)), ...out.map((p) => ({ device_id: p.device_id, fingerprint: p.fingerprint, how, removed_at: at }))].slice(-KEEP_REMOVED) });
   dropNoticeKeysOf(out.map((p) => p.device_id));
   return out.length;
 }
@@ -70,7 +101,7 @@ export function connectionsCommand(io) {
   io.say(identity ? `  This computer: ${identity.device_id} · key ${P.deviceFingerprint(keys.public)} · linked ${when(identity.paired_at)}` : "  This computer: not linked to Remote Agent (npx worktrust remote app)");
   const list = connections();
   io.say(`  Linked to it (${list.length}):`);
-  for (const c of list) io.say(`    ${String(c.n).padStart(2)}  ${c.name.padEnd(16)} ${c.kind.padEnd(8)} ${c.fingerprint}  since ${when(c.since)} · last seen ${when(c.last_seen)}${c.state === "pending" ? "  (pending: npx worktrust remote phones confirm " + c.fingerprint + ")" : ""}`);
+  for (const c of list) io.say(`    ${String(c.n).padStart(2)}  ${c.name.padEnd(16)} ${c.kind.padEnd(8)} ${c.fingerprint}  since ${when(c.since)} · last seen ${when(c.last_seen)}${c.inUse ? "  (in use)" : ""}${c.state === "pending" ? "  (pending: npx worktrust remote phones confirm " + c.fingerprint + ")" : ""}`);
   if (list.length) io.say("  Close one: npx worktrust remote disconnect <number|name|fingerprint>   all: npx worktrust remote disconnect --all");
 }
 
@@ -86,14 +117,15 @@ export async function disconnectCommand(io, rest, ask, tty = Boolean(process.std
   if (all) {
     io.say(`  This closes every connection to this computer (${list.length}):`);
     for (const c of list) io.say(`    ${c.name} (${c.kind}, ${c.fingerprint})`);
-    if ((await ask("  Type close all to confirm:")).trim() !== "close all") return io.say("  Cancelled. Nothing was closed.");
-    const n = removePhones(list.map((c) => c.fingerprint));
+    if (!confirmYes(await ask(`  Close all ${list.length}? ${CONFIRM}`))) return io.say("  Cancelled. Nothing was closed."); // owner, 2026-11-24: y or yes, was `close all` typed
+    const n = removePhones(list.map((c) => c.fingerprint), Date.now(), "keyboard_all");
     io.say(`  ✓ Closed ${n}: none of them can steer this computer any more. End their keys for your whole account too: app.worktrust.io › Settings › Remote Agent.`);
     return;
   }
   const c = findConnection(list, rest[0]);
   if (!c) return io.fail("no connection by that number, name or fingerprint (npx worktrust remote connections lists them)");
-  if (!/^y(es)?$/i.test((await ask(`  Disconnect ${c.name} (${c.fingerprint})? It can no longer steer this computer. [y/N]`)).trim())) return io.say("  Cancelled. Nothing was closed.");
+  describe(io, c, list); // 0.11.22: which device, last seen, and whether it is the one in use
+  if (!confirmYes(await ask(`  Disconnect ${c.name} (${c.fingerprint})? It can no longer steer this computer. ${CONFIRM}`))) return io.say("  Cancelled. Nothing was closed.");
   const typed = (await ask(`  To confirm, type ${shortPrint(c.fingerprint)} (the start of its fingerprint) or its name:`)).trim();
   if (typed.toUpperCase() !== shortPrint(c.fingerprint) && typed.toLowerCase() !== c.name.toLowerCase()) return io.say("  That does not match. Cancelled. Nothing was closed.");
   removePhones([c.fingerprint]);
@@ -128,7 +160,8 @@ export async function linkPhone(io, ready = null, { waitMs = ONE_SCAN_WAIT_MS, n
   if (!ready) writeJson("invite.json", invite);
   const { code, created_at: since } = invite;
   const until = invite.e * 1000;
-  let shown = false, bar = null;
+  let shown = false, bar = null, letter = () => {};
+  const window = qrWindow(pairingQrText(invite), { open: (file) => io.openBrowser?.(file) }); // 0.11.22: `o`, where the terminal may stripe the code (remote-qr.mjs: why the file is safe)
   const settle = (line) => { bar?.stop(line); bar = null; };
   const show = (why) => {
     shown = true;
@@ -140,6 +173,8 @@ export async function linkPhone(io, ready = null, { waitMs = ONE_SCAN_WAIT_MS, n
     if (showLink) io.say(`  Link: ${pairingQrText(invite)}`);
     io.say(`  No camera? Type this code in the app: ${pretty(code)} (then confirm the phone here with \`npx worktrust remote phones\`)`);
     io.say("  The code and the QR work once, for ten minutes. Ctrl+C cancels.");
+    const help = qrHelp({ tty: Boolean(process.stdout.isTTY && process.stdin.isTTY), program: process.env.TERM_PROGRAM ?? "" }); for (const line of help) io.say(line);
+    if (help.length) { letter(); letter = onLetter("o", () => io.say(`  Opened the QR in a window: ${window.open()} (deleted when this ends)`)); }
     bar = countdown?.({ expiresAt: until, windowMs: Math.max(1, until - since) }) ?? null;
   };
   if (ready) io.say("  Linking the phone that scanned the code …"); else show();
@@ -157,7 +192,7 @@ export async function linkPhone(io, ready = null, { waitMs = ONE_SCAN_WAIT_MS, n
       if (asked) { settle(); io.say(`  A phone asked by code (${asked.fingerprint}). Confirm it at this keyboard: npx worktrust remote phones confirm ${asked.fingerprint}`); return null; }
       if (!shown && now() - started >= waitMs) show("  No phone linked by itself (the code was opened with the camera, or the app is older): scan this in the WorkTrust app.");
     }
-  } finally { settle(); process.off("SIGINT", cancel); release(); }
+  } finally { settle(); process.off("SIGINT", cancel); release(); letter(); window.remove(); }
   removeFile("invite.json");
   io.say("  The pairing code expired. Run `npx worktrust remote pair` for a new one.");
   return null;

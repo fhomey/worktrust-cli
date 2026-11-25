@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.24
+  WorkTrust CLI 0.11.25
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.24
+  WorkTrust CLI 0.11.25
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.24)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.25)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -140,6 +140,7 @@ there is no menu and nothing waits for a key.
 | `npx worktrust status` | Shows what is connected here. It only reads. |
 | `npx worktrust look` | Shows what your AI apps recorded here: per app the sessions and their first and last day. Reads only; nothing is sent or kept, and no account is needed. |
 | `npx worktrust project` | Sets a folder's mode: exclude (nothing read), confidential (hours and tokens count; no name, branch, path or commit is sent) or normal. `project list` shows them. |
+| `npx worktrust mail` | E-mail through this computer for your phone: `accounts`, `status`, `add outlook <address>`, `remove <address>`. Accounts are sealed under this computer's keychain; mail is read and sent here, never by WorkTrust's servers. |
 | `npx worktrust remote` | Remote Agent: `app` or `web` approve this computer, `pair` links a phone, then `status`, `pause`, `resume`, `disable`, `connections`, `disconnect`, `projects`, `roots` and `modes`. |
 | `npx worktrust mcp off` | Hours only: the WorkTrust door out of every AI app here. The session hook keeps measuring. |
 | `npx worktrust mcp on` | The door back in, so your AI can log finished work. |

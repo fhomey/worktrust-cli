@@ -31,7 +31,7 @@ const NEW_SESSIONS = new Set(["agent.start", "release.start"]);
 const KEEP_REMOVED = 20, MAX_PENDING_PHONES = 10;
 
 export function createDaemonCore(o) {
-  // o: { local, issuerKeys, journal, now, random, send(frame, { replayed }), room?() (the pacer, remote-pace.mjs), inventory(refresh), log(kind, fields), sessions?, approvals?, health?(), version? (this release: device.inventory `cli`) }
+  // o: { local, issuerKeys, journal, now, random, send(frame, { replayed }), room?() (the pacer, remote-pace.mjs), inventory(refresh), log(kind, fields), sessions?, approvals?, health?(), version? (this release: device.inventory `cli`), wake? ({ handle, inventory }, remote-wake.mjs), mail? (remote-mail.mjs, MAIL.md: every mail.* / personal.* command, answered transient for the asker) }
   const channels = new Map(loadChannels().map((c) => [c.channel_id, c]));
   const confirmed = () => new Set([...confirmedFingerprints(loadPhones()), ...voice.fingerprints()]); // a channel stays while its peer is confirmed here: a phone or browser at this keyboard, or (CLI 0.11.21) a voice key one of them enrolled
   const self = o.local.claims.device_id, persist = () => saveChannels([...channels.values()]);
@@ -132,7 +132,7 @@ export function createDaemonCore(o) {
       // and the phones and browsers linked to it (remote-admin.mjs).
       ...adminInventory({ projectSecret: o.projectSecret, settings }),
       ...(P.CLI_RELEASE.test(o.version ?? "") ? { cli: { version: o.version, ...(restarting ? { restarting } : {}) } } : {}),
-      ...(peers.readsLive() ? { desk_read: deskReadOf(settings) } : {}), ...(peers.readsVoice() ? { voice: { on: !voiceOff(settings), enrolled: false, read: !voiceOff(settings) && settings.voice_read === true } } : {}), // what the keyboard lets a phone read of the desk; sealed only for a phone that asked `desk_live`
+      ...(peers.readsLive() ? { desk_read: deskReadOf(settings) } : {}), ...(peers.readsVoice() ? { voice: { on: !voiceOff(settings), enrolled: false, read: !voiceOff(settings) && settings.voice_read === true } } : {}), ...(peers.readsWake() && o.wake ? { wake: o.wake.inventory() } : {}), // CLI 0.11.25 `wake` (remote-wake.mjs; WAKE.md): the keyboard's two switches and the signed card, sealed only for a phone that asked (remote-peers.mjs); what the keyboard lets a phone read of the desk; sealed only for a phone that asked `desk_live`
       // Every session this computer knows, live or in the journal, newest activity first, with its name and its release task.
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };
@@ -260,14 +260,14 @@ export function createDaemonCore(o) {
       if (decided.added) { savePhones(decided.phones); o.log("browser_endorsed", { device_id: decided.added.device_id, fingerprint: decided.added.fingerprint, by: decided.added.endorsed_by.device_id }); }
       return "taken";
     }
-    if (env.type === "voice.enrol") return voice.enrol(env, payload); // a confirmed phone enrols its voice key: the keyboard's switch on, its own binding (remote-voice.mjs)
+    if (env.type === "voice.enrol") return voice.enrol(env, payload); if (env.type === "device.wake") return o.wake ? o.wake.handle(env, payload) : "unsupported"; // a confirmed phone enrols its voice key: the keyboard's switch on, its own binding (remote-voice.mjs); CLI 0.11.25: the magic packet for another computer of this account (remote-wake.mjs; refused from a browser, outside this computer's networks)
     if (env.type === "approval.decision") return approvals.decide(payload.decision_token).ok ? "taken" : "approval_invalid";
     // HEAVY MEMORY LOAD (remote-health.mjs, 2026-11-15): while red, no NEW session starts; running sessions continue. `busy`
     // is the reason every phone already knows; the run terminal says "This computer is under heavy memory load".
     if (NEW_SESSIONS.has(env.type) && o.health?.()?.refusing === true) { o.log("session_refused", { reason: "memory_load", type: env.type }); return "busy"; }
     if (P.RELEASE_COMMANDS.has(env.type)) return releases ? releases.handle(env, payload) : "unsupported"; // remote-releases.mjs
     if (env.type === "attachment.put" || env.type === "attachment.clear") return o.attachments ? o.attachments.handle(env, payload) : "unsupported"; // remote-attachments.mjs
-    if (env.type === "preview.targets" || env.type === "preview.render") return o.preview ? o.preview.handle(env, payload) : "unsupported"; // remote-preview.mjs
+    if (P.isMailType(env.type)) return o.mail ? o.mail.handle(env, payload) : "unsupported"; if (env.type === "preview.targets" || env.type === "preview.render") return o.preview ? o.preview.handle(env, payload) : "unsupported"; // remote-preview.mjs
     if (LIVE_COMMANDS.has(env.type)) return o.live ? o.live.handle(env, payload) : "unsupported"; // remote-live-preview.mjs
     if (env.type === "agent.prompt" && payload.desk_ref) return steer.prompt(env, payload); // into a session open at the desk (CLI 0.11.20): never a session of this daemon's
     const handled = await sessions.handle(env, payload);

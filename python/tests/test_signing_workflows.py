@@ -52,6 +52,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("r.head_branch==='main'", (ROOT / "publish.yml").read_text())
         self.assertIn("r.event==='push'", (ROOT / "publish.yml").read_text())
 
+    def test_verify_runs_on_branches_not_tags(self):
+        # A tag points at a commit main's push already verified (owner, 2026-11-24): publish.yml reads that
+        # main-branch push run, never a tag run, so tags do not start the six platforms a second time.
+        triggers = load("verify-python.yml")["on"]
+        self.assertEqual(triggers["push"], {"branches": ["**"]})
+        self.assertIn("pull_request", triggers)
+        self.assertIn("workflow_dispatch", triggers)
+
     def test_pypi_uses_same_successful_signed_release_without_rebuilding(self):
         data = load("release-pypi.yml")
         self.assertEqual(data["on"]["workflow_run"]["workflows"], ["publish"])

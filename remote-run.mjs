@@ -8,7 +8,7 @@
  * The agents it starts get this user's environment with every WORKTRUST_ variable removed (no measurement credential, no
  * remote secret) and the PATH the person had when they enabled remote.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync, rmSync, writeSync, constants } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,7 @@ import { deskReadOf, loadPreviewGrants, loadRoots } from "./remote-store.mjs";
 import { keepReaders, readAlongLine } from "./remote-settings.mjs";
 import { sessionProjects } from "./remote-projects.mjs";
 import { loadVoice } from "./remote-voice.mjs";
-import { createDeviceCounts, ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
+import { createDeviceCounts, ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, knownBrowser, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { inventory as listAgents, offered } from "./remote-inventory.mjs";
 
@@ -40,6 +40,9 @@ import { createDesk } from "./remote-desk-sessions.mjs";
 import { connectGateway, gatewayLine, keepGatewayState, keptGatewayState, webSocketAvailable } from "./remote-transport.mjs";
 import { createHealthMonitor, fixtureReaders, HEALTH_REFUSAL, healthLine, keepHealth } from "./remote-health.mjs";
 import { createHandover, daemonBusy, holdDuring, ownLauncher, restartAsked } from "./remote-service.mjs";
+import { createMail } from "./remote-mail.mjs";
+import { createAwake } from "./remote-awake.mjs";
+import { createWakeHelper, wakeInventory } from "./remote-wake.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const log = (kind, fields = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), kind, ...fields })}\n`);
@@ -177,8 +180,18 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   const { createCountsReporter } = await import("./remote-pairing.mjs"); // 0.11.23: the same counts to the issuer (ISSUER.md §13), deltas at most once a minute
   const reporter = identity.origin ? createCountsReporter({ origin: identity.origin, deviceId: identity.device_id, secret: keys.secret, log }) : null;
   const counts = createDeviceCounts({ parentOf: (id) => { try { return loadVoice().peers.find((v) => v.device_id === id)?.parent?.device_id ?? null; } catch { return null; } }, onFlush: (entries) => reporter?.add(entries) }); // 0.11.22: the device history's counts, flushed by the tick below
+  // E-MAIL AND PERSONAL (2026-11-24, MAIL.md): accounts in the keychain, the local index, the no-tools draft job, the one outbox.
+  // A mail store that cannot open (no keychain here) leaves the door saying `unsupported`; the daemon runs on without it.
+  const every = (ms, fn) => { const t = setInterval(fn, ms); t.unref?.(); return () => clearInterval(t); };
+  const mail = await createMail({ dir: remotePath("mail"), emit: (...a) => core.emit(...a), now: Date.now, random, log, every, later: (ms, fn) => setTimeout(fn, ms),
+    agentFile: (adapter) => listAgents({ env: agentEnv(loadSettings()) }).files[adapter] ?? null, agentEnv: () => agentEnv(loadSettings()), defaultAgent: () => loadSettings().default_adapter ?? "claude-code",
+    openBrowser: (url) => { const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["explorer.exe", [url]] : ["xdg-open", [url]]; try { spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref(); } catch { /* the person opens it */ } } }).catch(() => { log("mail_unavailable", {}); return null; });
   let health = null; // the sampler below (remote-health.mjs): every 15 s, local numbers, no model
-  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, agentEnv: () => agentEnv(loadSettings()), now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null, counts });
+  // REMOTE WAKE (CLI 0.11.25, remote-awake.mjs and remote-wake.mjs; docs/remote-agents/WAKE.md): the Stay reachable hold, one child
+  // while the keyboard's switch is on and this daemon runs; the helper sends a magic packet for another computer of this account.
+  const awake = createAwake({ log }), wakeHelper = createWakeHelper({ local, issuerKeys: keysOf, isBrowser: (id) => knownBrowser(id), log });
+  const wake = { handle: (env, payload) => wakeHelper.handle(env, payload), inventory: () => wakeInventory({ local, awakeState: awake.state() }) };
+  const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, agentEnv: () => agentEnv(loadSettings()), now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null, counts, mail, wake });
   const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
@@ -253,12 +266,14 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
     stopping = true;
     if (signal && version) { try { const to = restartAsked(); if (to !== null) core.announceRestart(to); } catch { /* unsaid: the phone sees it offline */ } }
     approvals.close();
-    health.stop();
+    health.stop(); mail?.stop();
+    awake.stop(); // the hold ends with the daemon (caffeinate -w and tail --pid would end it anyway)
     try { counts.flush(true); } catch { /* the history is a record, never a reason a stop fails */ }
     await Promise.race([reporter?.tick(true), new Promise((resolve) => setTimeout(resolve, 3000))]).catch(() => null); // once, briefly: a paced report is in the local history anyway
     await pipelines.stopAll();
     await live.stopAll(); // the browser ended, its profile removed
     await registry.stopAll(); // the structured agents; a terminal session lives on in tmux
+    await transport.drain?.(2000); // what waited leaves first (the "restarting" an update asks for), at most two seconds
     transport.close();
     handover?.stop();
     release();
@@ -273,8 +288,10 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   const reach = () => [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id), "|", deskReadOf(loadSettings()) /* 0.11.19: also what the keyboard lets a phone read of the desk */].join(","); let grants = null; try { grants = reach(); } catch { /* unreadable now: the first tick that reads it is the baseline */ } const grantsChanged = () => { const now = reach(); const changed = grants !== null && now !== grants; grants = now; return changed; };
   keepReaders([]); // nobody reads along yet: an older daemon's list is not this one's
   setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); if (readers.size > 0) keepReaders([...readers.values()]); registerCode(); releases.poll(); try { counts.flush(); } catch { /* next tick */ } reporter?.tick().catch(() => log("counts_error", {})); try { handover?.tick(); } catch { log("handover_error", {}); } try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
+  mail?.start(); // the sync: every minute, by ids in the log
   releases.schedule(); // queued tasks a restart kept
   handover?.start();
   health.start();
+  awake.sync(); setInterval(() => { const before = awake.state(); try { if (awake.sync() !== before) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { log("awake_error", {}); } }, 15_000).unref(); // `remote awake on|off` at the keyboard, taken within 15 s
   return new Promise(() => {});
 }

@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.11.24",
+  "version": "0.11.25",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -100,6 +100,9 @@
     "remote-run.mjs",
     "remote-service.mjs",
     "remote-service-home.mjs",
+    "remote-awake.mjs",
+    "remote-wake.mjs",
+    "remote-wake-doors.mjs",
     "remote-launchers.mjs",
     "remote-pairing.mjs",
     "remote-qr.mjs",
@@ -129,7 +132,26 @@
     "remote-keyboard.mjs",
     "remote-default-root.mjs",
     "cli-menu-switches.mjs",
-    "cli-menu-search.mjs"
+    "cli-menu-search.mjs",
+    "remote-mail-files.mjs",
+    "remote-mail-text.mjs",
+    "remote-mail-index.mjs",
+    "remote-mail-draft.mjs",
+    "remote-mail-outbox.mjs",
+    "remote-mail-vault.mjs",
+    "remote-mail-graph.mjs",
+    "remote-mail-sync.mjs",
+    "remote-mail-templates.mjs",
+    "remote-mail-compose.mjs",
+    "remote-mail.mjs",
+    "remote-mail-cli.mjs",
+    "remote-mail-mime.mjs",
+    "remote-mail-imap.mjs",
+    "remote-mail-smtp.mjs",
+    "remote-mail-imapbox.mjs",
+    "remote-mail-attach.mjs",
+    "remote-mail-signatures.mjs",
+    "remote-mail-compose-door.mjs"
   ],
   "engines": {
     "node": ">=18"

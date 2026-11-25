@@ -465,6 +465,13 @@ export const ID_PREFIXES = {
   jti: "a token's single-use id",
   nky: "a phone's notice key for one computer (notice.ts): which key opens a sealed notice, nothing more",
   hit: "an item of a session's history (history.ts): derived from its source, the same on every read and device, only ever inside a sealed body",
+  mac: "a mail account on one computer (mail.ts): minted at random, only ever inside a sealed body",
+  mth: "a mail thread of one account (mail.ts): derived from its thread key, only ever inside a sealed body",
+  mms: "a mail message of one account (mail.ts): derived from its Message-ID, only ever inside a sealed body",
+  mdr: "one mail draft (mail.ts), minted by the computer, only ever inside a sealed body",
+  mat: "a file attached to a mail draft (mail-compose.ts), only ever inside a sealed body",
+  sig: "one signature of a mail account (mail-compose.ts), only ever inside a sealed body",
+  tpl: "one personal automation template (mail.ts), only ever inside a sealed body",
   rpt: "a computer's report of its devices' counts to the issuer (CLI 0.11.23, ISSUER.md §13): sent once, answered once",
 }         ;
 
@@ -2243,6 +2250,358 @@ export const voiceAnswerRule = (a                                       )       
 export const voiceLifetimeOk = (issuedAt        , expiresAt        )          =>
   Number.isSafeInteger(issuedAt) && Number.isSafeInteger(expiresAt) && expiresAt > issuedAt && expiresAt - issuedAt <= MAX_VOICE_PROMPT_TTL_MS;
 
+// ---- packages/remote-protocol/src/crypto/jws.ts
+/**
+ * COMPACT SIGNED TOKENS: JWS (RFC 7515) with EdDSA over Ed25519 (RFC 8037), so the gateway can verify an assertion
+ * with any standard library, and so can the phone and the computer with this package. Four token types, told apart
+ * by `typ` and never interchangeable:
+ *   wt-remote-binding+jwt   the Passport app binds a device's remote keys to an account
+ *   wt-remote-auth+jwt      the Passport app authorizes one device at the gateway for five minutes
+ *   wt-remote-approval+jwt  a phone decides one pending approval
+ *   wt-remote-admin+jwt     the Passport app vouches for one settings change of one computer (crypto/admin.ts)
+ * The verifier fixes alg, typ and the key set before it looks at the token: a token cannot choose how it is checked.
+ * Header and payload are canonical JSON, so one claim set has one signing input.
+ */
+
+export const TOKEN_TYPES = ["wt-remote-binding+jwt", "wt-remote-auth+jwt", "wt-remote-approval+jwt", "wt-remote-admin+jwt"]         ;
+
+export const MAX_TOKEN_CHARS = 4096;
+
+/** Public keys by key id: the issuer's keys (pinned in the app and CLI builds), or a phone's bound key. */
+
+export function signToken(typ           , kid        , claims                                   , secret            )         {
+  const header = toBase64Url(utf8Encode(canonicalJson({ alg: "EdDSA", kid, typ })));
+  const payload = toBase64Url(utf8Encode(canonicalJson(claims)));
+  const signature = ed25519Sign(utf8Encode(`${header}.${payload}`), secret);
+  return `${header}.${payload}.${toBase64Url(signature)}`;
+}
+
+const decodeJson = (part        )          => {
+  const bytes = fromBase64Url(part);
+  const text = bytes === null ? null : utf8Decode(bytes);
+  return text === null ? undefined : parseJson(text);
+};
+
+export function verifyToken(token        , typ           , keys        )                         {
+  if (token.length > MAX_TOKEN_CHARS) return refuse("shape", "token: too long");
+  const parts = token.split(".");
+  if (parts.length !== 3) return refuse("shape", "token: not three parts");
+  const [h, p, s] = parts                            ;
+  const header = decodeJson(h);
+  if (typeof header !== "object" || header === null || Array.isArray(header)) return refuse("shape", "token: header");
+  const hd = header                           ;
+  if (Object.keys(hd).sort().join(",") !== "alg,kid,typ") return refuse("shape", "token: header fields");
+  if (hd.alg !== "EdDSA") return refuse("shape", "token: alg");
+  if (hd.typ !== typ) return refuse("shape", "token: typ");
+  if (typeof hd.kid !== "string" || !Object.hasOwn(keys, hd.kid)) return refuse("unknown_key", "token: kid");
+  const key = keys[hd.kid] ;
+  const signature = fromBase64Url(s);
+  if (key.length !== KEY_BYTES || signature === null) return refuse("signature", "token: signature encoding");
+  if (!ed25519Verify(signature, utf8Encode(`${h}.${p}`), key)) return refuse("signature", "token: signature");
+  const claims = decodeJson(p);
+  if (typeof claims !== "object" || claims === null || Array.isArray(claims)) return refuse("shape", "token: payload");
+  // The signed bytes must BE the canonical encoding, so one claim set has exactly one valid token form.
+  if (toBase64Url(utf8Encode(canonicalJson(claims))) !== p) return refuse("shape", "token: payload not canonical");
+  if (toBase64Url(utf8Encode(canonicalJson(hd))) !== h) return refuse("shape", "token: header not canonical");
+  return accept({ kid: hd.kid, claims: claims                            });
+}
+
+/** iat/exp checks shared by every token kind; seconds, with the protocol's skew. */
+export function checkTimes(iat        , exp        , nowMs        , maxLifetimeS        , skewMs        )                {
+  if (exp <= iat) return refuse("lifetime", "token: exp not after iat");
+  if (exp - iat > maxLifetimeS) return refuse("lifetime", "token: lives too long");
+  if (iat * 1000 > nowMs + skewMs) return refuse("not_yet_valid", "token: issued in the future");
+  if (exp * 1000 + skewMs < nowMs) return refuse("expired", "token: expired");
+  return accept(true);
+}
+
+// ---- packages/remote-protocol/src/crypto/keys.ts
+/**
+ * REMOTE DEVICE KEYS. Each computer and each phone install has its own pair: Ed25519 to sign, X25519 to agree keys.
+ * They are NOT the computer's measurement key: a different key, a different store entry, a different audience. A
+ * stolen remote key cannot sign a measurement, and a measurement key cannot steer an agent; every signature here is
+ * also domain-separated ("worktrust-remote/v1/..."), so a signature made for one purpose verifies for no other.
+ *
+ * A FINGERPRINT FOR PEOPLE. 80 bits of SHA-256 over both public keys, as sixteen Crockford base32 characters in four
+ * groups (no I, L, O or U to misread). Shown on the computer's screen and on the phone when a phone is confirmed at
+ * the computer's keyboard, so a compromised issuer cannot slip in a key of its own unnoticed.
+ */
+
+export function generateDeviceKeys(random        )                   {
+  return { ed25519: random(KEY_BYTES), x25519: random(KEY_BYTES) };
+}
+
+export function publicKeysOf(secret                  )                   {
+  return { ed25519_pub: toBase64Url(ed25519PublicKey(secret.ed25519)), x25519_pub: toBase64Url(x25519PublicKey(secret.x25519)) };
+}
+
+/** For a store that holds strings (expo-secure-store, the CLI's credential store). */
+export const exportSecretKeys = (secret                  )                                      => ({
+  ed25519: toBase64Url(secret.ed25519),
+  x25519: toBase64Url(secret.x25519),
+});
+
+export function importSecretKeys(stored                                                       )                          {
+  const ed = fromBase64Url(stored.ed25519);
+  const x = fromBase64Url(stored.x25519);
+  return ed?.length === KEY_BYTES && x?.length === KEY_BYTES ? { ed25519: ed, x25519: x } : null;
+}
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const FINGERPRINT_DOMAIN = utf8Encode("worktrust-remote/v1/fingerprint\n");
+
+function base32Groups(bytes            )         {
+  let bits = 0;
+  let acc = 0;
+  let out = "";
+  for (const b of bytes) {
+    acc = (acc << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += CROCKFORD[(acc >> bits) & 31] ;
+    }
+    acc &= (1 << bits) - 1;
+  }
+  return out.match(/.{1,4}/g) .join("-");
+}
+
+function decodeKey(text        )             {
+  const bytes = fromBase64Url(text);
+  if (bytes?.length !== KEY_BYTES) throw new TypeError("a public key is 32 bytes of base64url");
+  return bytes;
+}
+
+/** "ABCD-EFGH-JKMN-PQRS" for one device's public keys. */
+export function deviceFingerprint(keys                  )         {
+  const digest = sha256(concatBytes(FINGERPRINT_DOMAIN, decodeKey(keys.ed25519_pub), decodeKey(keys.x25519_pub)));
+  return base32Groups(digest.subarray(0, 10));
+}
+
+/** The bytes of a commitment to a device's public keys: 128 bits of the SAME digest the fingerprint takes 80 of. */
+export const COMMITMENT_BYTES = 16;
+
+/**
+ * A 128-BIT COMMITMENT TO A DEVICE'S KEYS (CLI 0.11.12, the compact pairing code): the first sixteen bytes of the digest
+ * whose first ten are the fingerprint. A code that carries it instead of both keys still pins the computer: the phone
+ * takes the keys from the computer's issuer-signed binding in the first welcome and compares all 128 bits (handshake.ts
+ * `pinnedCommitment`), and the fingerprint it pins from then on is read from the same bytes (`commitmentFingerprint`).
+ */
+export function deviceCommitment(keys                  )             {
+  return sha256(concatBytes(FINGERPRINT_DOMAIN, decodeKey(keys.ed25519_pub), decodeKey(keys.x25519_pub))).slice(0, COMMITMENT_BYTES);
+}
+
+/** The fingerprint a commitment names: the same characters `deviceFingerprint` gives for the committed keys. */
+export function commitmentFingerprint(commitment            )         {
+  if (commitment.length !== COMMITMENT_BYTES) throw new TypeError("a commitment is 16 bytes");
+  return base32Groups(commitment.subarray(0, 10));
+}
+
+// ---- packages/remote-protocol/src/crypto/binding.ts
+/**
+ * A REMOTE KEY BINDING: the Passport app's signed word that these public keys belong to this device of this account.
+ * The person approves the device in app.worktrust.io, signed in with a second factor; the app signs
+ *   { iss, aud, sub, device_id, kind, ed25519_pub, x25519_pub, iat, exp, jti }
+ * with a WorkTrust issuer key. `sub` is an opaque account reference for the remote system (an HMAC of the owner id
+ * under a Passport secret, prefixed usr_), never the Passport owner id, so the relay's records join to nothing else.
+ *
+ * Endpoints verify bindings against the issuer's public keys PINNED in the app and CLI builds, never against a key the
+ * relay hands them. The relay cannot forge a binding. The issuer alone cannot add a controller either: a new phone is
+ * pending on the computer until the person confirms its fingerprint at the computer's keyboard (handshake.ts).
+ */
+
+/**
+ * `voice` (CLI 0.11.21, voice.ts): a phone's voice-only key, its binding naming its `parent` phone and living seven days at
+ * most. A closed list on purpose: a daemon older than 0.11.21 refuses a `voice` binding at the handshake.
+ */
+export const DEVICE_KINDS = ["phone", "computer", "voice"]         ;
+
+export const BINDING_CLAIMS_SPEC = object({
+  iss: oneOf([PASSPORT_ISSUER]),
+  aud: oneOf([GATEWAY_AUDIENCE]),
+  sub: id("usr"),
+  device_id: id("dev"),
+  kind: oneOf(DEVICE_KINDS),
+  ed25519_pub: b64({ exact: 32 }),
+  x25519_pub: b64({ exact: 32 }),
+  iat: int(0),
+  exp: int(0),
+  jti: id("jti"),
+  /** A voice key's phone (voice.ts); present exactly when the kind is `voice`. */
+  parent: optional(id("dev")),
+  /** A voice key may hear replies read aloud (voice.ts, the phone's "Read answers aloud"); only on a voice binding. */
+  read: optional(bool()),
+  /** Voice audit P2-1 (build 31): the voice key's UNLOCK key, held only while the phone is unlocked; only on a voice binding (voice.ts). */
+  unlock_pub: optional(b64({ exact: 32 })),
+});
+
+/** The longest a binding of this kind may live: thirty days, a voice key's seven. */
+export const bindingLifetimeS = (kind            )         => (kind === "voice" ? MAX_VOICE_BINDING_LIFETIME_S : MAX_BINDING_LIFETIME_S);
+/** A voice binding names its phone, and no other kind names one. → null, or what is wrong. */
+const parentRule = (b                  )                => ((b.kind === "voice") !== (b.parent !== undefined) ? "$binding.parent: exactly for a voice key" : b.parent === b.device_id ? "$binding.parent: never itself" : b.read !== undefined && b.kind !== "voice" ? "$binding.read: only for a voice key" : b.unlock_pub !== undefined && b.kind !== "voice" ? "$binding.unlock_pub: only for a voice key" : null);
+
+/** For the Passport app: validate, then sign. */
+export function issueBinding(claims                  , issuerSecret            , kid        )         {
+  const checked = validate(BINDING_CLAIMS_SPEC, claims, "$binding");
+  if (!checked.ok) throw new TypeError(checked.detail);
+  const parent = parentRule(checked.value);
+  if (parent) throw new TypeError(parent);
+  if (claims.exp - claims.iat > bindingLifetimeS(claims.kind) || claims.exp <= claims.iat) throw new RangeError("binding lifetime");
+  return signToken("wt-remote-binding+jwt", kid, claims, issuerSecret);
+}
+
+export function verifyBinding(token        , expect                    )                            {
+  const verified = verifyToken(token, "wt-remote-binding+jwt", expect.issuerKeys);
+  if (!verified.ok) return refuse(verified.code === "shape" ? "binding" : verified.code, verified.detail);
+  const shaped = validate(BINDING_CLAIMS_SPEC, verified.value.claims, "$binding");
+  if (!shaped.ok) return refuse("binding", shaped.detail);
+  const b = shaped.value;
+  const parent = parentRule(b);
+  if (parent) return refuse("binding", parent);
+  const times = checkTimes(b.iat, b.exp, expect.now, bindingLifetimeS(b.kind), CLOCK_SKEW_MS);
+  if (!times.ok) return times;
+  if (expect.kind !== undefined && b.kind !== expect.kind) return refuse("binding", "$binding.kind: not the expected kind");
+  if (expect.deviceId !== undefined && b.device_id !== expect.deviceId) return refuse("wrong_device", "$binding.device_id");
+  if (expect.sub !== undefined && b.sub !== expect.sub) return refuse("account_mismatch", "$binding.sub");
+  if (expect.isRevoked?.(b)) return refuse("revoked", "$binding: revoked");
+  return accept(b);
+}
+
+/** The signing key a verified binding names, as bytes. */
+export const bindingSigningKey = (b                  )             => fromBase64Url(b.ed25519_pub) ;
+export const bindingAgreementKey = (b                  )             => fromBase64Url(b.x25519_pub) ;
+export const bindingFingerprint = (b                  )         =>
+  deviceFingerprint({ ed25519_pub: b.ed25519_pub, x25519_pub: b.x25519_pub });
+
+// ---- packages/remote-protocol/src/wake.ts
+/**
+ * REMOTE WAKE (CLI 0.11.25; owner, 2026-11-24: "maak het mogelijk dat je van afstand de computer wakker kan maken";
+ * docs/remote-agents/WAKE.md). Two things, both switched ON only at the computer's own keyboard:
+ *
+ *   stay reachable   the service keeps the machine from idle sleep while it runs (the CLI's remote-awake.mjs). The phone
+ *                    reads what it does (`awake`) and never switches it.
+ *   wake on LAN      a computer shares its WAKE CARD (its MAC, its network's broadcast address and prefix) with its phones,
+ *                    sealed, signed by its own remote key with its issuer binding beside it; a phone asks an ONLINE computer
+ *                    of the same account on that network to send the magic packet for a sleeping one (`device.wake`).
+ *
+ * The relay sees a `device.wake` and its size class, never a MAC, an address or a network. The helper checks the card
+ * against the issuer keys pinned in its own build, its own account, the card's age, and that the broadcast is one of ITS
+ * OWN networks (it sends to the address it computes itself; the card only selects it). Pure: no clock, no I/O.
+ */
+
+/** What the computer's sleep hold does now: the switch off, holding, not possible on this OS, or ended by itself. */
+export const AWAKE_STATES = ["off", "holding", "unsupported", "failed"]         ;
+
+/** A card is refused when older than this: re-made at every inventory, so a live computer's card is always fresh. */
+export const WAKE_CARD_MAX_AGE_MS = 7 * 86_400_000; // seven days (owner, 2026-11-24: a removed computer's card goes stale within a week)
+/** The helper's own limits: one wake per target per WAKE_TARGET_GAP_MS, WAKE_PER_HOUR in all per hour. */
+export const WAKE_TARGET_GAP_MS = 30_000;
+export const WAKE_PER_HOUR = 12;
+/** The magic packet goes to UDP port 9 (discard), WAKE_COPIES times. */
+export const WAKE_PORT = 9;
+export const WAKE_COPIES = 3;
+export const MAGIC_PACKET_BYTES = 102;
+
+const MAC = /^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$/;
+const QUAD = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+export const WAKE_CARD_SPEC = object({ v: int(1, 1), device_id: id("dev"), mac: text(17, 17), broadcast: text(15, 7), prefix: int(8, 30), at: int(0) });
+
+export const SIGNED_WAKE_CARD_SPEC = object({ card: WAKE_CARD_SPEC, signature: b64({ exact: 64 }), binding: token(4096) });
+
+/** inventory.get's field (commands.ts spreads it): this phone reads `wake` and may send device.wake. Only with `extended`. */
+export const WAKE_GET_FIELDS = { wake: optional(bool()) }         ;
+/** device.inventory's field (events.ts spreads it): only for a phone that asked `wake`; `card` never for a browser. */
+export const WAKE_INVENTORY_FIELDS = { wake: optional(object({ awake: oneOf(AWAKE_STATES), lan: bool(), card: nullable(SIGNED_WAKE_CARD_SPEC) })) }         ;
+/** The one command: wake the computer this card names, from the computer that receives it. Device scope, two minutes. */
+export const WAKE_COMMAND_SPECS = { "device.wake": object({ target: SIGNED_WAKE_CARD_SPEC }) }         ;
+export const WAKE_COMMAND_TTL_MS = 2 * 60_000;
+
+/** A dotted quad as an unsigned 32-bit number, or null. */
+export function ipv4ToInt(address        )                {
+  if (typeof address !== "string" || !QUAD.test(address)) return null;
+  return address.split(".").reduce((n, part) => n * 256 + Number(part), 0);
+}
+export const intToIpv4 = (n        )         => [24, 16, 8, 0].map((s) => Math.floor(n / 2 ** s) % 256).join(".");
+const maskOf = (prefix        )         => (prefix <= 0 ? 0 : 2 ** 32 - 2 ** (32 - prefix));
+/** A netmask's prefix length (255.255.255.0 → 24), or null when it is not a contiguous mask. */
+export function prefixOfNetmask(netmask        )                {
+  const n = ipv4ToInt(netmask);
+  if (n === null) return null;
+  for (let p = 0; p <= 32; p += 1) if (maskOf(p) === n) return p;
+  return null;
+}
+/** The directed broadcast of `address`/`prefix` (192.168.1.20/24 → 192.168.1.255), or null. */
+export function broadcastOf(address        , prefix        )                {
+  const a = ipv4ToInt(address);
+  if (a === null || !Number.isInteger(prefix) || prefix < 8 || prefix > 30) return null;
+  const host = 2 ** (32 - prefix) - 1;
+  return intToIpv4(a - (a % (host + 1)) + host);
+}
+
+/** The rules between a card's fields. → null, or what is wrong (a field name, never a value). */
+export function wakeCardRule(card          )                {
+  if (!MAC.test(card.mac)) return "mac: six lowercase hex pairs";
+  const first = parseInt(card.mac.slice(0, 2), 16);
+  if ((first & 1) === 1 || card.mac === "00:00:00:00:00:00") return "mac: a unicast address";
+  const b = ipv4ToInt(card.broadcast);
+  if (b === null) return "broadcast: a dotted quad";
+  if (broadcastOf(card.broadcast, card.prefix) !== card.broadcast) return "broadcast: the host bits of its prefix all ones";
+  const top = Math.floor(b / 2 ** 24);
+  if (top === 0 || top === 127 || top >= 224) return "broadcast: not this, loopback or multicast space";
+  return null;
+}
+
+/** The inventory field's rule: a card that keeps its own rules. → null, or what is wrong. */
+export function wakeRule(wake                                                      )                {
+  if (!wake?.card) return null;
+  const bad = wakeCardRule(wake.card.card);
+  return bad ? `card.${bad}` : null;
+}
+
+const D_CARD = utf8Encode("worktrust-remote/v1/wake-card\n");
+/** The bytes a computer signs: the domain, then the card's canonical JSON. */
+export const wakeCardBytes = (card          )             => concatBytes(D_CARD, canonicalBytes(card));
+
+/** For the computer: its card, signed by its own remote key, with its own issuer binding beside it. */
+export function signWakeCard(card          , secret            , binding        )                 {
+  const checked = validate(WAKE_CARD_SPEC, card, "$card");
+  if (!checked.ok) throw new TypeError(checked.detail);
+  const bad = wakeCardRule(checked.value);
+  if (bad) throw new TypeError(`$card.${bad}`);
+  return { card: checked.value, signature: toBase64Url(ed25519Sign(wakeCardBytes(checked.value), secret)), binding };
+}
+
+/** For the helper: the card's shape, age, binding (pinned keys, a computer, this account, valid when signed) and signature. */
+export function verifyWakeCard(input         , expect                     )                    {
+  const shaped = validate(SIGNED_WAKE_CARD_SPEC, input, "$target");
+  if (!shaped.ok) return refuse("shape", shaped.detail);
+  const { card, signature, binding } = shaped.value;
+  const bad = wakeCardRule(card);
+  if (bad) return refuse("shape", `$target.card.${bad}`);
+  if (card.at > expect.now + CLOCK_SKEW_MS) return refuse("not_yet_valid", "$target.card.at: in the future");
+  if (expect.now - card.at > WAKE_CARD_MAX_AGE_MS) return refuse("expired", "$target.card.at: older than seven days");
+  if (card.device_id === expect.self) return refuse("wrong_device", "$target.card.device_id: this computer itself");
+  const b = verifyBinding(binding, { issuerKeys: expect.issuerKeys, now: card.at, kind: "computer", deviceId: card.device_id, sub: expect.account, ...(expect.isRevoked ? { isRevoked: expect.isRevoked } : {}) });
+  if (!b.ok) return b;
+  const sig = fromBase64Url(signature);
+  if (!sig || !ed25519Verify(sig, wakeCardBytes(card), bindingSigningKey(b.value))) return refuse("signature", "$target.signature");
+  return accept(card);
+}
+
+/** Whether two cards name the same network (the same broadcast and prefix): a helper is offered only on the target's. */
+export const sameWakeNetwork = (a                             , b                             )          =>
+  Boolean(a && b && a.broadcast === b.broadcast && a.prefix === b.prefix);
+
+/** The magic packet for a MAC: six 0xFF bytes, then the six MAC bytes sixteen times (102 bytes). */
+export function magicPacket(mac        )             {
+  if (!MAC.test(mac)) throw new TypeError("mac: six lowercase hex pairs");
+  const bytes = mac.split(":").map((h) => parseInt(h, 16));
+  const out = new Uint8Array(MAGIC_PACKET_BYTES).fill(0xff, 0, 6);
+  for (let i = 0; i < 16; i += 1) out.set(bytes, 6 + i * 6);
+  return out;
+}
+
 // ---- packages/remote-protocol/src/phone-start.ts
 /**
  * A SESSION STARTED FROM THE PHONE, BUILD 31 AND CLI 0.11.21 (owner, 2026-11-22). Two probes of their own, each asked with
@@ -2471,6 +2830,310 @@ export function historyPageRule(page             )                {
  */
 export function historyItemId(scope        , key        , index = 0)         {
   return `hit_${toBase64Url(sha256(utf8Encode(`worktrust-history/v1\n${scope}\n${key}\n${index}`)).subarray(0, 16))}`;
+}
+
+// ---- packages/remote-protocol/src/mail-compose.ts
+/**
+ * COMPOSING BY HAND, REWRITING, ATTACHMENTS, SIGNATURES AND FORMAT (owner, 2026-11-24, screenshots 55 and 56;
+ * docs/remote-agents/MAIL.md §Composing by hand). Sealed device commands and transient device events like the rest of mail.ts,
+ * which spreads these into its own lists, so check-remote-protocol rule M holds them too: no field of a mail outside a seal.
+ *
+ *   mail.draft.create      a draft written by hand, no agent ran; the same approval and outbox as any draft
+ *   mail.attachment.put    a file for a draft in chunks of 512 KiB (a sealed body is at most 1 MiB), with its size and SHA-256,
+ *                          joined and checked on the computer; 10 files, 10 MiB each, 25 MiB together; never executed or opened
+ *   mail.signature*        an account's plain-text signatures on the computer; the phone places one in the body, in sight
+ *   features               what a computer offers beyond the first doors, said in mail.accounts, so a phone never sends a computer
+ *                          a command it would refuse
+ * Pure data and rules; the approval hash that covers attachments and format is mail.ts mailApprovalHash.
+ */
+
+export const MAIL_FORMATS = ["plain", "basic"]         ;
+
+export const MAIL_REWRITE_KINDS = ["improve", "shorter", "formal", "friendlier", "longer", "bullets", "text", "regenerate"]         ;
+
+/** What a computer offers beyond reading, agent drafts and sending (mail.accounts `features`); absent: none of them. */
+export const MAIL_FEATURES = ["compose", "rewrite", "attachments", "signatures", "format"]         ;
+
+export const MAIL_ATTACHMENT_CHUNK = 524_288, MAIL_ATTACHMENT_MAX_FILES = 10, MAIL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024, MAIL_ATTACHMENT_MAX_TOTAL = 25 * 1024 * 1024;
+export const MAIL_ATTACHMENT_MAX_CHUNKS = Math.ceil(MAIL_ATTACHMENT_MAX_BYTES / MAIL_ATTACHMENT_CHUNK);
+export const MAIL_ATTACHMENT_REFUSALS = ["too_large", "too_many", "type", "not_found", "hash_mismatch"]         ;
+export const MAIL_SIGNATURES_MAX = 10, MAIL_SIGNATURE_NAME_MAX = 60, MAIL_SIGNATURE_TEXT_MAX = 2_000;
+
+const composeAddresses = list(text(320, 3), 100);
+/** One attachment of a draft as the draft carries it (and the approval hash covers name, size and sha256). */
+export const MAIL_DRAFT_ATTACHMENT_SPEC = object({ attachment_id: id("mat"), name: text(255, 1), size: int(1, MAIL_ATTACHMENT_MAX_BYTES), mime: text(127, 1), sha256: b64({ exact: 32 }) });
+const composeSignature = object({ signature_id: id("sig"), name: text(MAIL_SIGNATURE_NAME_MAX, 1), text: text(MAIL_SIGNATURE_TEXT_MAX, 1) });
+
+export const MAIL_COMPOSE_COMMAND_SPECS = {
+  "mail.draft.create": object({
+    account_id: id("mac"), mode: oneOf(["new", "reply", "reply_all", "forward"]), thread_id: optional(id("mth")),
+    to: composeAddresses, cc: composeAddresses, bcc: composeAddresses, subject: text(998), body: text(65_536), format: optional(oneOf(MAIL_FORMATS)),
+  }),
+  "mail.attachment.put": object({
+    draft_id: id("mdr"), attachment_id: id("mat"), name: text(255, 1), mime: text(127, 1), size: int(1, MAIL_ATTACHMENT_MAX_BYTES), sha256: b64({ exact: 32 }),
+    chunk: int(0, MAIL_ATTACHMENT_MAX_CHUNKS - 1), chunks: int(1, MAIL_ATTACHMENT_MAX_CHUNKS), data: b64({ max: MAIL_ATTACHMENT_CHUNK }),
+  }),
+  "mail.attachment.remove": object({ draft_id: id("mdr"), attachment_id: id("mat") }),
+  "mail.signatures.get": object({ account_id: id("mac") }),
+  "mail.signature.set": object({ account_id: id("mac"), signature_id: optional(id("sig")), name: text(MAIL_SIGNATURE_NAME_MAX, 1), text: text(MAIL_SIGNATURE_TEXT_MAX, 1), default: optional(bool()) }),
+  "mail.signature.remove": object({ account_id: id("mac"), signature_id: id("sig") }),
+}         ;
+
+const COMPOSE_MINUTE = 60_000;
+export const MAIL_COMPOSE_TTL_MS = {
+  "mail.draft.create": 5 * COMPOSE_MINUTE, "mail.attachment.put": 10 * COMPOSE_MINUTE, "mail.attachment.remove": 5 * COMPOSE_MINUTE,
+  "mail.signatures.get": 2 * COMPOSE_MINUTE, "mail.signature.set": 5 * COMPOSE_MINUTE, "mail.signature.remove": 5 * COMPOSE_MINUTE,
+}         ;
+
+export const MAIL_COMPOSE_EVENT_SPECS = {
+  /** A chunk arrived (`received` of `chunks`); once whole and checked, the whole draft follows as mail.draft. */
+  "mail.attachment.added": object({ request_id: id("cmd"), draft_id: id("mdr"), attachment_id: id("mat"), received: int(0, MAIL_ATTACHMENT_MAX_CHUNKS), chunks: int(1, MAIL_ATTACHMENT_MAX_CHUNKS) }),
+  "mail.attachment.refused": object({ request_id: id("cmd"), draft_id: id("mdr"), attachment_id: id("mat"), code: oneOf(MAIL_ATTACHMENT_REFUSALS) }),
+  "mail.signatures": object({ request_id: id("cmd"), account_id: id("mac"), signatures: list(composeSignature, MAIL_SIGNATURES_MAX), default_id: nullable(id("sig")) }),
+}         ;
+
+/** The rules between a compose command's fields. → null, or what is wrong. */
+export function mailComposeRule(type        , value         , addressOk                         )                {
+  if (type === "mail.draft.create") {
+    const d = value                                                                                                              ;
+    if ((d.mode === "new") !== (d.thread_id === undefined)) return "thread_id: for reply, reply_all and forward, never for new";
+    if ([...d.to, ...d.cc, ...d.bcc].some((a) => !addressOk(a))) return "to, cc, bcc: e-mail addresses";
+  }
+  if (type === "mail.attachment.put") {
+    const a = value                                                                 ;
+    if (a.chunk >= a.chunks || a.chunks !== Math.ceil(a.size / MAIL_ATTACHMENT_CHUNK)) return "chunk: within the size's own count";
+    if (/[\\/\u0000-\u001f\u007f‪-‮⁦-⁩]/.test(a.name) || a.name === "." || a.name === "..") return "name: a file name, never a path";
+  }
+  return null;
+}
+
+/** What a phone may ask of this computer, from its mail.accounts `features` (absent: nothing beyond the first doors). */
+export const mailFeatureOn = (features                               , feature             )          => (features ?? []).includes(feature);
+
+// ---- packages/remote-protocol/src/mail.ts
+/**
+ * E-MAIL AND PERSONAL (owner, 2026-11-24; docs/remote-agents/MAIL.md is the prose). The phone reads, drafts and sends mail
+ * through the person's own computer: the CLI daemon holds the mailbox credentials, syncs, asks the person's local agent for
+ * a draft (a project-less PERSONAL job with no tools) and sends only on `mail.send` carrying the hash of exactly the message
+ * the phone showed and approved with a fresh Face ID.
+ *
+ * WHAT THE RELAY SEES: the types below, their timing and the size of the sealed box. Every command here is a DEVICE command
+ * (no session, no project outside the box) and every event is device scoped and travels on the TRANSIENT lane only, sealed
+ * for the asking phone alone and kept by nobody (envelopes.ts). Every account, thread, message, draft and template id, every
+ * address, subject and body lives inside the seal. scripts/check-remote-protocol.mjs rule M holds it.
+ */
+
+export const MAIL_MAX_ACCOUNTS = 10, MAIL_LIST_MAX = 50, MAIL_LIST_DEFAULT = 30, MAIL_SNIPPET_MAX = 200, MAIL_SUBJECT_MAX = 998;
+export const MAIL_ADDRESS_MAX = 320, MAIL_NAME_MAX = 200, MAIL_RECIPIENTS_MAX = 100, MAIL_LABELS_MAX = 10, MAIL_LABEL_MAX = 64;
+export const MAIL_QUERY_MAX = 200, MAIL_CURSOR_MAX = 160, MAIL_SECRET_MAX = 256, MAIL_THREAD_MAX_MESSAGES = 30, MAIL_TEXT_MAX = 32_768;
+export const MAIL_THREAD_BUDGET_BYTES = 786_432, MAIL_ATTACHMENTS_MAX = 50, MAIL_ATTACHMENT_NAME_MAX = 255, MAIL_INSTRUCTION_MAX = 4_000;
+export const MAIL_DRAFT_BODY_MAX = 65_536, MAIL_NOTES_MAX = 10, MAIL_NOTE_MAX = 300, MAIL_UNDO_MS = 10_000, MAIL_TEMPLATES_MAX = 20;
+export const MAIL_DRAFT_PROMPT_BUDGET = 6_000, MAIL_TEMPLATE_TITLE_MAX = 100, MAIL_TEMPLATE_WHEN_MAX = 500;
+
+export const MAIL_PROVIDERS = ["gmail", "outlook", "icloud", "yahoo", "imap"]         ;
+
+export const MAIL_ACCOUNT_STATUSES = ["synced", "syncing", "auth_failed", "offline", "needs_consent"]         ;
+export const MAIL_ADD_REFUSALS = ["auth_failed", "app_password_needed", "unreachable", "duplicate", "unsupported", "limit", "not_configured", "untrusted_certificate", "not_allowed"]         ;
+export const MAIL_DRAFT_MODES = ["reply", "reply_all", "forward", "new"]         ;
+export const MAIL_DRAFT_STYLES = ["text", "bullets"]         ;
+export const MAIL_CONFIDENCE = ["high", "medium", "low"]         ;
+export const MAIL_DRAFT_PHASES = ["reading", "drafting"]         ;
+export const MAIL_DRAFT_REFUSALS = ["no_agent", "agent_unsupported", "agent_failed", "timeout", "unparseable", "not_found", "busy"]         ;
+export const MAIL_SEND_FAILURES = ["hash_mismatch", "not_found", "already_used", "auth_failed", "rejected", "interrupted", "unreachable", "transport_unavailable", "untrusted_certificate"]         ;
+export const MAIL_TLS = ["tls", "starttls"]         ;
+/** WHAT A TEMPLATE MAY DO (rule 3): label, archive, draft. Never send: only `mail.send`, approved on the phone, sends. */
+export const MAIL_TEMPLATE_ACTIONS = ["label", "archive", "draft"]         ;
+export const MAIL_TEMPLATE_RESULTS = ["ok", "failed", "test_draft", "skipped"]         ;
+
+/** An address as a person writes one: local part, @, a dotted domain; no space, angle bracket, comma or control. */
+const MAIL_ADDRESS_RE = /^[^\s@<>()",;:\\\u0000-\u001f\u007f]{1,64}@[^\s@<>()",;:\\\u0000-\u001f\u007f]+\.[^\s@<>()",;:\\\u0000-\u001f\u007f]+$/;
+export const mailAddressOk = (value         )          => typeof value === "string" && value.length <= MAIL_ADDRESS_MAX && MAIL_ADDRESS_RE.test(value);
+/** A mail server: a DNS name or an IPv4 address, never a URL, a path or a port in the name. */
+const MAIL_HOST_RE = /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+export const mailHostOk = (value         )          => typeof value === "string" && MAIL_HOST_RE.test(value);
+
+const mailAddressSpec = text(MAIL_ADDRESS_MAX, 3);
+const mailRecipients = list(mailAddressSpec, MAIL_RECIPIENTS_MAX);
+const mailServer = object({ host: text(253, 1), port: int(1, 65_535), tls: oneOf(MAIL_TLS) });
+const mailRequest = id("cmd");
+
+export const MAIL_COMMAND_SPECS = {
+  "mail.accounts.get": object({}),
+  "mail.account.add": object({
+    provider: oneOf(MAIL_PROVIDERS), address: mailAddressSpec, display_name: optional(text(MAIL_NAME_MAX, 1)),
+    /** An app password, sealed; the computer seals it again in its keystore and never writes it to its journal or a log. */
+    secret: optional(text(MAIL_SECRET_MAX, 1)), imap: optional(mailServer), smtp: optional(mailServer),
+  }),
+  "mail.account.remove": object({ account_id: id("mac") }),
+  "mail.list.get": object({ account_id: optional(id("mac")), query: optional(text(MAIL_QUERY_MAX, 1)), label: optional(text(MAIL_LABEL_MAX, 1)), cursor: optional(token(MAIL_CURSOR_MAX)), limit: optional(int(1, MAIL_LIST_MAX)) }),
+  "mail.thread.get": object({ thread_id: id("mth") }),
+  "mail.flag": object({ thread_id: id("mth"), read: optional(bool()), starred: optional(bool()) }),
+  "mail.draft.request": object({
+    thread_id: optional(id("mth")), account_id: id("mac"), mode: oneOf(MAIL_DRAFT_MODES), style: oneOf(MAIL_DRAFT_STYLES),
+    instruction: text(MAIL_INSTRUCTION_MAX), to: optional(mailRecipients), agent: optional(oneOf(ADAPTER_IDS)),
+  }),
+  "mail.draft.edit": object({
+    draft_id: id("mdr"), to: optional(mailRecipients), cc: optional(mailRecipients), bcc: optional(mailRecipients), subject: optional(text(MAIL_SUBJECT_MAX)), body: optional(text(MAIL_DRAFT_BODY_MAX)),
+    /** The format the draft is sent in (mail-compose.ts); a rewrite of the current body (or of `body` sent beside it) by the person's own agent, on the same draft. */
+    format: optional(oneOf(MAIL_FORMATS)), rewrite: optional(object({ kind: oneOf(MAIL_REWRITE_KINDS) })),
+  }),
+  "mail.decline": object({ draft_id: id("mdr") }),
+  /** The draft, and the hash of exactly what the phone showed (mailApprovalHash), after a fresh Face ID. */
+  "mail.send": object({ draft_id: id("mdr"), approval_hash: b64({ exact: 32 }) }),
+  "mail.send.undo": object({ draft_id: id("mdr") }),
+  "personal.templates.get": object({}),
+  "personal.template.set": object({
+    template_id: optional(id("tpl")), title: text(MAIL_TEMPLATE_TITLE_MAX, 1), when: text(MAIL_TEMPLATE_WHEN_MAX, 1),
+    actions: list(oneOf(MAIL_TEMPLATE_ACTIONS), MAIL_TEMPLATE_ACTIONS.length, 1), label: optional(text(MAIL_LABEL_MAX, 1)),
+    account_id: optional(nullable(id("mac"))), enabled: bool(), remove: optional(bool()),
+  }),
+  ...MAIL_COMPOSE_COMMAND_SPECS,
+}         ;
+
+export const MAIL_COMMAND_TYPES = Object.keys(MAIL_COMMAND_SPECS)                              ;
+
+const MAIL_MINUTE = 60_000;
+export const MAIL_COMMAND_TTL_MS                                            = {
+  "mail.accounts.get": 2 * MAIL_MINUTE, "mail.account.add": 10 * MAIL_MINUTE, "mail.account.remove": 10 * MAIL_MINUTE, "mail.list.get": 2 * MAIL_MINUTE,
+  "mail.thread.get": 2 * MAIL_MINUTE, "mail.flag": 2 * MAIL_MINUTE, "mail.draft.request": 10 * MAIL_MINUTE, "mail.draft.edit": 5 * MAIL_MINUTE,
+  "mail.decline": 5 * MAIL_MINUTE, "mail.send": 2 * MAIL_MINUTE, "mail.send.undo": 1 * MAIL_MINUTE, "personal.templates.get": 2 * MAIL_MINUTE, "personal.template.set": 10 * MAIL_MINUTE, ...MAIL_COMPOSE_TTL_MS,
+};
+
+const mailPerson = object({ name: nullable(text(MAIL_NAME_MAX, 1)), address: text(MAIL_ADDRESS_MAX, 1) });
+export const MAIL_TEMPLATE_SPEC = object({
+  template_id: id("tpl"), kind: oneOf(["email"]), title: text(MAIL_TEMPLATE_TITLE_MAX, 1), when: text(MAIL_TEMPLATE_WHEN_MAX, 1),
+  actions: list(oneOf(MAIL_TEMPLATE_ACTIONS), MAIL_TEMPLATE_ACTIONS.length, 1), label: nullable(text(MAIL_LABEL_MAX, 1)), account_id: nullable(id("mac")),
+  enabled: bool(), last_run_at: nullable(int(0)), last_result: nullable(oneOf(MAIL_TEMPLATE_RESULTS)),
+});
+
+export const MAIL_ITEM_SPEC = object({
+  thread_id: id("mth"), account_id: id("mac"), from_name: nullable(text(MAIL_NAME_MAX, 1)), from_address: text(MAIL_ADDRESS_MAX, 1),
+  subject: text(MAIL_SUBJECT_MAX), snippet: text(MAIL_SNIPPET_MAX), received_at: int(0), unread: bool(), starred: bool(), has_attachments: bool(),
+  labels: list(text(MAIL_LABEL_MAX, 1), MAIL_LABELS_MAX),
+});
+
+export const MAIL_MESSAGE_SPEC = object({
+  message_id: id("mms"), from: mailPerson, to: list(mailPerson, MAIL_RECIPIENTS_MAX), cc: list(mailPerson, MAIL_RECIPIENTS_MAX), date: int(0),
+  text: text(MAIL_TEXT_MAX), cut: bool(), quote_collapsed: bool(),
+  attachments: list(object({ name: text(MAIL_ATTACHMENT_NAME_MAX, 1), size: int(0), mime: text(127, 1) }), MAIL_ATTACHMENTS_MAX),
+});
+
+/** `request_id` null: a draft an automation made by itself on new mail (personal.template), pushed to every phone. */
+export const MAIL_DRAFT_SPEC = object({
+  request_id: nullable(mailRequest), draft_id: id("mdr"), account_id: id("mac"), thread_id: nullable(id("mth")), mode: oneOf(MAIL_DRAFT_MODES),
+  to: list(text(MAIL_ADDRESS_MAX, 1), MAIL_RECIPIENTS_MAX), cc: list(text(MAIL_ADDRESS_MAX, 1), MAIL_RECIPIENTS_MAX), bcc: list(text(MAIL_ADDRESS_MAX, 1), MAIL_RECIPIENTS_MAX),
+  subject: text(MAIL_SUBJECT_MAX), body: text(MAIL_DRAFT_BODY_MAX), confidence: oneOf(MAIL_CONFIDENCE), notes: list(text(MAIL_NOTE_MAX, 1), MAIL_NOTES_MAX),
+  /** Each file as approved and sent: name, size, type and the SHA-256 of its bytes (mail-compose.ts); `format` plain or basic. */
+  attachments: list(MAIL_DRAFT_ATTACHMENT_SPEC, MAIL_ATTACHMENT_MAX_FILES), format: oneOf(MAIL_FORMATS),
+});
+
+export const MAIL_EVENT_SPECS = {
+  "mail.accounts": object({
+    request_id: nullable(mailRequest),
+    accounts: list(object({ account_id: id("mac"), provider: oneOf(MAIL_PROVIDERS), address: text(MAIL_ADDRESS_MAX, 1), display_name: nullable(text(MAIL_NAME_MAX, 1)), status: oneOf(MAIL_ACCOUNT_STATUSES), unread: int(0), last_sync_at: nullable(int(0)) }), MAIL_MAX_ACCOUNTS),
+    /** What this computer offers beyond the first doors (mail-compose.ts MAIL_FEATURES); absent: none (an older CLI). */
+    features: optional(list(oneOf(MAIL_FEATURES), MAIL_FEATURES.length)),
+  }),
+  "mail.account.added": object({ request_id: mailRequest, account_id: id("mac") }),
+  "mail.account.pending": object({ request_id: mailRequest, account_id: id("mac"), step: oneOf(["browser_on_computer"]) }),
+  "mail.account.refused": object({ request_id: mailRequest, code: oneOf(MAIL_ADD_REFUSALS) }),
+  "mail.account.removed": object({ request_id: mailRequest, account_id: id("mac") }),
+  "mail.list": object({
+    request_id: mailRequest, items: list(MAIL_ITEM_SPEC, MAIL_LIST_MAX), next_cursor: nullable(token(MAIL_CURSOR_MAX)),
+    unread_by_account: list(object({ account_id: id("mac"), unread: int(0) }), MAIL_MAX_ACCOUNTS), total_unread: int(0),
+  }),
+  "mail.thread": object({ request_id: mailRequest, thread_id: id("mth"), account_id: id("mac"), subject: text(MAIL_SUBJECT_MAX), messages: list(MAIL_MESSAGE_SPEC, MAIL_THREAD_MAX_MESSAGES, 1), older: int(0) }),
+  "mail.flagged": object({ request_id: mailRequest, thread_id: id("mth") }),
+  "mail.draft.progress": object({ request_id: mailRequest, phase: oneOf(MAIL_DRAFT_PHASES) }),
+  "mail.draft": MAIL_DRAFT_SPEC,
+  "mail.draft.refused": object({ request_id: mailRequest, code: oneOf(MAIL_DRAFT_REFUSALS) }),
+  "mail.declined": object({ request_id: mailRequest, draft_id: id("mdr") }),
+  "mail.send.queued": object({ request_id: mailRequest, draft_id: id("mdr"), undo_until: int(0) }),
+  "mail.sent": object({ request_id: mailRequest, draft_id: id("mdr") }),
+  "mail.send.failed": object({ request_id: mailRequest, draft_id: id("mdr"), code: oneOf(MAIL_SEND_FAILURES) }),
+  "mail.send.undone": object({ request_id: mailRequest, draft_id: id("mdr") }),
+  "personal.templates": object({ request_id: mailRequest, templates: list(MAIL_TEMPLATE_SPEC, MAIL_TEMPLATES_MAX) }),
+  /** `request_id` null: a template's own run on new mail (its last_run_at and last_result), pushed to every phone. */
+  ...MAIL_COMPOSE_EVENT_SPECS,
+  "personal.template": object({ request_id: nullable(mailRequest), template: MAIL_TEMPLATE_SPEC, test_draft_id: nullable(id("mdr")) }),
+}         ;
+
+export const MAIL_EVENT_TYPES = Object.keys(MAIL_EVENT_SPECS)                            ;
+export const isMailType = (type        )          => type.startsWith("mail.") || type.startsWith("personal.");
+
+const MAIL_PRESET                            = new Set(["gmail", "icloud", "yahoo"]);
+
+/** The rules between a mail command's fields, after the schema. → null, or what is wrong (never a value). */
+export function mailCommandRule(type        , value         )                {
+  if (type === "mail.account.add") {
+    const a = value                                   ;
+    if (!mailAddressOk(a.address)) return "address: an e-mail address";
+    if (a.provider === "imap" && (!a.imap || !a.smtp || a.secret === undefined)) return "imap: an IMAP and an SMTP server and an app password";
+    if (MAIL_PRESET.has(a.provider) && (a.secret === undefined || a.imap || a.smtp)) return `${a.provider}: an app password, and no server (the computer knows them)`;
+    if (a.provider === "outlook" && (a.secret !== undefined || a.imap || a.smtp)) return "outlook: no password and no server (it signs in on the computer)";
+    for (const s of [a.imap, a.smtp]) if (s && !mailHostOk(s.host)) return "host: a server name, never a URL";
+  }
+  if (type === "mail.flag") { const f = value                            ; if (f.read === undefined && f.starred === undefined) return "read or starred, at least one"; }
+  if (type === "mail.draft.request") {
+    const d = value                                     ;
+    if ((d.mode === "new") !== (d.thread_id === undefined)) return "thread_id: for reply, reply_all and forward, never for new";
+    if (d.to !== undefined && d.mode !== "forward" && d.mode !== "new") return "to: only for forward or new";
+    if (d.to?.some((t) => !mailAddressOk(t))) return "to: e-mail addresses";
+  }
+  if (type === "mail.draft.edit") {
+    const u = value                                  ;
+    if (Object.keys(u).length === 1) return "names no change";
+    if ([...(u.to ?? []), ...(u.cc ?? []), ...(u.bcc ?? [])].some((t) => !mailAddressOk(t))) return "to, cc, bcc: e-mail addresses";
+  }
+  { const bad = mailComposeRule(type, value, mailAddressOk); if (bad) return bad; }
+  if (type === "personal.template.set") {
+    const t = value                                        ;
+    if (new Set(t.actions).size !== t.actions.length) return "actions: each once";
+    if ((t.actions                     ).includes("send")) return "actions: a template never sends";
+    if (t.remove === true && t.template_id === undefined) return "remove: names its template_id";
+    if (t.actions.includes("label") !== (t.label !== undefined)) return "label: exactly with the label action";
+  }
+  return null;
+}
+
+/** The rules between a mail event's fields, after the schema. → null, or what is wrong. */
+export function mailEventRule(type        , value         )                {
+  if (type === "mail.thread") {
+    const t = value                                                   ;
+    if (new Set(t.messages.map((m) => m.message_id)).size !== t.messages.length) return "messages: an id twice";
+    if (t.messages.reduce((n, m) => n + utf8Encode(m.text).length, 0) > MAIL_THREAD_BUDGET_BYTES) return "messages: texts above the thread's budget";
+  }
+  if (type === "mail.list") {
+    const l = value                                                 ;
+    if (new Set(l.items.map((i) => i.thread_id)).size !== l.items.length) return "items: a thread twice";
+    if (l.unread_by_account.reduce((n, a) => n + a.unread, 0) !== l.total_unread) return "total_unread: the sum of the accounts' unread";
+  }
+  if (type === "personal.templates" || type === "personal.template") {
+    const list = type === "personal.templates" ? (value                                          ).templates : [(value                              ).template];
+    for (const t of list) if ((t.actions                     ).includes("send") || new Set(t.actions).size !== t.actions.length) return "actions: label, archive or draft, each once";
+  }
+  return null;
+}
+
+/** What the approval hash covers: the whole message as it would be sent, nothing else. */
+
+const MAIL_APPROVAL_DOMAIN = utf8Encode("worktrust-mail/v1/approval\n");
+/**
+ * THE APPROVAL HASH (MAIL.md §The approval hash): base64url(SHA-256(domain || canonical JSON of exactly these nine fields)).
+ * The phone computes it from what it SHOWS; the computer from the draft it holds; a changed recipient, word or attachment
+ * name is another hash. Strings go in exactly as shown: no trimming, no line-ending or Unicode normalisation.
+ */
+export function mailApprovalHash(d                     )         {
+  const body = { draft_id: d.draft_id, account_id: d.account_id, to: [...d.to], cc: [...d.cc], bcc: [...d.bcc], subject: d.subject, body: d.body, attachments: d.attachments.map((a) => ({ name: a.name, size: a.size, sha256: a.sha256 })), format: d.format };
+  return toBase64Url(sha256(concatBytes(MAIL_APPROVAL_DOMAIN, canonicalBytes(body))));
+}
+
+/** A thread's or a message's id, DERIVED (MAIL.md §Ids): the same on every read, every phone, and across a UIDVALIDITY change. */
+export function mailThreadId(accountId        , threadKey        )         {
+  return `mth_${toBase64Url(sha256(utf8Encode(`worktrust-mail/v1/thread\n${accountId}\n${threadKey}`)).subarray(0, 16))}`;
+}
+export function mailMessageId(accountId        , messageKey        )         {
+  return `mms_${toBase64Url(sha256(utf8Encode(`worktrust-mail/v1/message\n${accountId}\n${messageKey}`)).subarray(0, 16))}`;
 }
 
 // ---- packages/remote-protocol/src/cli.ts
@@ -2718,229 +3381,6 @@ export function controlsOffered(actions                , delivery               
     stop: actions.stop && live && !stopping,
   };
 }
-
-// ---- packages/remote-protocol/src/crypto/keys.ts
-/**
- * REMOTE DEVICE KEYS. Each computer and each phone install has its own pair: Ed25519 to sign, X25519 to agree keys.
- * They are NOT the computer's measurement key: a different key, a different store entry, a different audience. A
- * stolen remote key cannot sign a measurement, and a measurement key cannot steer an agent; every signature here is
- * also domain-separated ("worktrust-remote/v1/..."), so a signature made for one purpose verifies for no other.
- *
- * A FINGERPRINT FOR PEOPLE. 80 bits of SHA-256 over both public keys, as sixteen Crockford base32 characters in four
- * groups (no I, L, O or U to misread). Shown on the computer's screen and on the phone when a phone is confirmed at
- * the computer's keyboard, so a compromised issuer cannot slip in a key of its own unnoticed.
- */
-
-export function generateDeviceKeys(random        )                   {
-  return { ed25519: random(KEY_BYTES), x25519: random(KEY_BYTES) };
-}
-
-export function publicKeysOf(secret                  )                   {
-  return { ed25519_pub: toBase64Url(ed25519PublicKey(secret.ed25519)), x25519_pub: toBase64Url(x25519PublicKey(secret.x25519)) };
-}
-
-/** For a store that holds strings (expo-secure-store, the CLI's credential store). */
-export const exportSecretKeys = (secret                  )                                      => ({
-  ed25519: toBase64Url(secret.ed25519),
-  x25519: toBase64Url(secret.x25519),
-});
-
-export function importSecretKeys(stored                                                       )                          {
-  const ed = fromBase64Url(stored.ed25519);
-  const x = fromBase64Url(stored.x25519);
-  return ed?.length === KEY_BYTES && x?.length === KEY_BYTES ? { ed25519: ed, x25519: x } : null;
-}
-
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const FINGERPRINT_DOMAIN = utf8Encode("worktrust-remote/v1/fingerprint\n");
-
-function base32Groups(bytes            )         {
-  let bits = 0;
-  let acc = 0;
-  let out = "";
-  for (const b of bytes) {
-    acc = (acc << 8) | b;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      out += CROCKFORD[(acc >> bits) & 31] ;
-    }
-    acc &= (1 << bits) - 1;
-  }
-  return out.match(/.{1,4}/g) .join("-");
-}
-
-function decodeKey(text        )             {
-  const bytes = fromBase64Url(text);
-  if (bytes?.length !== KEY_BYTES) throw new TypeError("a public key is 32 bytes of base64url");
-  return bytes;
-}
-
-/** "ABCD-EFGH-JKMN-PQRS" for one device's public keys. */
-export function deviceFingerprint(keys                  )         {
-  const digest = sha256(concatBytes(FINGERPRINT_DOMAIN, decodeKey(keys.ed25519_pub), decodeKey(keys.x25519_pub)));
-  return base32Groups(digest.subarray(0, 10));
-}
-
-/** The bytes of a commitment to a device's public keys: 128 bits of the SAME digest the fingerprint takes 80 of. */
-export const COMMITMENT_BYTES = 16;
-
-/**
- * A 128-BIT COMMITMENT TO A DEVICE'S KEYS (CLI 0.11.12, the compact pairing code): the first sixteen bytes of the digest
- * whose first ten are the fingerprint. A code that carries it instead of both keys still pins the computer: the phone
- * takes the keys from the computer's issuer-signed binding in the first welcome and compares all 128 bits (handshake.ts
- * `pinnedCommitment`), and the fingerprint it pins from then on is read from the same bytes (`commitmentFingerprint`).
- */
-export function deviceCommitment(keys                  )             {
-  return sha256(concatBytes(FINGERPRINT_DOMAIN, decodeKey(keys.ed25519_pub), decodeKey(keys.x25519_pub))).slice(0, COMMITMENT_BYTES);
-}
-
-/** The fingerprint a commitment names: the same characters `deviceFingerprint` gives for the committed keys. */
-export function commitmentFingerprint(commitment            )         {
-  if (commitment.length !== COMMITMENT_BYTES) throw new TypeError("a commitment is 16 bytes");
-  return base32Groups(commitment.subarray(0, 10));
-}
-
-// ---- packages/remote-protocol/src/crypto/jws.ts
-/**
- * COMPACT SIGNED TOKENS: JWS (RFC 7515) with EdDSA over Ed25519 (RFC 8037), so the gateway can verify an assertion
- * with any standard library, and so can the phone and the computer with this package. Four token types, told apart
- * by `typ` and never interchangeable:
- *   wt-remote-binding+jwt   the Passport app binds a device's remote keys to an account
- *   wt-remote-auth+jwt      the Passport app authorizes one device at the gateway for five minutes
- *   wt-remote-approval+jwt  a phone decides one pending approval
- *   wt-remote-admin+jwt     the Passport app vouches for one settings change of one computer (crypto/admin.ts)
- * The verifier fixes alg, typ and the key set before it looks at the token: a token cannot choose how it is checked.
- * Header and payload are canonical JSON, so one claim set has one signing input.
- */
-
-export const TOKEN_TYPES = ["wt-remote-binding+jwt", "wt-remote-auth+jwt", "wt-remote-approval+jwt", "wt-remote-admin+jwt"]         ;
-
-export const MAX_TOKEN_CHARS = 4096;
-
-/** Public keys by key id: the issuer's keys (pinned in the app and CLI builds), or a phone's bound key. */
-
-export function signToken(typ           , kid        , claims                                   , secret            )         {
-  const header = toBase64Url(utf8Encode(canonicalJson({ alg: "EdDSA", kid, typ })));
-  const payload = toBase64Url(utf8Encode(canonicalJson(claims)));
-  const signature = ed25519Sign(utf8Encode(`${header}.${payload}`), secret);
-  return `${header}.${payload}.${toBase64Url(signature)}`;
-}
-
-const decodeJson = (part        )          => {
-  const bytes = fromBase64Url(part);
-  const text = bytes === null ? null : utf8Decode(bytes);
-  return text === null ? undefined : parseJson(text);
-};
-
-export function verifyToken(token        , typ           , keys        )                         {
-  if (token.length > MAX_TOKEN_CHARS) return refuse("shape", "token: too long");
-  const parts = token.split(".");
-  if (parts.length !== 3) return refuse("shape", "token: not three parts");
-  const [h, p, s] = parts                            ;
-  const header = decodeJson(h);
-  if (typeof header !== "object" || header === null || Array.isArray(header)) return refuse("shape", "token: header");
-  const hd = header                           ;
-  if (Object.keys(hd).sort().join(",") !== "alg,kid,typ") return refuse("shape", "token: header fields");
-  if (hd.alg !== "EdDSA") return refuse("shape", "token: alg");
-  if (hd.typ !== typ) return refuse("shape", "token: typ");
-  if (typeof hd.kid !== "string" || !Object.hasOwn(keys, hd.kid)) return refuse("unknown_key", "token: kid");
-  const key = keys[hd.kid] ;
-  const signature = fromBase64Url(s);
-  if (key.length !== KEY_BYTES || signature === null) return refuse("signature", "token: signature encoding");
-  if (!ed25519Verify(signature, utf8Encode(`${h}.${p}`), key)) return refuse("signature", "token: signature");
-  const claims = decodeJson(p);
-  if (typeof claims !== "object" || claims === null || Array.isArray(claims)) return refuse("shape", "token: payload");
-  // The signed bytes must BE the canonical encoding, so one claim set has exactly one valid token form.
-  if (toBase64Url(utf8Encode(canonicalJson(claims))) !== p) return refuse("shape", "token: payload not canonical");
-  if (toBase64Url(utf8Encode(canonicalJson(hd))) !== h) return refuse("shape", "token: header not canonical");
-  return accept({ kid: hd.kid, claims: claims                            });
-}
-
-/** iat/exp checks shared by every token kind; seconds, with the protocol's skew. */
-export function checkTimes(iat        , exp        , nowMs        , maxLifetimeS        , skewMs        )                {
-  if (exp <= iat) return refuse("lifetime", "token: exp not after iat");
-  if (exp - iat > maxLifetimeS) return refuse("lifetime", "token: lives too long");
-  if (iat * 1000 > nowMs + skewMs) return refuse("not_yet_valid", "token: issued in the future");
-  if (exp * 1000 + skewMs < nowMs) return refuse("expired", "token: expired");
-  return accept(true);
-}
-
-// ---- packages/remote-protocol/src/crypto/binding.ts
-/**
- * A REMOTE KEY BINDING: the Passport app's signed word that these public keys belong to this device of this account.
- * The person approves the device in app.worktrust.io, signed in with a second factor; the app signs
- *   { iss, aud, sub, device_id, kind, ed25519_pub, x25519_pub, iat, exp, jti }
- * with a WorkTrust issuer key. `sub` is an opaque account reference for the remote system (an HMAC of the owner id
- * under a Passport secret, prefixed usr_), never the Passport owner id, so the relay's records join to nothing else.
- *
- * Endpoints verify bindings against the issuer's public keys PINNED in the app and CLI builds, never against a key the
- * relay hands them. The relay cannot forge a binding. The issuer alone cannot add a controller either: a new phone is
- * pending on the computer until the person confirms its fingerprint at the computer's keyboard (handshake.ts).
- */
-
-/**
- * `voice` (CLI 0.11.21, voice.ts): a phone's voice-only key, its binding naming its `parent` phone and living seven days at
- * most. A closed list on purpose: a daemon older than 0.11.21 refuses a `voice` binding at the handshake.
- */
-export const DEVICE_KINDS = ["phone", "computer", "voice"]         ;
-
-export const BINDING_CLAIMS_SPEC = object({
-  iss: oneOf([PASSPORT_ISSUER]),
-  aud: oneOf([GATEWAY_AUDIENCE]),
-  sub: id("usr"),
-  device_id: id("dev"),
-  kind: oneOf(DEVICE_KINDS),
-  ed25519_pub: b64({ exact: 32 }),
-  x25519_pub: b64({ exact: 32 }),
-  iat: int(0),
-  exp: int(0),
-  jti: id("jti"),
-  /** A voice key's phone (voice.ts); present exactly when the kind is `voice`. */
-  parent: optional(id("dev")),
-  /** A voice key may hear replies read aloud (voice.ts, the phone's "Read answers aloud"); only on a voice binding. */
-  read: optional(bool()),
-  /** Voice audit P2-1 (build 31): the voice key's UNLOCK key, held only while the phone is unlocked; only on a voice binding (voice.ts). */
-  unlock_pub: optional(b64({ exact: 32 })),
-});
-
-/** The longest a binding of this kind may live: thirty days, a voice key's seven. */
-export const bindingLifetimeS = (kind            )         => (kind === "voice" ? MAX_VOICE_BINDING_LIFETIME_S : MAX_BINDING_LIFETIME_S);
-/** A voice binding names its phone, and no other kind names one. → null, or what is wrong. */
-const parentRule = (b                  )                => ((b.kind === "voice") !== (b.parent !== undefined) ? "$binding.parent: exactly for a voice key" : b.parent === b.device_id ? "$binding.parent: never itself" : b.read !== undefined && b.kind !== "voice" ? "$binding.read: only for a voice key" : b.unlock_pub !== undefined && b.kind !== "voice" ? "$binding.unlock_pub: only for a voice key" : null);
-
-/** For the Passport app: validate, then sign. */
-export function issueBinding(claims                  , issuerSecret            , kid        )         {
-  const checked = validate(BINDING_CLAIMS_SPEC, claims, "$binding");
-  if (!checked.ok) throw new TypeError(checked.detail);
-  const parent = parentRule(checked.value);
-  if (parent) throw new TypeError(parent);
-  if (claims.exp - claims.iat > bindingLifetimeS(claims.kind) || claims.exp <= claims.iat) throw new RangeError("binding lifetime");
-  return signToken("wt-remote-binding+jwt", kid, claims, issuerSecret);
-}
-
-export function verifyBinding(token        , expect                    )                            {
-  const verified = verifyToken(token, "wt-remote-binding+jwt", expect.issuerKeys);
-  if (!verified.ok) return refuse(verified.code === "shape" ? "binding" : verified.code, verified.detail);
-  const shaped = validate(BINDING_CLAIMS_SPEC, verified.value.claims, "$binding");
-  if (!shaped.ok) return refuse("binding", shaped.detail);
-  const b = shaped.value;
-  const parent = parentRule(b);
-  if (parent) return refuse("binding", parent);
-  const times = checkTimes(b.iat, b.exp, expect.now, bindingLifetimeS(b.kind), CLOCK_SKEW_MS);
-  if (!times.ok) return times;
-  if (expect.kind !== undefined && b.kind !== expect.kind) return refuse("binding", "$binding.kind: not the expected kind");
-  if (expect.deviceId !== undefined && b.device_id !== expect.deviceId) return refuse("wrong_device", "$binding.device_id");
-  if (expect.sub !== undefined && b.sub !== expect.sub) return refuse("account_mismatch", "$binding.sub");
-  if (expect.isRevoked?.(b)) return refuse("revoked", "$binding: revoked");
-  return accept(b);
-}
-
-/** The signing key a verified binding names, as bytes. */
-export const bindingSigningKey = (b                  )             => fromBase64Url(b.ed25519_pub) ;
-export const bindingAgreementKey = (b                  )             => fromBase64Url(b.x25519_pub) ;
-export const bindingFingerprint = (b                  )         =>
-  deviceFingerprint({ ed25519_pub: b.ed25519_pub, x25519_pub: b.x25519_pub });
 
 // ---- packages/remote-protocol/src/crypto/endorse.ts
 /**
@@ -3220,8 +3660,7 @@ export const COMMAND_PAYLOAD_SPECS = {
    * the next turn (command.queued until then); `none` is refused `unsupported`.
    */
   "agent.steer": object({ text: text(MAX_PROMPT_CHARS, 1) }),
-  "agent.pause": object({}),
-  "agent.resume": object({}),
+  "agent.pause": object({}), "agent.resume": object({}),
   /** Stop the current turn. The session stays; session.close ends it. */
   "agent.stop": object({}),
   /** A signed decision (crypto/approval.ts) for one pending approval. */
@@ -3290,7 +3729,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
      * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
      */
-    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, ...VOICE_GET_FIELDS, ...START_GET_FIELDS, // `default_root` and `agent_ref` (phone-start.ts, CLI 0.11.21); `voice` (voice.ts, CLI 0.11.21); `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
+    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, ...VOICE_GET_FIELDS, ...START_GET_FIELDS, ...WAKE_GET_FIELDS, // `wake` (wake.ts, CLI 0.11.25): this phone reads device.inventory `wake` and may send device.wake; `default_root` and `agent_ref` (phone-start.ts, CLI 0.11.21); `voice` (voice.ts, CLI 0.11.21); `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -3313,7 +3752,7 @@ export const COMMAND_PAYLOAD_SPECS = {
   /** The notice key (release 38, notice.ts): a phone's key for the sealed notices of this computer's sessions. `history.get` (history.ts): one page of a session's history. */
   ...NOTICE_COMMAND_SPECS, ...HISTORY_COMMAND_SPECS,
   /** Files from the phone and a local preview back (transfer.ts, 2026-11-07). */
-  ...TRANSFER_COMMAND_SPECS,
+  ...TRANSFER_COMMAND_SPECS, ...MAIL_COMMAND_SPECS, // mail.* and personal.* (mail.ts, MAIL.md): every one a device command, sealed
   /** The live preview (release 19, live-preview.ts): session commands. */
   ...LIVE_COMMAND_SPECS,
   /**
@@ -3326,7 +3765,7 @@ export const COMMAND_PAYLOAD_SPECS = {
    * browser's issuer binding, the QR's one-time nonce and its expiry. Taken only when the computer allowed endorsements at
    * its keyboard, from a phone confirmed there or by a scanned QR, for the computer's own account, in time, nonce unspent.
    */
-  "browser.endorse": ENDORSEMENT_SPEC, "voice.enrol": VOICE_ENROL_SPEC, "voice.read_last": VOICE_READ_SPEC, // CLI 0.11.21 (voice.ts): a confirmed phone enrols its voice key here; a voice key that may read asks the last reply
+  "browser.endorse": ENDORSEMENT_SPEC, ...WAKE_COMMAND_SPECS, "voice.enrol": VOICE_ENROL_SPEC, "voice.read_last": VOICE_READ_SPEC, // CLI 0.11.21 (voice.ts): a confirmed phone enrols its voice key here; a voice key that may read asks the last reply; device.wake (wake.ts, CLI 0.11.25): the magic packet for another computer of this account on this computer's network
   /** A release: a bundle of tasks in one project (release.ts). Ids are minted by the phone, once. */
   "release.create": object({
     release_id: id("rel"),
@@ -3361,8 +3800,7 @@ export const COMMAND_PAYLOAD_SPECS = {
   "release.cancel_task": object({ release_id: id("rel"), task_id: id("tsk") }),
   /** planned -> in_progress: its tasks join the queue. */
   "release.start": object({ release_id: id("rel") }),
-  /** One page of the backlog, newest first, answered with release.page; project_id null lists every project. */
-  "release.list": object({ project_id: nullable(id("prj")), before_number: nullable(int(1)), limit: int(1, MAX_RELEASE_PAGE) }),
+  "release.list": object({ project_id: nullable(id("prj")), before_number: nullable(int(1)), limit: int(1, MAX_RELEASE_PAGE) }), // one page of the backlog, newest first, answered with release.page; project_id null lists every project
   /** Run the release's reviewed pipeline now (or again). Never a deploy or publish stage: those stay at the desk. */
   "pipeline.start": object({ release_id: id("rel") }),
   "pipeline.cancel": object({ pipeline_run_id: id("plr") }),
@@ -3371,7 +3809,7 @@ export const COMMAND_PAYLOAD_SPECS = {
 export const COMMAND_TYPES = Object.keys(COMMAND_PAYLOAD_SPECS)                          ;
 
 export const RELEASE_COMMANDS                           = new Set             (["release.create", "release.add_task", "release.reorder", "release.cancel_task", "release.start", "release.list", "pipeline.start", "pipeline.cancel"]);
-export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "notice.key", "history.get", "project.create", "browser.endorse", "voice.enrol", "voice.read_last", "preview.targets", "preview.render", ...RELEASE_COMMANDS]);
+export const DEVICE_COMMANDS                           = new Set             (["inventory.get", "device.configure", "pairing.revoke", "notice.key", "history.get", "project.create", "browser.endorse", "voice.enrol", "voice.read_last", "device.wake", "preview.targets", "preview.render", ...RELEASE_COMMANDS, ...MAIL_COMMAND_TYPES]);
 export const commandScope = (type             )                       => (DEVICE_COMMANDS.has(type) ? "device" : "session");
 
 /** Commands whose acceptance starts a run with steps, approvals and an end (state-machine.ts follows those through
@@ -3396,7 +3834,7 @@ export const COMMAND_TTL_MS                                        = {
   "session.close": 5 * MINUTE,
   "session.rename": 5 * MINUTE,
   "project.create": 10 * MINUTE,
-  "browser.endorse": 5 * MINUTE, "voice.enrol": 5 * MINUTE, "voice.read_last": 2 * MINUTE,
+  "browser.endorse": 5 * MINUTE, "voice.enrol": 5 * MINUTE, "voice.read_last": 2 * MINUTE, "device.wake": WAKE_COMMAND_TTL_MS,
   "attachment.put": 60 * MINUTE,
   "attachment.clear": 10 * MINUTE,
   "preview.targets": 1 * MINUTE,
@@ -3417,7 +3855,7 @@ export const COMMAND_TTL_MS                                        = {
   "release.start": 10 * MINUTE,
   "release.list": 1 * MINUTE,
   "pipeline.start": 10 * MINUTE,
-  "pipeline.cancel": 2 * MINUTE,
+  "pipeline.cancel": 2 * MINUTE, ...MAIL_COMMAND_TTL_MS,
 };
 
 /** A device's own name: printable, no control or format character, not only spaces. */
@@ -3452,7 +3890,7 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref", "probe_failed"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref", "probe_failed", "wake"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
   }
   if (type === "session.attach") {
     const a = payload                                    ;
@@ -3460,7 +3898,7 @@ export function validateCommandPayload                       (type   , value    
     if (given !== 0 && given !== 3) return refuse("payload", "$payload: after, max_events and max_bytes together, or none");
   }
   if (type === "history.get") { const bad = historyGetRule(payload              ); if (bad) return refuse("payload", `$payload: ${bad}`); } if (type === "agent.prompt") { const bad = deskRefRule(payload                                  ) ?? voiceRefRule(payload                                  ); if (bad) return refuse("payload", `$payload.${bad}`); }
-  if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
+  if (isMailType(type)) { const bad = mailCommandRule(type, payload); if (bad) return refuse("payload", `$payload.${bad}`); } if (type === "attachment.put") { const bad = attachmentRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.render") { const bad = previewRule(payload                                    ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.live_start") { const bad = liveStartRule(payload             ); if (bad) return refuse("payload", `$payload: ${bad}`); }
   if (type === "preview.live_input") { const i = payload             ; if (i.kind === "text" && !liveTextOk(i.text)) return refuse("payload", "$payload.text: literal text, no control character"); }
@@ -3681,8 +4119,7 @@ export const EVENT_BODY_SPECS = {
       }), MAX_FORM_QUESTIONS),
     })),
   }),
-  "agent.paused": object({}),
-  "agent.resumed": object({}),
+  "agent.paused": object({}), "agent.resumed": object({}),
   /**
    * `session_active_ms` (optional, 2026-11-08, owner: the session's details on the phone): the session's turns so far,
    * each from its start to its end by the computer's clock (the span `duration_ms` reports), summed by the computer that
@@ -3726,7 +4163,7 @@ export const EVENT_BODY_SPECS = {
     agent_options: optional(list(AGENT_OPTIONS_SPEC, 16)),
     modes_allowed: optional(list(oneOf(AGENT_MODES), AGENT_MODES.length)),
     /** Part B (owner, 2026-11-12), only for an `extended` phone: the settings page's admin switch, folders, connections (crypto/admin.ts). */
-    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, ...CLI_INVENTORY_FIELDS, ...VOICE_INVENTORY_FIELDS, ...START_INVENTORY_FIELDS, // CLI 0.11.21: `default_root` (phone-start.ts), only for a phone that asked; CLI 0.11.21: `voice` (voice.ts), only for a phone that asked; release 36: `desk_sessions` (desk.ts); CLI 0.11.16: `cli`, the daemon's release and restart (cli.ts); each only for a phone that asked
+    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, ...CLI_INVENTORY_FIELDS, ...VOICE_INVENTORY_FIELDS, ...START_INVENTORY_FIELDS, ...WAKE_INVENTORY_FIELDS, // CLI 0.11.25: `wake` (wake.ts), only for a phone that asked; CLI 0.11.21: `default_root` (phone-start.ts), only for a phone that asked; CLI 0.11.21: `voice` (voice.ts), only for a phone that asked; release 36: `desk_sessions` (desk.ts); CLI 0.11.16: `cli`, the daemon's release and restart (cli.ts); each only for a phone that asked
     sessions: list(
       object({
         session_id: id("ses"),
@@ -3765,15 +4202,14 @@ export const EVENT_BODY_SPECS = {
   ...TRANSFER_EVENT_SPECS,
   /** The live preview (release 19, live-preview.ts): its state, and its frames on the transient lane only. */
   ...LIVE_EVENT_SPECS,
-  /** The computer's health (health.ts), every 15 s on the transient lane, device-wide: passed on, kept by nobody. */
   "device.health": HEALTH_BODY_SPEC,
-  ...HISTORY_EVENT_SPECS, ...VOICE_EVENT_SPECS, // `voice.answer` (voice.ts, CLI 0.11.21): a reply read aloud, transient, for one voice key alone; `history.page` (history.ts): one page of a session's history, transient, for the asker alone
+  ...HISTORY_EVENT_SPECS, ...VOICE_EVENT_SPECS, ...MAIL_EVENT_SPECS, // mail.* and personal.* (mail.ts): device scoped, transient only, for the asker; `voice.answer` (voice.ts, CLI 0.11.21): a reply read aloud, transient, for one voice key alone; `history.page` (history.ts): one page of a session's history, transient, for the asker alone
 }                                                  ;
 
 export const DEVICE_EVENT_TYPES = Object.keys(EVENT_BODY_SPECS)                              ;
 
 /** The one device event about the computer as a whole; every other names a session. */
-export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active", "device.health", "history.page", "voice.answer"]);
+export const DEVICE_SCOPED_EVENTS                               = new Set                 (["device.inventory", "project.created", "preview.targets", "preview.image", "preview.rendered", "release.updated", "release.page", "pipeline.updated", "agents.active", "device.health", "history.page", "voice.answer", ...MAIL_EVENT_TYPES]);
 /** Events that answer one command, so their envelope names it (command_id is required). */
 export const COMMAND_RECEIPT_EVENTS                               = new Set                 (["command.device_received", "command.agent_accepted", "command.rejected", "command.queued"]);
 
@@ -3827,7 +4263,7 @@ export function validateEventBody                           (type   , value     
     const bad = agentsActiveRule(checked.value                );
     if (bad) return refuse("payload", `$body: ${bad}`);
   }
-  if (type === "device.health") { const bad = healthRule(checked.value              ); if (bad) return refuse("payload", `$body: ${bad}`); }
+  if (isMailType(type)) { const bad = mailEventRule(type, checked.value); if (bad) return refuse("payload", `$body.${bad}`); } if (type === "device.health") { const bad = healthRule(checked.value              ); if (bad) return refuse("payload", `$body: ${bad}`); }
   if (type === "history.page") { const bad = historyPageRule(checked.value               ); if (bad) return refuse("payload", `$body: ${bad}`); } if (type === "voice.answer") { const bad = voiceAnswerRule(checked.value                       ); if (bad) return refuse("payload", `$body.${bad}`); }
   if (type === "agent.attention") {
     const a = validateAttention(value, "$body");
@@ -3842,7 +4278,7 @@ export function validateEventBody                           (type   , value     
     // One report per (adapter, mode) since release 19: Claude Code structured and in a terminal are two reports.
     if (new Set(inv.adapters.map((a) => `${a.adapter}/${a.mode}`)).size !== inv.adapters.length) return refuse("payload", "$body.adapters: an adapter twice");
     { const desk = deskRule(inv.desk_sessions, inv.projects); if (desk) return refuse("payload", `$body.desk_sessions: ${desk}`); }
-    { const cli = cliRule(inv.cli); if (cli) return refuse("payload", `$body.cli.${cli}`); } { const start = startRule(inv); if (start) return refuse("payload", `$body.${start}`); }
+    { const cli = cliRule(inv.cli); if (cli) return refuse("payload", `$body.cli.${cli}`); } { const start = startRule(inv); if (start) return refuse("payload", `$body.${start}`); } { const wake = wakeRule(inv.wake); if (wake) return refuse("payload", `$body.wake.${wake}`); }
   }
   return checked;
 }
@@ -3925,13 +4361,13 @@ export const COMMAND_ENVELOPE_SPEC = object({
  * So the stream stays gap-free for every phone, whoever followed. Only the types below may take the lane.
  */
 export const EVENT_LANES = ["transient"]         ;
-export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame", "device.health", "history.page", "voice.answer"]);
+export const TRANSIENT_EVENT_TYPES                               = new Set                 (["agent.screen", "preview.frame", "device.health", "history.page", "voice.answer", ...MAIL_EVENT_TYPES]);
 /**
  * Types that may ONLY travel on the transient lane (a live preview's frames: never journaled, never replayed), and the
  * computer's health (health.ts, 2026-11-15): device-wide, so its lane is the device stream's, with its own rising number.
  * A page of a session's history (history.ts) is device-wide too, so the relay never learns which session was read.
  */
-export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame", "device.health", "history.page", "voice.answer"]);
+export const TRANSIENT_ONLY_TYPES                               = new Set                 (["preview.frame", "device.health", "history.page", "voice.answer", ...MAIL_EVENT_TYPES]); // every mail.* / personal.* event too (MAIL.md): kept by nobody, sealed for the asker
 export const isTransientEvent = (e                            )          => e.lane === "transient";
 
 export const EVENT_ENVELOPE_SPEC = object({

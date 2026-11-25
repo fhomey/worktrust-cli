@@ -2,6 +2,31 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.25: e-mail for your phone, stay reachable and wake, and a steadier read
+
+**E-mail through your computer, for your phone.** Your computer can now read and send your e-mail for the WorkTrust app:
+Gmail, iCloud, Yahoo or any IMAP server with an app password, and Outlook and Microsoft 365 (signed in in this computer's
+browser) once WorkTrust's Microsoft sign-in is registered. The phone side arrives with an app update. The account's password or sign-in stays in this computer's keychain. Your phone sees your mail end to end
+encrypted; WorkTrust's servers carry only sealed boxes and never see an address, a subject or a word of a mail. A reply can
+be drafted, or rewritten, by your own AI agent on this computer, without tools and outside your projects; you can also write
+one yourself, add files and photos, add a signature and use simple formatting. Nothing is sent until you approve that exact
+mail on your phone with Face ID, and for ten seconds after that you can still take it back. A send that fails is never tried
+again by itself. Automations can label, archive or draft new mail, never send it. See and change the accounts here:
+`npx worktrust mail`. Mail time never counts as AI hours.
+
+**Stay reachable, and wake.** `npx worktrust remote awake on` keeps this computer from sleeping while the Remote Agent runs,
+on AC power only (on battery it sleeps as usual, and `remote awake status` says so). `remote awake lan on` lets your phone
+wake another of your computers on the same network through this one. Both are off until you turn them on here, and a wake
+card is valid for seven days.
+
+**A steadier read.** A Remote Agent file read at the very moment another process replaced it is now read once more instead
+of failing.
+
+**No longer cut off after a busy moment.** When this computer was busy, or its connection slow, the frames it paced for
+your phone could pile up unsent and then leave together, faster than the relay allows, and the relay closed the
+connection. The CLI now sends the next frame only once the last one has left, so the pace the relay sees is the pace the
+CLI keeps.
+
 ## 0.11.24: a test or tool running under another home can no longer stop or start your Remote service
 
 **Your Remote Agent service is asked only from your own home.** launchctl and systemctl reach the service of the user who is

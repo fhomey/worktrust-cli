@@ -47,7 +47,7 @@ export function authFrame({ deviceId, binding, signingSecret, nonce, origin, ass
 export function connectGateway({ url, identity, signingSecret, onFrame, onState = () => {}, log = () => {}, authorize = async () => null, WebSocketImpl = globalThis.WebSocket, pacer = null, holdWait = holdMs, now = Date.now }) {
   const origin = new URL(url).origin.replace(/^http/, "ws");
   let socket = null, attempt = 0, stopped = false, ready = false, lastHeard = 0, ping = null, retry = null, hint = null, holds = 0, heldSince = null, readyAt = null;
-  const pace = (pacer ?? createPacer)({ write: (text) => { if (socket?.readyState === 1) socket.send(text); }, log });
+  const pace = (pacer ?? createPacer)({ write: (text) => { if (socket?.readyState === 1) socket.send(text); }, log, buffered: () => (socket?.readyState === 1 ? socket.bufferedAmount ?? 0 : Infinity) });
   /** `replayed`: a journal event sealed again for one phone (the depth rule may drop it; never a live event). */
   const send = (frame, { replayed = false } = {}) => {
     if (!ready || socket?.readyState !== 1) return false;
@@ -117,7 +117,7 @@ export function connectGateway({ url, identity, signingSecret, onFrame, onState 
     ping.unref?.();
   }
   open();
-  return { send, room: () => pace.room(), ready: () => ready, close() { stopped = true; pace.clear(); clearTimeout(retry); clearInterval(ping); try { socket?.close(1000, "bye"); } catch { /* closed */ } } };
+  return { send, room: () => pace.room(), drain: (ms) => pace.drained(ms), ready: () => ready, close() { stopped = true; pace.clear(); clearTimeout(retry); clearInterval(ping); try { socket?.close(1000, "bye"); } catch { /* closed */ } } };
 }
 
 /**

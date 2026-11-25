@@ -20,19 +20,29 @@
  *   ROOM       `room()` resolves once fewer than a batch waits: a catch-up seals its next twenty events only then, so a
  *              live event never waits behind more than about a second of replay (remote-catch-up.mjs).
  *   URGENT     the answer to a challenge and the heartbeat go at once and are counted (the buckets may go below zero).
+ *   DEPARTURE  a frame is counted when it LEAVES, not when it is handed over: the next frame is written only once the socket
+ *              holds nothing unsent (`buffered()`, the WebSocket's bufferedAmount). Handed over while the socket was still
+ *              full, paced frames queued in it and left together when it drained, and the gateway, which counts on arrival,
+ *              saw them as one burst over its bucket: the 4029 of release 59's verify, reproduced with event-loop stalls
+ *              (2026-11-25). A slow uplink or a Wi-Fi drop backs the socket up the same way on a real computer. A socket
+ *              that is not open is not writable (`buffered()` is not a finite number): its frames wait for `clear()`,
+ *              the socket's close, never a write that goes nowhere.
+ *   DRAINED    `drained(ms)` resolves true once nothing waits and the socket holds nothing unsent, false at the deadline
+ *              or at once when the socket is not writable: a stop awaits it before it closes the socket, so the last frame
+ *              (the "restarting" an update asks for) leaves first (release 59's verify, remote-cli-daemon).
  *
  * Pure over `write`, `now` and `later`: scripts/test-remote-pace.mjs runs it against the real gateway's hub.
  */
 export const PACE = Object.freeze({
   framesPerSecond: 40, frameBurst: 120, bytesPerSecond: 1024 * 1024, byteBurst: 4 * 1024 * 1024,
-  backMs: 10_000, maxFrames: 2000, maxBytes: 8 * 1024 * 1024, staleMs: 2000, batch: 20, roomBytes: 256 * 1024,
+  backMs: 10_000, maxFrames: 2000, maxBytes: 8 * 1024 * 1024, staleMs: 2000, batch: 20, roomBytes: 256 * 1024, drainMs: 10,
 });
 /** The gateway's own weight of a frame (apps/worktrust/remote/src/limits.mjs): base64 text is four characters per three bytes. */
 export const frameWeight = (chars) => Math.ceil((chars * 3) / 4);
 /** What a frame is to the depth rule: a control frame and a journaled live event are never dropped. */
 export const KINDS = Object.freeze(["control", "live", "replay", "transient"]);
 
-export function createPacer({ write, now = Date.now, log = () => {}, limits = PACE, later = setTimeout, cancel = clearTimeout }) {
+export function createPacer({ write, now = Date.now, log = () => {}, limits = PACE, later = setTimeout, cancel = clearTimeout, buffered = () => 0 }) {
   const queue = []; // { text, weight, kind, at }
   let frames = limits.frameBurst, bytes = limits.byteBurst, filledAt = now(), slowUntil = 0, queued = 0, timer = null;
   const waiters = [];
@@ -49,10 +59,11 @@ export function createPacer({ write, now = Date.now, log = () => {}, limits = PA
   function pump() {
     if (timer !== null) { cancel(timer); timer = null; }
     refill();
-    let late = 0;
+    let late = 0, full = false;
     for (;;) {
       while (queue.length > 0 && queue[0].kind === "transient" && now() - queue[0].at > limits.staleMs) { queued -= queue.shift().weight; late += 1; }
       if (queue.length === 0 || frames < 1 || bytes < queue[0].weight) break;
+      if (buffered() > 0) { full = true; break; } // DEPARTURE: the last frame has not left yet
       const next = queue.shift();
       frames -= 1; bytes -= next.weight; queued -= next.weight;
       write(next.text);
@@ -62,7 +73,7 @@ export function createPacer({ write, now = Date.now, log = () => {}, limits = PA
     if (queue.length === 0) return;
     const rate = now() < slowUntil ? 0.5 : 1;
     const wait = Math.max((1 - frames) / (limits.framesPerSecond * rate), (queue[0].weight - bytes) / (limits.bytesPerSecond * rate));
-    timer = later(() => { timer = null; pump(); }, Math.max(5, Math.ceil(wait * 1000)));
+    timer = later(() => { timer = null; pump(); }, full ? (limits.drainMs ?? 10) : Math.max(5, Math.ceil(wait * 1000)));
   }
 
   /** THE DEPTH RULE: stale transient frames, then replayed ones; never a control frame, never a journaled live event. */
@@ -92,6 +103,20 @@ export function createPacer({ write, now = Date.now, log = () => {}, limits = PA
     room() { return hasRoom() ? Promise.resolve() : new Promise((done) => waiters.push(done)); },
     /** The gateway said `rate_limited`: nothing more now, and half the rate for ten seconds. */
     slow() { refill(); frames = Math.min(frames, 0); bytes = Math.min(bytes, 0); slowUntil = now() + limits.backMs; log("paced_back", { ms: limits.backMs, waiting: queue.length }); pump(); },
+    /** → true once nothing waits and the socket holds nothing unsent (a frame has LEFT); false at `ms` or when it cannot be written. */
+    drained(ms = 2000) {
+      const until = now() + ms;
+      return new Promise((done) => {
+        const look = () => {
+          pump();
+          const held = buffered();
+          if (queue.length === 0 && held === 0) return done(true);
+          if (!Number.isFinite(held) || now() >= until) return done(false);
+          later(look, limits.drainMs ?? 10);
+        };
+        look();
+      });
+    },
     /** The socket closed: what waited was sealed for it and is gone with it (a phone asks its journal page again). */
     clear() { if (timer !== null) { cancel(timer); timer = null; } queue.length = 0; queued = 0; settle(); },
     depth: () => ({ frames: queue.length, bytes: queued }),

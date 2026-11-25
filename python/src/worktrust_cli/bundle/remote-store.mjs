@@ -39,10 +39,23 @@ export function ensureRemoteDir() {
   return dir;
 }
 
-export function readJson(name, fallback = null) {
-  const file = remotePath(name);
+/**
+ * A file of this folder, read privately. ONE RETRY, ONLY FOR THE RENAME RACE (release 57's verify, 2026-11-24): another process
+ * writes these files by an atomic rename, and a read that lands between readPrivateFile's lstat and its open sees another
+ * inode and refuses. When the file's inode changed across the failed read, it was replaced: read once more. Any other
+ * failure (a link, a mode, a wrong owner, bad JSON in an unchanged file) still refuses at once. `io` is the tests' seam.
+ */
+export function readJson(name, fallback = null, io = {}) {
+  const file = remotePath(name), read = io.read ?? readPrivateFile, inode = io.inode ?? ((f) => lstatSync(f).ino);
   if (!existsSync(file)) return fallback;
-  try { return JSON.parse(readPrivateFile(file)); } catch { throw new Error(`${file} is unreadable or not private (mode 0600)`); }
+  const ino = () => { try { return inode(file); } catch { return null; } };
+  const before = ino();
+  try { return JSON.parse(read(file)); } catch {
+    const after = ino();
+    if (after === null && !existsSync(file)) return fallback; // removed meanwhile: as if it never was
+    if (before !== null && after !== null && after !== before) { try { return JSON.parse(read(file)); } catch { /* refused below */ } }
+    throw new Error(`${file} is unreadable or not private (mode 0600)`);
+  }
 }
 
 export function writeJson(name, value) {

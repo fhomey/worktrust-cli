@@ -32,9 +32,10 @@
  * The daemon seals NOTHING for a channel that did not pass through `bodyFor` (remote-daemon.mjs sealAll).
  */
 import { deskBodyFor } from "./remote-desk-sessions.mjs";
+import { knownBrowser } from "./remote-store.mjs";
 
 /** CLI 0.11.21: `voiceOf(phone)` whether that phone's voice key is enrolled here; `voiceKey(peer)` whether the peer IS a voice key. */
-export function createPeers({ voiceOf = () => false, voiceKey = () => false } = {}) {
+export function createPeers({ voiceOf = () => false, voiceKey = () => false, isBrowser = (peer) => knownBrowser(peer) } = {}) { // isBrowser (CLI 0.11.25): whether a peer is known as a browser (remote-store.mjs, fails closed: a peer not listed counts as one), so it never gets a wake card
   // THE 0.11.7 INVENTORY FIELDS REACH ONLY A PHONE THAT ASKED FOR THEM (inventory.get `extended`): an older phone refuses unknown
   // keys, so every other channel gets the inventory without them. Kept per phone for the daemon's life; a phone asks again on every inventory.get.
   const extendedPeers = new Set(), switchPeers = new Set(); // release 33: `model_switch` only for a phone that asked for it
@@ -43,6 +44,9 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false } = 
   const livePeers = new Set(); // CLI 0.11.19: `desk_read`, and reading along (history.get `follow`): only for a phone that asked `desk_live`
   const steerPeers = new Set(); // CLI 0.11.20: `steerable`, `bypass_mode`, and agent.prompt `desk_ref`: only for a phone that asked `desk_steer`
   const rootPeers = new Set(), refPeers = new Set(), readyPeers = new Set(); // readyPeers (build 31): a phone that asked `voice_notice` hears "Answer ready" as a device notice // CLI 0.11.21: `default_root` (asked `default_root`) and a session row's `agent_ref` (asked `agent_ref`)
+  // CLI 0.11.25 (protocol wake.ts, docs/remote-agents/WAKE.md): `wake` only for a phone that asked it, and its `card` (this computer's MAC and network) never for a browser.
+  const wakePeers = new Set();
+  const wakeBodyFor = (peer, type, body) => (type !== "device.inventory" || !("wake" in body) ? body : !wakePeers.has(peer) ? (({ wake: _drop, ...rest }) => rest)(body) : isBrowser(peer) === false ? body : { ...body, wake: { ...body.wake, card: null } });
   const probePeers = new Set(); // CLI 0.11.22: the reject reason `probe_failed`, only for a phone that asked it (others hear `busy`)
   const probeBodyFor = (peer, type, body) => (type === "command.rejected" && body?.reason === "probe_failed" && !probePeers.has(peer) ? { ...body, reason: "busy" } : body);
   const voicePeers = new Set(), readPeers = new Set(), viaPeers = new Set(); // CLI 0.11.21: `voice` { on, enrolled }, its `read` (asked `voice_read`), and a user turn's `via` (asked `steer_via`)
@@ -55,6 +59,7 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false } = 
   const withoutRefs = (body) => ({ ...body, sessions: body.sessions.map(({ agent_ref: _drop, ...row }) => row) });
   const startBodyFor = (peer, type, body) => {
     if (type !== "device.inventory") return probeBodyFor(peer, type, body); // CLI 0.11.22: `probe_failed` becomes `busy` last, for every peer that did not ask it
+    body = wakeBodyFor(peer, type, body); // CLI 0.11.25: `wake` only for a phone that asked, its card never for a browser
     const rooted = "default_root" in body && !rootPeers.has(peer) ? withoutRoot(body) : body;
     return !refPeers.has(peer) && Array.isArray(rooted.sessions) && rooted.sessions.some((row) => "agent_ref" in row) ? withoutRefs(rooted) : rooted;
   };
@@ -86,9 +91,10 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false } = 
     if (payload.extended === true && payload.agent_ref === true && env.sender_device_id) refPeers.add(env.sender_device_id);
     if (payload.extended === true && payload.voice_notice === true && env.sender_device_id) readyPeers.add(env.sender_device_id);
     if (payload.extended === true && payload.probe_failed === true && env.sender_device_id) probePeers.add(env.sender_device_id);
+    if (payload.extended === true && payload.wake === true && env.sender_device_id) wakePeers.add(env.sender_device_id);
   }
   // CLI 0.11.21: `default_root` and a row's `agent_ref` leave every inventory last, for a phone that did not ask each (asking needs `extended`, so a phone that never asked that loses both too).
-  return { bodyFor: (channel, record) => startBodyFor(channel.peer_device_id, record.type, bodyFor(channel, record)), note, readsDesk: () => deskPeers.size > 0, readsCli: () => cliPeers.size > 0, readsLive: (peer) => (peer === undefined ? livePeers.size > 0 : livePeers.has(peer)), readsSteer: (peer) => (peer === undefined ? steerPeers.size > 0 : steerPeers.has(peer)), readsVoice: () => voicePeers.size > 0, readsDefaultRoot: () => rootPeers.size > 0, readsVoiceNotice: (peer) => readyPeers.has(peer) };
+  return { bodyFor: (channel, record) => startBodyFor(channel.peer_device_id, record.type, bodyFor(channel, record)), note, readsWake: () => wakePeers.size > 0, readsDesk: () => deskPeers.size > 0, readsCli: () => cliPeers.size > 0, readsLive: (peer) => (peer === undefined ? livePeers.size > 0 : livePeers.has(peer)), readsSteer: (peer) => (peer === undefined ? steerPeers.size > 0 : steerPeers.has(peer)), readsVoice: () => voicePeers.size > 0, readsDefaultRoot: () => rootPeers.size > 0, readsVoiceNotice: (peer) => readyPeers.has(peer) };
 }
 
 /**

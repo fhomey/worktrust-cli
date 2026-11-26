@@ -13,10 +13,11 @@
  */
 import * as P from "./remote-protocol.mjs";
 import { rewritePrompt } from "./remote-mail-draft.mjs";
+import { finishDraft } from "./remote-mail-clean.mjs"; // CLI 0.11.26: the e-mail and nothing else
 
 export const COMPOSE_TYPES = new Set(["mail.draft.create", "mail.attachment.put", "mail.attachment.remove", "mail.signatures.get", "mail.signature.set", "mail.signature.remove"]);
 
-/** c: { o, drafts, index, accountOf, attach, signatures, exclusive(job), agentDraft(prompt) → { ok, draft } | { ok: false, code } } */
+/** c: { o, drafts, index, accountOf, attach, signatures, exclusive(job), agentDraft(prompt, { onText, signal }) → { ok, draft } | { ok: false, code }, beginLive (CLI 0.11.26: the rewrite live, for `stream`) } */
 export function createComposeDoor(c) {
   const held = (id) => c.drafts.get(id) ?? null;
   const editable = (h) => h.state === "ready" || h.state === "failed"; // a failed send is changed and approved again; a queued one waits
@@ -44,14 +45,21 @@ export function createComposeDoor(c) {
     const body = p.body ?? h.draft.body;
     tell("mail.draft.progress", { request_id: req, phase: "reading" });
     c.exclusive(async () => {
-      tell("mail.draft.progress", { request_id: req, phase: "drafting" });
-      const thread = h.draft.thread_id ? c.index.thread(h.draft.thread_id) : [];
-      const r = await c.agentDraft(rewritePrompt({ kind: p.rewrite.kind, body, thread, self: account?.address ?? null, random: c.o.random }));
+      const on = c.beginLive?.({ req, tell, draftId: p.draft_id, stream: p.stream === true }) ?? { extra: {}, end: () => {} };
+      tell("mail.draft.progress", { request_id: req, phase: "drafting", ...on.extra });
+      const thread = h.draft.thread_id ? c.index.thread(h.draft.thread_id) : h.thread ?? []; // a phone's draft: the thread it came with, in memory only
+      const rules = c.instructions.resolve(h.draft.account_id, p.instructions_id ?? null); on.mark?.(rules); // the person's instruction type, read now
+      const prompt = rewritePrompt({ kind: p.rewrite.kind, body, thread, self: account?.address ?? h.self ?? null, random: c.o.random, instructions: rules.text });
+      let r = await c.agentDraft(prompt, { onText: on.onText, signal: on.signal });
+      if (!r.ok && r.code === "cancelled") { on.end(); return; } // stopped from the phone: the draft stays as it was
+      if (r.ok) r = await finishDraft({ r, prompt, again: (p2) => c.agentDraft(p2, { signal: on.signal }) }); // the e-mail and nothing else
+      on.end();
+      if (!r.ok && r.code === "cancelled") return;
       const now = held(p.draft_id);
       if (!now || !editable(now)) return tell("mail.draft.refused", { request_id: req, code: "busy" });
       if (!r.ok) { c.o.log("mail_draft", { outcome: r.code, draft_id: p.draft_id }); return tell("mail.draft.refused", { request_id: req, code: r.code }); }
-      const { rewrite: _r, draft_id: _d, ...fields } = p;
-      const draft = { ...now.draft, ...fields, body: r.draft.body, notes: r.draft.notes, confidence: r.draft.confidence, request_id: req };
+      const { rewrite: _r, draft_id: _d, stream: _s, instructions_id: _i, ...fields } = p;
+      const draft = { ...now.draft, ...fields, body: r.draft.body, notes: r.draft.notes, confidence: r.draft.confidence, request_id: req, ...(on.written ?? {}) };
       if (!P.validateEventBody("mail.draft", draft).ok) return tell("mail.draft.refused", { request_id: req, code: "unparseable" });
       c.o.log("mail_draft", { outcome: "rewritten", draft_id: p.draft_id, kind: p.rewrite.kind });
       replace(now, draft, tell); // a READY draft, never queued: a rewrite cannot send
@@ -62,6 +70,7 @@ export function createComposeDoor(c) {
   function attachment(type, p, req, tell) {
     const h = held(p.draft_id);
     if (!h) return "not_found";
+    if (h.phone_origin) return "not_allowed"; // CLI 0.11.26: a phone's draft is words only; the phone attaches and sends itself
     if (!editable(h)) return "busy";
     if (type === "mail.attachment.remove") {
       c.attach.remove(p.draft_id, p.attachment_id);

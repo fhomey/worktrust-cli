@@ -247,6 +247,13 @@ export function qrSvg(text, scale = 8) {
   const dark = modules.flatMap((row, r) => row.map((on, c) => (on ? `<rect x="${(c + q) * scale}" y="${(r + q) * scale}" width="${scale}" height="${scale}"/>` : "")).filter(Boolean));
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="white"/><g fill="black">${dark.join("")}</g></svg>\n`;
 }
+/**
+ * HOW FAR TO HOLD THE PHONE (CLI 0.11.26; build 37 item E, CLI-LINK-STEPS.md): the pairing code is about 6 to 7.6 cm wide on a
+ * desk screen; a recent iPhone's wide lens focuses no closer than about 15 to 20 cm, the ultra-wide (the app's 0.5×) does.
+ * Said once, under the code. A smaller code (quadrant blocks) is NOT drawn: a quadrant keeps two module rows per line, so its
+ * modules would be twice as tall as wide (19 by 19 cells, not 19 by 10), which no phone was seen to read.
+ */
+export const SCAN_DISTANCE = "  Hold the phone about 20 to 30 cm from the screen; closer than that, tap 0.5× in the app.";
 /** Terminals known to draw the half blocks without a gap between lines. */
 export const QR_WHOLE_IN = new Set(["Apple_Terminal", "iTerm.app", "WezTerm", "ghostty"]);
 export function qrHelp({ tty = false, program = "" } = {}) {

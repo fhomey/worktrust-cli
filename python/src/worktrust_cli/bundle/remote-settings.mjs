@@ -22,7 +22,7 @@ import { readdirSync } from "node:fs";
 import { basename } from "node:path";
 import { adminRefusal, resolveAdminChange } from "./remote-admin.mjs";
 import { removePhones } from "./remote-connections.mjs";
-import { protectedFolder } from "./folder-picker.mjs";
+import { protectedFolder } from "./folder-picker.mjs"; import { FOLDER_IDS } from "./remote-setup.mjs";
 import { canonicalProject } from "./remote-policy.mjs";
 import { probeFolders } from "./remote-service.mjs";
 import { checkRoot, MAX_ROOTS, rootIdOf } from "./remote-projects.mjs";
@@ -30,7 +30,7 @@ import { agentOptionsOf } from "./remote-inventory.mjs";
 import { uninstallSteerMod } from "./remote-steer-mod.mjs"; import { deskSteerLine } from "./remote-desk-steer.mjs";
 import * as P from "./remote-protocol.mjs";
 import { keyboardYes } from "./remote-keyboard.mjs";
-import { deskReadOf, ensureRemoteDir, loadKeys, loadPhones, loadReadAlongAsk, readJson, saveReadAlongAsk, loadPreviewGrants, loadProjects, loadRoots, loadSettings, projectIdOf, savePreviewGrants, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
+import { deskReadOf, ensureRemoteDir, loadKeys, loadPhones, loadChosen, readJson, saveChosen, loadPreviewGrants, loadProjects, loadRoots, loadSettings, projectIdOf, savePreviewGrants, saveProjects, saveRoots, saveSettings, writeJson } from "./remote-store.mjs";
 
 export const RAISABLE_MODES = Object.freeze(["edit", "auto"]);
 const ORDER = ["manual", "edit", "plan", "auto"];
@@ -98,6 +98,14 @@ function applyRules(change, fromApp) {
     const n = removePhones([String(change.remove ?? "")]);
     return n > 0 ? { ok: true, message: "Disconnected: it can no longer steer this computer." } : { ...refused("no phone or browser by that fingerprint"), code: "not_found" };
   }
+  if (change?.what === "web") {
+    // CLI 0.11.26 (owner, 2026-11-25): may a remote session search the web, and may a phone allow a web page; this keyboard only.
+    if (fromApp) return refused("the web tools of a remote session change at this keyboard only");
+    if (change.search !== undefined && typeof change.search !== "boolean") return refused("web search: on or off");
+    if (change.fetch !== undefined && change.fetch !== "ask" && change.fetch !== "off") return refused("web pages: ask or off");
+    saveSettings({ ...settings, ...(change.search !== undefined ? { web_search: change.search } : {}), ...(change.fetch !== undefined ? { web_fetch: change.fetch } : {}) });
+    return { ok: true, message: change.search !== undefined ? (change.search ? "A remote session may search the web (a read of the public web, shown in its activity)." : "No remote session searches the web.") : change.fetch === "ask" ? "A remote session may open a web page when you allow that page on your phone." : "No remote session opens a web page." };
+  }
   if (change?.what === "endorse") {
     // May a phone confirmed here add a browser it scanned (remote-endorse.mjs)? This keyboard only, like the admin switch.
     if (fromApp) return refused("whether phones may add a browser changes at this keyboard only");
@@ -134,8 +142,10 @@ function applyRules(change, fromApp) {
     if (fromApp) return refused("voice prompts change at this keyboard only");
     if (typeof change.on !== "boolean") return refused("on or off");
     if (change.on && (settings.desk_steer !== true || settings.desk_live !== true || settings.desk_history !== true)) return refused("voice prompts need desk steering on first: npx worktrust remote desk-steer on, then npx worktrust remote voice on");
-    saveSettings({ ...settings, voice: change.on, ...(settings.voice === true && change.on ? {} : { voice_read: false }) }); // reading aloud needs its own yes again after voice was off
-    return { ok: true, message: change.on ? "A phone you confirmed here may enrol a voice key and send a spoken prompt with Siri into the newest open session of a project you granted, also while that phone is locked (only into a session in default or plan mode then). It cannot read anything, approve anything or start an agent. Each phone turns its own voice on with Face ID and your authenticator." : "No spoken prompt reaches this computer. Voice keys stay listed until you remove them: npx worktrust remote voice remove" };
+    // Owner, 2026-11-25: Siri on is ALL of it, reading answers aloud included, unless the person typed `voice read off` here (chosen.json).
+    const read = change.on && loadChosen().voice_read !== "off";
+    saveSettings({ ...settings, voice: change.on, voice_read: read });
+    return { ok: true, message: change.on ? `A phone you confirmed here may enrol a voice key and send a spoken prompt with Siri into the newest open session of a project you granted, also while that phone is locked (only into a session in default or plan mode then). It cannot approve anything or start an agent. Replies read aloud: ${read ? "on, for a phone whose own \"Read answers aloud\" is on (its prompt's reply and the project's last reply, cut at 4,000 characters; off: npx worktrust remote voice read off)" : "off, as you turned it off here (on: npx worktrust remote voice read on)"}. Each phone turns its own voice on with Face ID.` : "No spoken prompt reaches this computer, and no reply is read aloud. Voice keys stay listed until you remove them: npx worktrust remote voice remove" };
   }
   if (change?.what === "voice_read") {
     // May a voice key whose phone turned on "Read answers aloud" hear replies (remote-voice.mjs)? This keyboard only, on top of voice.
@@ -210,7 +220,7 @@ export function modesCommand(io, rest) {
 
 /** `remote desk-history on|off | status`: whether a paired phone or browser may read this computer's own sessions (CHAT-HISTORY.md §7.2). */
 export function deskHistoryCommand(io, rest) {
-  if (rest[0] === "on" || rest[0] === "off") return io.say(`  ✓ ${applySettingsChange({ what: "desk_history", on: rest[0] === "on" }, { kind: "keyboard" }).message}`);
+  if (rest[0] === "on" || rest[0] === "off") { const done = applySettingsChange({ what: "desk_history", on: rest[0] === "on" }, { kind: "keyboard" }); if (done.ok && rest[0] === "off") saveChosen("read_along", false); return io.say(`  ✓ ${done.message}`); } // off takes read along with it: the person's own off, remembered (CLI 0.11.26)
   io.say(`  Reading this computer's own sessions from a phone or a browser: ${loadSettings().desk_history === true ? "on" : "off"} (npx worktrust remote desk-history on|off)`);
 }
 
@@ -239,13 +249,13 @@ export async function readAlongCommand(io, rest) {
   if (rest[0] === "on" || rest[0] === "off") {
     if (rest[0] === "on" && !(await keyboardYes(io, "A confirmed phone may then read along live with a session in every folder you granted. Turn read along on?"))) return;
     const done = applySettingsChange({ what: "desk_live", on: rest[0] === "on" }, { kind: "keyboard" });
-    if (done.ok) saveReadAlongAsk({ answer: rest[0] === "on" ? "yes" : "no", at: Date.now() }); // typed by the person: that is the answer, and the question is not asked again
+    if (done.ok) saveChosen("read_along", rest[0] === "on"); // typed by the person: remembered, so a link or an update never turns an off back on (CLI 0.11.26)
     return io.say(`  ✓ ${done.message}`);
   }
   if (rest[0] !== undefined && rest[0] !== "status") return io.fail("npx worktrust remote read-along on|off | status");
   io.say(deskReadLine());
-  const asked = loadReadAlongAsk();
-  io.say(`  Asked at this keyboard: ${asked ? `yes, answered ${asked.answer}${asked.at ? ` on ${new Date(asked.at).toISOString().slice(0, 10)}` : ""}` : "not yet (the next remote command you run in a terminal asks once)"}`);
+  const chosen = loadChosen(), at = chosen.at.read_along;
+  io.say(`  Chosen at this keyboard: ${chosen.read_along ? `${chosen.read_along}${at ? ` on ${new Date(at).toISOString().slice(0, 10)}` : ""}` : "not yet (linking a phone, or the next npx worktrust update, turns it on)"}`);
 }
 /** What the run terminal says when a phone starts or stops reading along (remote-run.mjs): the folder's name and the phone's, never a word of the session. */
 export function readAlongLine(fields, phones = loadPhones(), projects = loadProjects()) {
@@ -281,9 +291,10 @@ export async function askMacFolderAccess(io, paths) {
   if (guarded.length === 0) return null;
   io.say(`  macOS guards your ${guarded.join(" and ")} folder. It now asks once whether the program that runs your agents (shown as "node" or "python") may read it.`);
   io.say("  Click OK (Allow). Without it, a session there stops at a prompt nobody sees, or fails with \"Operation not permitted\".");
-  const runtime = await io.prepare();
-  const result = await probeFolders({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "folder-check"], path: loadSettings().agent_path ?? process.env.PATH ?? "" });
+  const ids = io.setup?.folders(guarded) ?? []; if (ids[0]) io.setup.asked("folder_access", ids[0]); const runtime = await io.prepare(); // 0.11.26: one step per guarded folder on the phone (remote-setup.mjs)
+  const result = await (io.probeFolders ?? probeFolders)({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "folder-check"], path: loadSettings().agent_path ?? process.env.PATH ?? "" });
   const refusedHere = (result?.folders ?? []).filter((f) => !f.ok);
+  for (const name of guarded) { const id = FOLDER_IDS[name]; if (!result) io.setup?.skipped("folder_access", "no_answer", id); else if (refusedHere.some((f) => f.folder === name)) io.setup?.skipped("folder_access", "refused", id); else io.setup?.done("folder_access", id); }
   if (result && refusedHere.length === 0) { io.say("  ✓ macOS lets the Remote Agent service read it."); return true; }
   io.say(`  ! ${result ? `macOS refused: ${refusedHere.map((f) => f.path).join(", ")}` : "No answer from macOS in time"}. To allow it later: System Settings › Privacy & Security › Files and Folders,`);
   io.say(`    then turn on ${guarded.join(" and ")} for "node" (or "python"); or add that program under Full Disk Access.`);
@@ -317,15 +328,18 @@ export async function trustStep(io, { apply, interactive, term = null, choose = 
   if (!interactive || !term || !choose) { io.say("  Later: npx worktrust remote phones allow-endorse on|off   and   npx worktrust remote modes allow|deny edit|auto"); return "later"; }
   term.enter();
   try {
-    const asked = await choose(term, { title: "May your confirmed phones add a browser?", items: [
+    io.setup?.asked("endorse"); const asked = await choose(term, { title: "May your confirmed phones add a browser?", items: [
       { label: "Yes, they may add a browser", info: "A phone confirmed here may add a browser it scanned.", value: true, ...nowMark(endorse) },
       { label: "No", info: "Only this keyboard adds a browser.", value: false, ...nowMark(!endorse) }] });
+    if (asked !== "quit" && asked !== "back") io.setup?.asked("modes"); // the endorse answer taken (asked closes it), the modes on the screen now
     const modes = asked === "quit" || asked === "back" ? asked : await choose(term, { title: "Which agent modes may a phone start here?", items: CEILINGS.map((c) => ({ ...c, ...nowMark(c.value === ceiling) })) });
     term.erase(); term.restore();
-    if (modes === "quit" || modes === "back") { io.say("  Unchanged. Later: npx worktrust remote phones allow-endorse on|off · npx worktrust remote modes"); return "unchanged"; }
+    if (modes === "quit" || modes === "back") { if (asked === "quit" || asked === "back") io.setup?.skipped("endorse", "later"); io.setup?.skipped("modes", "later"); io.say("  Unchanged. Later: npx worktrust remote phones allow-endorse on|off · npx worktrust remote modes"); return "unchanged"; }
+    io.setup?.done("modes");
     const changes = [...(asked.item.value === endorse ? [] : [{ what: "endorse", on: asked.item.value }]), ...ceilingChanges(ceiling, modes.item.value)];
     for (const change of changes) await apply(change);
     if (changes.length === 0) io.say("  ✓ Unchanged: these were already your settings.");
     return "set";
   } finally { term.restore(); }
 }
+

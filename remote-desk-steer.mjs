@@ -26,7 +26,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { appendSteered } from "./remote-steered.mjs";
 import { keyboardYes } from "./remote-keyboard.mjs";
-import { knownBrowser, loadKeys } from "./remote-store.mjs";
+import { knownBrowser, loadKeys, saveChosen } from "./remote-store.mjs";
 import { createHmac } from "node:crypto";
 import { ALIVE_FRESH_MS, MIN_CLAUDE_CODE_STEER, MODES_MOD_VERSION, SAFE_MODES, installSteerMod, steerDir, steerModInstalled, uninstallSteerMod } from "./remote-steer-mod.mjs";
 
@@ -230,6 +230,7 @@ export async function deskSteerCommand(io, rest, { apply, settings, home = homed
     const done = apply({ what: "desk_steer", on: rest[0] === "on" }, { kind: "keyboard" });
     if (!done.ok) return io.fail(`  ${done.reason}`);
     if (rest[0] === "on") installSteerMod(home); else uninstallSteerMod(home);
+    saveChosen("desk_steering", rest[0] === "on"); // typed by the person: a link or an update never turns an off back on (CLI 0.11.26)
     return io.say(`  ✓ ${done.message}`);
   }
   if (rest[0] !== undefined && rest[0] !== "status") return io.fail("npx worktrust remote desk-steer on|off | status");

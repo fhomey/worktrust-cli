@@ -17,7 +17,7 @@ import { deskReadOf, loadPreviewGrants, loadRoots } from "./remote-store.mjs";
 import { keepReaders, readAlongLine } from "./remote-settings.mjs";
 import { sessionProjects } from "./remote-projects.mjs";
 import { loadVoice } from "./remote-voice.mjs";
-import { createDeviceCounts, ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, knownBrowser, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity } from "./remote-store.mjs";
+import { createDeviceCounts, ensureRemoteDir, gatewayOf, isLoopbackGateway, issuerKeys, knownBrowser, loadDeskMarks, loadIdentity, loadKeys, loadPipelineReviews, loadProjects, loadSettings, readJson, remotePath, random, saveIdentity, webOf } from "./remote-store.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { inventory as listAgents, offered } from "./remote-inventory.mjs";
 
@@ -39,7 +39,7 @@ import { createDaemonCore } from "./remote-daemon.mjs";
 import { createDesk } from "./remote-desk-sessions.mjs";
 import { connectGateway, gatewayLine, keepGatewayState, keptGatewayState, webSocketAvailable } from "./remote-transport.mjs";
 import { createHealthMonitor, fixtureReaders, HEALTH_REFUSAL, healthLine, keepHealth } from "./remote-health.mjs";
-import { createHandover, daemonBusy, holdDuring, ownLauncher, restartAsked } from "./remote-service.mjs";
+import { createHandover, daemonBusy, holdDuring, ownLauncher, restartAsked } from "./remote-service.mjs"; import { keepLink } from "./remote-service-restart.mjs"; import { setupStamp } from "./remote-setup.mjs"; // 0.11.26: link.json, connected or offline since when (update and `remote status` read it)
 import { createMail } from "./remote-mail.mjs";
 import { createAwake } from "./remote-awake.mjs";
 import { createWakeHelper, wakeInventory } from "./remote-wake.mjs";
@@ -184,7 +184,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // A mail store that cannot open (no keychain here) leaves the door saying `unsupported`; the daemon runs on without it.
   const every = (ms, fn) => { const t = setInterval(fn, ms); t.unref?.(); return () => clearInterval(t); };
   const mail = await createMail({ dir: remotePath("mail"), emit: (...a) => core.emit(...a), now: Date.now, random, log, every, later: (ms, fn) => setTimeout(fn, ms),
-    agentFile: (adapter) => listAgents({ env: agentEnv(loadSettings()) }).files[adapter] ?? null, agentEnv: () => agentEnv(loadSettings()), defaultAgent: () => loadSettings().default_adapter ?? "claude-code",
+    agentFile: (adapter) => listAgents({ env: agentEnv(loadSettings()) }).files[adapter] ?? null, agentEnv: () => agentEnv(loadSettings()), agentModels: (adapter) => listAgents({ env: agentEnv(loadSettings()) }).reports.find((r) => r.adapter === adapter)?.models ?? [], agentStreams: (adapter) => adapter === "claude-code" && listAgents({ env: agentEnv(loadSettings()) }).features?.["claude-code"]?.partial === true, defaultAgent: () => loadSettings().default_adapter ?? "claude-code",
     openBrowser: (url) => { const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["explorer.exe", [url]] : ["xdg-open", [url]]; try { spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref(); } catch { /* the person opens it */ } } }).catch(() => { log("mail_unavailable", {}); return null; });
   let health = null; // the sampler below (remote-health.mjs): every 15 s, local numbers, no model
   // REMOTE WAKE (CLI 0.11.25, remote-awake.mjs and remote-wake.mjs; docs/remote-agents/WAKE.md): the Stay reachable hold, one child
@@ -192,7 +192,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   const awake = createAwake({ log }), wakeHelper = createWakeHelper({ local, issuerKeys: keysOf, isBrowser: (id) => knownBrowser(id), log });
   const wake = { handle: (env, payload) => wakeHelper.handle(env, payload), inventory: () => wakeInventory({ local, awakeState: awake.state() }) };
   const core = createDaemonCore({ local, issuerKeys: keysOf, journal, projectSecret: keys.projectSecret, attachments, preview, live, desk, agentEnv: () => agentEnv(loadSettings()), now: Date.now, random, log: logged, health: () => health?.latest() ?? null, version, send: (f, how) => transport?.send(f, how) ?? false, room: () => transport?.room(), inventory: (refresh) => inventory({ env: agentEnv(loadSettings()), refresh }), online: () => transport?.ready() ?? false, approvals: null, counts, mail, wake });
-  const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
+  const ctx = { journal, now: Date.now, random, deviceId: identity.device_id, emit: core.emit, web: () => webOf(loadSettings()) /* CLI 0.11.26: the keyboard's web tools */, paused: () => loadSettings().paused !== null || !loadSettings().enabled, phoneOnline: core.phoneOnline, controllers: core.controllers };
   const approvals = createApprovals(ctx);
   const socket = await approvals.listen(runDir);
   let releases = null; // set below; the hooks run only once events flow
@@ -256,7 +256,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   const { requestAssertion } = await import("./remote-pairing.mjs");
   const authorize = () => (identity.origin ? requestAssertion({ origin: identity.origin, deviceId: identity.device_id, secret: keys.secret }) : Promise.resolve(null));
   transport = connectGateway({ url: gateway, identity, signingSecret: keys.secret.ed25519, log, authorize, onFrame: (f) => { dispatchFrame(f).catch((e) => log("frame_failed", { name: e?.name ?? "Error" })); },
-    onState: (state, info) => { log("gateway", { state, ...info }); keepGatewayState(state, info); if (state === "held" || state === "stopped") process.stderr.write(`${gatewayLine(keptGatewayState())}\n`); if (state === "ready") registerCode(true); } });
+    onState: (state, info) => { log("gateway", { state, ...info }); keepGatewayState(state, info); keepLink(state, { version }); if (state === "held" || state === "stopped") process.stderr.write(`${gatewayLine(keptGatewayState())}\n`); if (state === "ready") registerCode(true); } });
   say(`  WorkTrust remote is running for ${identity.device_id} (gateway ${new URL(gateway).host}). Ctrl+C stops it.`);
   let stopping = false;
   // `signal`: the service manager ends it. When an update asked for that (restartAsked: restart.json, or a newer installed
@@ -285,7 +285,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // "Phone linked", Remote Agent › Roots or › Projects) changes the lists another process wrote; the next tick sends the
   // inventory again, sealed, so a phone waiting on "Choose access at your computer" learns it from this computer, not a server.
   // The baseline is what stood when the daemon started (0.11.19: until then it was taken at the first tick, so a change in the first three seconds was never told).
-  const reach = () => [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id), "|", deskReadOf(loadSettings()) /* 0.11.19: also what the keyboard lets a phone read of the desk */].join(","); let grants = null; try { grants = reach(); } catch { /* unreadable now: the first tick that reads it is the baseline */ } const grantsChanged = () => { const now = reach(); const changed = grants !== null && now !== grants; grants = now; return changed; };
+  const reach = () => [...loadRoots().map((r) => r.root_id), "|", ...loadProjects().map((p) => p.project_id), "|", deskReadOf(loadSettings()) /* 0.11.19: also what the keyboard lets a phone read of the desk */, "|", setupStamp() /* 0.11.26: the linking flow's steps (remote-setup.mjs) */].join(","); let grants = null; try { grants = reach(); } catch { /* unreadable now: the first tick that reads it is the baseline */ } const grantsChanged = () => { const now = reach(); const changed = grants !== null && now !== grants; grants = now; return changed; };
   keepReaders([]); // nobody reads along yet: an older daemon's list is not this one's
   setInterval(() => { const s = loadSettings(); if (!s.enabled) stop(0); if (readers.size > 0) keepReaders([...readers.values()]); registerCode(); releases.poll(); try { counts.flush(); } catch { /* next tick */ } reporter?.tick().catch(() => log("counts_error", {})); try { handover?.tick(); } catch { log("handover_error", {}); } try { if (grantsChanged()) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { /* an unreadable list: told at the next ask */ } }, 3000).unref();
   mail?.start(); // the sync: every minute, by ids in the log

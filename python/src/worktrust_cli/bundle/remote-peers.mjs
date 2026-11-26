@@ -46,6 +46,9 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false, isB
   const rootPeers = new Set(), refPeers = new Set(), readyPeers = new Set(); // readyPeers (build 31): a phone that asked `voice_notice` hears "Answer ready" as a device notice // CLI 0.11.21: `default_root` (asked `default_root`) and a session row's `agent_ref` (asked `agent_ref`)
   // CLI 0.11.25 (protocol wake.ts, docs/remote-agents/WAKE.md): `wake` only for a phone that asked it, and its `card` (this computer's MAC and network) never for a browser.
   const wakePeers = new Set();
+  // CLI 0.11.26 (protocol setup-steps.ts, rule S): `setup`, the linking flow's keyboard steps, only for the phone it names and only after that phone asked.
+  const setupPeers = new Set();
+  const setupBodyFor = (peer, type, body) => (type !== "device.inventory" || !("setup" in body) || (setupPeers.has(peer) && body.setup?.phone === peer) ? body : (({ setup: _drop, ...rest }) => rest)(body));
   const wakeBodyFor = (peer, type, body) => (type !== "device.inventory" || !("wake" in body) ? body : !wakePeers.has(peer) ? (({ wake: _drop, ...rest }) => rest)(body) : isBrowser(peer) === false ? body : { ...body, wake: { ...body.wake, card: null } });
   const probePeers = new Set(); // CLI 0.11.22: the reject reason `probe_failed`, only for a phone that asked it (others hear `busy`)
   const probeBodyFor = (peer, type, body) => (type === "command.rejected" && body?.reason === "probe_failed" && !probePeers.has(peer) ? { ...body, reason: "busy" } : body);
@@ -59,7 +62,7 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false, isB
   const withoutRefs = (body) => ({ ...body, sessions: body.sessions.map(({ agent_ref: _drop, ...row }) => row) });
   const startBodyFor = (peer, type, body) => {
     if (type !== "device.inventory") return probeBodyFor(peer, type, body); // CLI 0.11.22: `probe_failed` becomes `busy` last, for every peer that did not ask it
-    body = wakeBodyFor(peer, type, body); // CLI 0.11.25: `wake` only for a phone that asked, its card never for a browser
+    body = setupBodyFor(peer, type, wakeBodyFor(peer, type, body)); // CLI 0.11.25: `wake` only for a phone that asked, its card never for a browser; 0.11.26: `setup` only for its own phone, asked
     const rooted = "default_root" in body && !rootPeers.has(peer) ? withoutRoot(body) : body;
     return !refPeers.has(peer) && Array.isArray(rooted.sessions) && rooted.sessions.some((row) => "agent_ref" in row) ? withoutRefs(rooted) : rooted;
   };
@@ -92,9 +95,10 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false, isB
     if (payload.extended === true && payload.voice_notice === true && env.sender_device_id) readyPeers.add(env.sender_device_id);
     if (payload.extended === true && payload.probe_failed === true && env.sender_device_id) probePeers.add(env.sender_device_id);
     if (payload.extended === true && payload.wake === true && env.sender_device_id) wakePeers.add(env.sender_device_id);
+    if (payload.extended === true && payload.setup === true && env.sender_device_id) setupPeers.add(env.sender_device_id);
   }
   // CLI 0.11.21: `default_root` and a row's `agent_ref` leave every inventory last, for a phone that did not ask each (asking needs `extended`, so a phone that never asked that loses both too).
-  return { bodyFor: (channel, record) => startBodyFor(channel.peer_device_id, record.type, bodyFor(channel, record)), note, readsWake: () => wakePeers.size > 0, readsDesk: () => deskPeers.size > 0, readsCli: () => cliPeers.size > 0, readsLive: (peer) => (peer === undefined ? livePeers.size > 0 : livePeers.has(peer)), readsSteer: (peer) => (peer === undefined ? steerPeers.size > 0 : steerPeers.has(peer)), readsVoice: () => voicePeers.size > 0, readsDefaultRoot: () => rootPeers.size > 0, readsVoiceNotice: (peer) => readyPeers.has(peer) };
+  return { bodyFor: (channel, record) => startBodyFor(channel.peer_device_id, record.type, bodyFor(channel, record)), note, readsWake: () => wakePeers.size > 0, readsSetup: () => setupPeers.size > 0, readsDesk: () => deskPeers.size > 0, readsCli: () => cliPeers.size > 0, readsLive: (peer) => (peer === undefined ? livePeers.size > 0 : livePeers.has(peer)), readsSteer: (peer) => (peer === undefined ? steerPeers.size > 0 : steerPeers.has(peer)), readsVoice: () => voicePeers.size > 0, readsDefaultRoot: () => rootPeers.size > 0, readsVoiceNotice: (peer) => readyPeers.has(peer) };
 }
 
 /**

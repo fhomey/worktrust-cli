@@ -91,7 +91,7 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
 // given their word, docs/OPEN.md), turned on at this keyboard only (`worktrust remote desk-history on`). Anything but `true`
 // is off: such an ask is refused `not_allowed`.
 // desk_live (0.11.19; owner, 2026-11-21; docs/remote-agents/DESK-SESSIONS.md §Read along): may a paired phone READ ALONG, live,
-// with a session running at this computer? OFF until a person says yes at this keyboard: by the question after a pairing (remote-read-along.mjs; Enter is yes) or by `worktrust remote read-along on` (
+// with a session running at this computer? OFF until a phone is linked at this keyboard (CLI 0.11.26, remote-read-along.mjs: no question, unless the person turned it off here) or `worktrust remote read-along on` (
 // which turns desk_history on with it). A settings file of 0.11.17 or 0.11.18 with desk_history and no desk_live keeps
 // exactly what it had: closed turns, never the running one.
 // desk_steer (0.11.20; owner, 2026-11-21; docs/remote-agents/DESK-STEERING.md): may a paired phone (or a browser after its Remote PIN)
@@ -110,12 +110,29 @@ export const saveIdentity = (identity) => writeJson("identity.json", identity);
  */
 export const knownBrowser = (deviceId, phones = loadPhones()) => { const p = phones.confirmed.find((x) => x.device_id === deviceId); return !p || p.how === "endorsed" || p.kind === "browser"; };
 /**
- * WHETHER THIS COMPUTER'S PERSON WAS ASKED ABOUT READING ALONG, AND WHAT THEY SAID (0.11.19, remote-read-along.mjs): beside
- * the settings, in its own file, so nothing that rewrites the settings carries it. `{ answer: "yes" | "no", at }` or null:
- * not asked yet. Written at this keyboard only: by the question's own answer and by `read-along on|off` typed by the person.
+ * WHAT THIS COMPUTER'S PERSON CHOSE FOR THE THREE SWITCHES A LINK TURNS ON (CLI 0.11.26; owner, 2026-11-25; remote-read-along.mjs):
+ * read along, steering from the phone, voice prompts with Siri. Beside the settings, in its own file, so nothing that rewrites the
+ * settings carries it: `{ read_along, desk_steering, voice, voice_read }`, each "on", "off" or null (never chosen here). Written
+ * ONLY by the person's own commands at this keyboard (`remote read-along on|off`, `remote desk-history off`, `remote desk-steer
+ * on|off`, `remote voice on|off`, `remote voice read on|off`; check-remote-cli rule W): a link and an update turn on what is null
+ * and never what is "off". Voice on brings reading answers aloud with it unless `voice_read` is "off" (owner, 2026-11-25).
+ * A computer asked by 0.11.19 to 0.11.25 kept its answer in read-along.json (`{ answer: "yes" | "no", at }`): read here as
+ * read along's choice while chosen.json has none, never written again.
  */
+export const SWITCH_NAMES = Object.freeze(["read_along", "desk_steering", "voice", "voice_read"]);
+const chosenWord = (v) => (v === "on" || v === "off" ? v : null);
 export const loadReadAlongAsk = () => { const kept = readJson("read-along.json"); return kept && (kept.answer === "yes" || kept.answer === "no") ? { answer: kept.answer, at: Number.isSafeInteger(kept.at) ? kept.at : null } : null; };
-export const saveReadAlongAsk = ({ answer, at }) => writeJson("read-along.json", { v: 1, answer: answer === "yes" ? "yes" : "no", at });
+export function loadChosen() {
+  const kept = readJson("chosen.json") ?? {}, legacy = loadReadAlongAsk(), at = kept.at && typeof kept.at === "object" ? kept.at : {};
+  const word = { read_along: chosenWord(kept.read_along) ?? (legacy ? (legacy.answer === "yes" ? "on" : "off") : null), desk_steering: chosenWord(kept.desk_steering), voice: chosenWord(kept.voice), voice_read: chosenWord(kept.voice_read) };
+  return { ...word, at: { read_along: Number.isSafeInteger(at.read_along) ? at.read_along : chosenWord(kept.read_along) ? null : (legacy?.at ?? null), desk_steering: Number.isSafeInteger(at.desk_steering) ? at.desk_steering : null, voice: Number.isSafeInteger(at.voice) ? at.voice : null, voice_read: Number.isSafeInteger(at.voice_read) ? at.voice_read : null } };
+}
+/** `name`: one of SWITCH_NAMES; `on`: what the person typed. */
+export function saveChosen(name, on, now = Date.now()) {
+  if (!SWITCH_NAMES.includes(name)) throw new Error(`no such switch: ${name}`);
+  const { at, ...was } = loadChosen();
+  writeJson("chosen.json", { v: 1, ...was, [name]: on === true ? "on" : "off", at: { ...at, [name]: now } });
+}
 /**
  * THE DEFAULT ROOT (CLI 0.11.21, owner 2026-11-22; remote-default-root.mjs): `~/Desktop/WorkTrust`, made and added as a root at
  * this keyboard only. Its own file, `{ root_id | null, answer: "yes" | "no" | null, at }`, written by remote-default-root.mjs
@@ -136,7 +153,9 @@ export const deskReadOf = (settings) => (settings?.desk_history !== true ? "off"
 export const PRODUCTION_GATEWAY = "wss://remote.worktrust.io";
 /** The relay this computer uses: its own saved choice, else WorkTrust's. */
 export const gatewayOf = (settings) => settings?.gateway ?? PRODUCTION_GATEWAY;
-export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false, desk_live: false, desk_steer: false, voice: false, voice_read: false });
+export const DEFAULT_SETTINGS = Object.freeze({ v: 1, enabled: false, paused: null, gateway: null, default_adapter: "claude-code", default_model: null, agent_path: null, codex: false, opencode: false, terminal: false, allow_endorse: false, modes_allowed: Object.freeze(["manual", "plan"]), admin: true, desk_history: false, desk_live: false, desk_steer: false, voice: false, voice_read: false, web_search: true, web_fetch: "ask" }); // web (CLI 0.11.26): a search of the public web on by default; a web page asked on the phone, per page
+/** The web tools a remote session may use, as this keyboard set them (remote-web.mjs). */
+export const webOf = (settings) => ({ search: settings?.web_search !== false, fetch: settings?.web_fetch === "off" ? "off" : "ask" });
 export const loadSettings = () => ({ ...DEFAULT_SETTINGS, ...(readJson("settings.json") ?? {}) });
 export const saveSettings = (settings) => writeJson("settings.json", { ...DEFAULT_SETTINGS, ...settings });
 

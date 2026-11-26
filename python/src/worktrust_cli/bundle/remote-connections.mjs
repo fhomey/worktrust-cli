@@ -16,7 +16,7 @@ import { join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { gatewayOf, loadIdentity, loadKeys, loadPhones, loadProjects, loadRoots, loadSettings, random, removeFile, savePhones, writeJson } from "./remote-store.mjs";
 import * as P from "./remote-protocol.mjs";
-import { qrHelp, qrWindow, terminalQr } from "./remote-qr.mjs";
+import { SCAN_DISTANCE, qrHelp, qrWindow, terminalQr } from "./remote-qr.mjs";
 import { pairingQrText, seededInvite } from "./remote-pairing.mjs";
 import { onLetter, watchKeys } from "./cli-stop.mjs";
 import { startCountdown } from "./remote-countdown.mjs";
@@ -170,6 +170,7 @@ export async function linkPhone(io, ready = null, { waitMs = ONE_SCAN_WAIT_MS, n
     io.say();
     io.say(terminalQr(pairingQrText(invite), { color: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR }));
     io.say();
+    io.say(SCAN_DISTANCE); // CLI 0.11.26 (build 37, item E): a phone's wide lens does not focus at 10 cm; the app's 0.5× does
     if (showLink) io.say(`  Link: ${pairingQrText(invite)}`);
     io.say(`  No camera? Type this code in the app: ${pretty(code)} (then confirm the phone here with \`npx worktrust remote phones\`)`);
     io.say("  The code and the QR work once, for ten minutes. Ctrl+C cancels.");
@@ -288,19 +289,19 @@ export async function accessStep(io, { apply, interactive, term = null, choose =
   io.say();
   term.enter();
   try {
-    const picked = await choose(term, { title: "What may this phone reach on this computer?", items: accessItems(folders) });
-    if (picked === "quit" || picked === "back" || picked.item.value === "later") { term.erase(); for (const line of LATER) io.say(line); return "later"; }
+    io.setup?.asked("reach"); const picked = await choose(term, { title: "What may this phone reach on this computer?", items: accessItems(folders) }); // 0.11.26: mirrored on the phone (remote-setup.mjs)
+    if (picked === "quit" || picked === "back" || picked.item.value === "later") { io.setup?.skipped("reach", "later"); term.erase(); for (const line of LATER) io.say(line); return "later"; }
     if (picked.item.value === "all") {
-      term.erase(); term.restore();
+      io.setup?.done("reach"); term.erase(); term.restore();
       for (const path of folders) await apply({ what: "roots", add: path });
       return "all";
     }
     const offered = projects ?? knownProjects();
-    if (offered.length === 0) { term.erase(); io.say("  No git project found in the usual folders. Grant one: npx worktrust remote projects add <folder>"); return "later"; }
+    if (offered.length === 0) { io.setup?.skipped("reach", "later"); term.erase(); io.say("  No git project found in the usual folders. Grant one: npx worktrust remote projects add <folder>"); return "later"; }
     const ticked = await choose(term, { title: "Projects this phone may steer an agent in", multi: true, items: [...offered.map((path) => ({ label: tildePath(path), info: "Space ticks it; Enter grants the ticked projects.", tick: true, path })), { label: "Grant the ticked projects", info: "Enter grants every ticked project.", done: true }] });
     term.erase(); term.restore();
     const chosen = ticked === "quit" || ticked === "back" ? [] : ticked.ticked;
-    if (chosen.length === 0) { for (const line of LATER) io.say(line); return "later"; }
+    if (chosen.length === 0) { io.setup?.skipped("reach", "later"); for (const line of LATER) io.say(line); return "later"; } io.setup?.done("reach");
     for (const item of chosen) await apply({ what: "projects", add: item.path });
     return "chosen";
   } finally { term.restore(); }

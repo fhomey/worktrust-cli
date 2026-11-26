@@ -21,6 +21,8 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { classifyAction, phoneMayDecide, projectForAction } from "./remote-policy.mjs";
+/** The keyboard's web tools (remote-store.mjs webOf); none known: search off, pages off (fails closed). */
+const webTools = (w) => ({ search: w?.search === true, fetch: w?.fetch === "ask" ? "ask" : "off" });
 
 export const APPROVAL_LIFETIME_MS = 5 * 60_000;
 
@@ -43,6 +45,17 @@ export function createApprovals(ctx) {
   async function request(session, toolName, input, preset = null) {
     if (ctx.paused()) return deny("WorkTrust remote is paused on this computer; denied");
     const { action, reason } = preset ?? classifyAction(session.adapter, toolName, input, projectForAction(session, input));
+    // THE WEB (CLI 0.11.26, owner 2026-11-25: "you should even be able to ask the weather through the agent"): a search is a
+    // read of the public web, allowed as this keyboard set it, and shown in the session's activity; a page is asked on the phone.
+    const web = webTools(ctx.web?.());
+    if (action.class === "web_search") {
+      const query = typeof input?.query === "string" ? input.query.slice(0, 500) : "";
+      if (!web.search) { ctx.emit(session.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: "Denied on the computer (WebSearch): web search is off on this computer (npx worktrust remote web-search on)" }, session.command_id); return deny("WorkTrust remote: web search is off on this computer"); }
+      ctx.emit(session.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: `Searched the web: ${query}` }, session.command_id);
+      return { behavior: "allow", updatedInput: input };
+    }
+    if (action.class === "web_fetch" && web.fetch === "off") { ctx.emit(session.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: "Denied on the computer (WebFetch): web pages are off on this computer (npx worktrust remote web-pages ask)" }, session.command_id); return deny("WorkTrust remote: web pages are off on this computer"); }
+    if (action.kind === "network" && action.class === "other") { ctx.emit(session.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: `Denied on the computer (${action.tool}): web pages are not available for ${session.adapter} from the phone yet` }, session.command_id); return deny("WorkTrust remote: web pages are not available for this agent from the phone yet"); }
     if (!phoneMayDecide(action)) {
       ctx.emit(session.session_id, "agent.output_delta", { stream: "tool", offset: 0, text: `Denied on the computer (${action.tool}): ${reason}` }, session.command_id);
       return deny(`WorkTrust remote: ${reason}`);

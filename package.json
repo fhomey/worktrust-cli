@@ -1,6 +1,6 @@
 {
   "name": "worktrust",
-  "version": "0.11.25",
+  "version": "0.11.26",
   "description": "Couple this computer to WorkTrust: approve a code in your browser, and every AI app here reports what you built. Metadata only, no dependencies.",
   "type": "module",
   "bin": {
@@ -100,6 +100,7 @@
     "remote-run.mjs",
     "remote-service.mjs",
     "remote-service-home.mjs",
+    "remote-service-restart.mjs",
     "remote-awake.mjs",
     "remote-wake.mjs",
     "remote-wake-doors.mjs",
@@ -151,7 +152,14 @@
     "remote-mail-imapbox.mjs",
     "remote-mail-attach.mjs",
     "remote-mail-signatures.mjs",
-    "remote-mail-compose-door.mjs"
+    "remote-mail-compose-door.mjs",
+    "remote-mail-phone.mjs",
+    "remote-setup.mjs",
+    "remote-mail-stream.mjs",
+    "remote-mail-instructions.mjs",
+    "remote-instructions-door.mjs",
+    "remote-mail-clean.mjs",
+    "remote-web.mjs"
   ],
   "engines": {
     "node": ">=18"

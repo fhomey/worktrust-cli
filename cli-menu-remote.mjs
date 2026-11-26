@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { choose, muted, remoteState, runShown, typed } from "./cli-menu.mjs";
 import { makeProjectsFolder, pickFolder, pickerCommand, suggestedFolders } from "./folder-picker.mjs";
 import { awaitingName, awaitingRow, connections } from "./remote-connections.mjs";
+import { detailLines, deviceHistory, deviceLabel, historyRows as deviceRows, shortNumber } from "./remote-device-history.mjs";
 import { loadIdentity, loadProjects, loadRoots, loadSettings } from "./remote-store.mjs";
 import { allowedModes, ceilingOf } from "./remote-settings.mjs";
 import { HEALTH_REFUSAL, keptHealth } from "./remote-health.mjs";
@@ -111,7 +112,7 @@ function connectionsMenu(term, io, header) {
     if (list.length === 0) return [
       { label: "Nothing is linked now.", info: "Link a phone with the row below.", disabled: true, quiet: "Nothing to open here." },
       { label: "Link a phone (QR here)", hint: "npx worktrust remote pair", info: "Shows a QR that links a phone to this computer.", run: () => runShown(term, io, ["remote", "pair"]) },
-      { label: "History ›", hint: "npx worktrust remote phones --history", info: "Every device ever linked here: how long, how it ended.", run: () => runShown(term, io, ["remote", "phones", "--history"]) }, // 0.11.22: who was linked, and how long
+      { label: "History ›", hint: "npx worktrust remote phones --history", info: "Every device ever linked here: how long, how it ended.", run: () => devicesMenu(term, io, header) }, // 0.11.22: who was linked, and how long
       BACK,
     ];
     const acts = (c) => () => level(term, header, `${c.name} · ${c.kind} · ${c.fingerprint}`, () => [
@@ -122,10 +123,37 @@ function connectionsMenu(term, io, header) {
     return [
       ...list.map((c) => ({ label: `${c.name.length > wide ? `${c.name.slice(0, wide - 1)}…` : c.name.padEnd(wide)}  ${c.kind.padEnd(7)}  since ${day(c.since)}${last ? `  last ${day(c.last_seen)}` : ""}${c.state === "pending" ? "  pending" : ""}${c.inUse ? "  in use" : ""}`, hint: `npx worktrust remote disconnect ${c.n}`, info: `Enter opens ${c.name} · ${c.fingerprint}.`, run: acts(c) })),
       { label: "Disconnect all…", hint: "npx worktrust remote disconnect --all", info: "Closes every connection. You type close all to confirm.", run: () => runShown(term, io, ["remote", "disconnect", "--all"]) },
-      { label: "History ›", hint: "npx worktrust remote phones --history", info: "Every device ever linked here: how long, how it ended.", run: () => runShown(term, io, ["remote", "phones", "--history"]) },
+      { label: "History ›", hint: "npx worktrust remote phones --history", info: "Every device ever linked here: how long, how it ended.", run: () => devicesMenu(term, io, header) },
       BACK,
     ];
   }, io);
+}
+
+/**
+ * HISTORY › (CLI 0.11.26, owner 2026-11-25: "device | number | linked since | last seen >, and when you open one you see all the
+ * additional information, and you can go back"). One short row per link (remote-device-history.mjs historyRows, cut to the
+ * terminal so nothing wraps); Enter opens its detail, every field labelled, with Disconnect for a link that is live now (the
+ * same `remote disconnect` and its typed confirmation); Back returns to the list on the same row.
+ */
+export async function devicesMenu(term, io, header) {
+  for (let at = 0; ;) {
+    const periods = deviceHistory(), rows = deviceRows(periods, term.size().columns - 8); // "> 1  " before a row and a space after it
+    const items = [...(periods.length === 0 ? [{ label: "No device was ever linked here.", disabled: true, quiet: "Nothing to open here." }] : []),
+      ...periods.map((p, i) => ({ label: rows[i], hint: `npx worktrust remote phones --history ${shortNumber(p)}`, info: "Enter opens everything known about this device.", period: p })), BACK];
+    const picked = await choose(term, { header, title: `Devices linked to this computer, newest first (${periods.length})`, items, at });
+    if (picked === "quit") return false;
+    if (picked === "back" || picked.item.back) return true;
+    at = items.indexOf(picked.item);
+    if ((await deviceDetail(term, io, picked.item.period)) === false) return false;
+  }
+}
+async function deviceDetail(term, io, p) {
+  const live = connections().find((c) => c.device_id === p.device_id && !p.ended_at && !p.ended_how);
+  const items = [...(live ? [{ label: "Disconnect", hint: `npx worktrust remote disconnect ${live.fingerprint}`, info: "Closes it. You type its name or code to confirm.", run: () => runShown(term, io, ["remote", "disconnect", live.fingerprint]) }] : []), BACK];
+  const picked = await choose(term, { header: () => detailLines(p, term.size().columns - 1), title: `${deviceLabel(p)} · ${shortNumber(p)}`, items });
+  if (picked === "quit") return false;
+  if (picked === "back" || picked.item.back) return true;
+  return picked.item.run(); // after a disconnect: the list again, read anew
 }
 
 /**

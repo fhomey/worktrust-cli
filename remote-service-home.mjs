@@ -25,7 +25,7 @@ export function ownHome(home, env = process.env) {
   if (env.WORKTRUST_NO_SERVICE_MANAGER && env.WORKTRUST_NO_SERVICE_MANAGER !== "0") return false;
   try { return typeof home === "string" && home !== "" && canonical(home) === canonical(userInfo().homedir); } catch { return false; }
 }
-const execute = (file, args) => { try { execFileSync(file, args, { stdio: "ignore", timeout: 15_000 }); return true; } catch { return false; } };
+const execute = (file, args) => { try { execFileSync(file, args, { stdio: "ignore", timeout: 10_000 }); return true; } catch { return false; } };
 const stubsDir = (env = process.env) => (env.WORKTRUST_SERVICE_STUBS && isAbsolute(env.WORKTRUST_SERVICE_STUBS) ? env.WORKTRUST_SERVICE_STUBS : null);
 export const systemRunner = (home) => Object.assign((file, args) => (stubsDir() ? execute(join(stubsDir(), file), args) : ownHome(home) ? execute(file, args) : false), { gated: true });
 export const refusedFor = (runner, home) => (runner.gated === true && !stubsDir() && !ownHome(home) ? NOT_THIS_HOME : null);

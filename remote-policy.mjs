@@ -153,6 +153,8 @@ export const MAX_SHOWN_INPUT = 16_384;
  * One permission request → the action the phone would see, with its class. `tool` is the agent's own tool name, `input`
  * its exact arguments, `project` the canonical project folder. Pure apart from reading which paths exist.
  */
+/** A web page a phone may be asked about (CLI 0.11.26): an http(s) URL of at most 2,048 characters, no credentials in it. */
+export const webPageOk = (url) => { try { const u = new URL(String(url)); return (u.protocol === "https:" || u.protocol === "http:") && !u.username && !u.password && String(url).length <= 2_048; } catch { return false; } };
 export function classifyAction(adapter, tool, input, project, rationale = null) {
   const args = input && typeof input === "object" ? input : {};
   const shown = JSON.stringify(args);
@@ -170,7 +172,8 @@ export function classifyAction(adapter, tool, input, project, rationale = null) 
     files = target ? [target] : [];
     kind = "tool";
     cls = target && isSecretPath(target) ? "secret_read" : "other";
-  } else if (tool === "WebFetch" || tool === "WebSearch") kind = "network";
+  } else if (tool === "WebSearch") { kind = "network"; cls = "web_search"; } // CLI 0.11.26: a read of the public web, allowed as the keyboard set it (remote-approvals.mjs)
+  else if (tool === "WebFetch") { kind = "network"; cls = adapter === "claude-code" && webPageOk(args.url) ? "web_fetch" : "other"; } // a page: asked on the phone, per page; another agent's fetch cannot be followed up
   const outward = outwardMessageOf(tool, args, project);
   if (outward) {
     const base = { kind: "message", adapter, tool: String(tool).slice(0, 128), files: [], rationale };
@@ -190,6 +193,7 @@ export const REASONS = Object.freeze({
   delete_outside_project: "deleting outside the project is never approved from a phone",
   secret_read: "secret files (keys, .env, credentials) are never opened from a phone",
   persistent_rule: "rules that let an agent act alone later are set at the computer, never from a phone",
+  web_search: "web search is off on this computer: npx worktrust remote web-search on",
   other: "only edits inside the project, reviewed test, build and lint commands, and messages shown whole are approved from a phone",
 });
 

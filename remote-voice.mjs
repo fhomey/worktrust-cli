@@ -23,7 +23,7 @@
  *                key alone as `voice.reply` on the transient lane, cut at 4,000 characters, sent once, kept nowhere.
  */
 import * as P from "./remote-protocol.mjs";
-import { knownBrowser, readJson, writeJson } from "./remote-store.mjs";
+import { knownBrowser, readJson, saveChosen, writeJson } from "./remote-store.mjs";
 import { deskPromptOk, refreshSteerMod, steerOff } from "./remote-desk-steer.mjs";
 import { spokenAnswer } from "./remote-voice-speech.mjs";
 import { keyboardYes } from "./remote-keyboard.mjs";
@@ -223,17 +223,19 @@ export function voiceLine(settings, voice = loadVoice()) {
  * door's tick withdraws a prompt whose key is no longer live); remove forgets the voice keys (of one phone when named).
  */
 export async function voiceCommand(io, rest, { apply, settings }) { // `read on|off` (owner, 2026-11-22): may a voice key that may read hear replies
-  if (rest[0] === "on" && !(await keyboardYes(io, "Siri on a confirmed phone may then send a prompt into a session open at this desk, also while that phone is locked. Turn voice on?"))) return;
+  if (rest[0] === "on" && !(await keyboardYes(io, "Siri on a confirmed phone may then send a prompt into a session open at this desk, also while that phone is locked, and read its replies aloud. Turn voice on?"))) return;
   if (rest[0] === "on" || rest[0] === "off") {
     const done = apply({ what: "voice", on: rest[0] === "on" }, { kind: "keyboard" });
     if (!done.ok) return io.fail(`  ${done.reason}`);
     if (rest[0] === "on") { try { refreshSteerMod(); } catch { io.say("  ! The steer mod was not refreshed: npx worktrust remote desk-steer on writes it again."); } } // audit P1-1: a mod that checks a locked send's modes
+    saveChosen("voice", rest[0] === "on"); // typed by the person: a link or an update never turns an off back on (CLI 0.11.26)
     return io.say(`  ✓ ${done.message}`);
   }
   if (rest[0] === "read" && (rest[1] === "on" || rest[1] === "off")) {
     if (rest[1] === "on" && !(await keyboardYes(io, "Siri may then read the reply to a voice prompt aloud on that phone. Turn reading aloud on?"))) return;
     const done = apply({ what: "voice_read", on: rest[1] === "on" }, { kind: "keyboard" });
     if (!done.ok) return io.fail(`  ${done.reason}`);
+    saveChosen("voice_read", rest[1] === "on"); // typed by the person: voice on, a link or an update never turns this off back on (owner, 2026-11-25)
     return io.say(`  ✓ ${done.message}`);
   }
   if (rest[0] === "remove") {

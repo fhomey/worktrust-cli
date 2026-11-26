@@ -52,3 +52,13 @@ export async function keyboardYes(io, question, env = process.env) {
   if (!confirmYes(said)) { io.say("  Not changed."); return false; }
   return true;
 }
+
+/**
+ * A PERSON AT THIS TERMINAL, ASKED NOTHING (CLI 0.11.26; owner, 2026-11-25): the guard of keyboardYes without its question, for
+ * what linking a phone turns on (remote-read-along.mjs). Both ends a TTY (io.tty only as the tests' seam) and no AI agent's shell.
+ */
+export function personAtKeyboard(io, env = process.env) {
+  const terminal = (io.tty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY)) === true;
+  const agent = io.agentShell === true || AGENT_ENV.some((name) => env[name] && env[name] !== "0");
+  return terminal && !agent;
+}

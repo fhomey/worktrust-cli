@@ -2,6 +2,43 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.26: one command updates and reconnects, linking turns the phone features on, drafts you watch being written, and AI drafts for mail on your phone
+
+**One command updates and reconnects.** `npx worktrust update` now brings your Remote Agent back on the new release by
+itself: the service restarts on the new version, connects again, and the update says so. Before, the service could keep
+running the old version until you restarted it yourself. Restarting it asks you nothing on a computer that is already
+linked and switched on.
+
+**Clearer status and history.** `remote status` says whether the service is installed and loaded, which release it runs
+beside the one installed, and since when it is connected. `remote phones --history` shows every device ever linked as a
+short table, one row each, and `remote phones --history <number>` shows one device in full; in the menu, History › opens
+a row and goes back.
+
+**Linking turns the phone features on.** When you link a phone, reading along, steering a desk session, voice prompts and
+reading answers aloud are switched on for it at once instead of being asked one by one; the CLI says so in four lines and
+shows how to turn each off. What you turn off here stays off: a later link or update never turns it back on.
+
+**Your phone sees what the computer still asks.** After you link a phone, the questions this computer still has for you at
+its keyboard (what the phone may reach, the default folder) show on the phone as the next steps, so you know what is
+left to do here. Under the pairing code the CLI says how far to hold the phone.
+
+**AI drafts for a mailbox on your phone.** A mailbox you signed in to on your phone, not on this computer, can now have a
+reply drafted or rewritten by your own AI agent here, with the agent and model you choose on the phone. The phone sends
+the thread end to end encrypted; this computer writes words only, keeps nothing beyond the draft's 24 hours, and never
+sends that mailbox's mail: your phone does, after you approve it.
+
+**Watch a draft being written, and stop it.** With an updated phone, a mail draft appears on the phone as your agent writes
+it, with how long it has been thinking or writing; Stop ends the agent and keeps nothing. The finished draft is the only one
+that can be sent. The agent now writes only the e-mail: no preface, no second version, no question back to you.
+
+**Writing instructions for e-mail.** Keep a few named instruction sets for how your mail should sound (for example formal,
+or short), pick one per draft or set one per mailbox: `npx worktrust mail instructions`. They are stored on this computer
+only.
+
+**The web in a Remote session.** An agent you steer from your phone can now search the web (on by default:
+`npx worktrust remote web-search on|off`) and open a web page after you allow that page on your phone
+(`npx worktrust remote web-pages ask|off`). Before, both were refused on this computer in every mode.
+
 ## 0.11.25: e-mail for your phone, stay reachable and wake, and a steadier read
 
 **E-mail through your computer, for your phone.** Your computer can now read and send your e-mail for the WorkTrust app:

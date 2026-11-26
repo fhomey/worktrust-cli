@@ -12,7 +12,7 @@
  */
 import { basename } from "node:path";
 import * as P from "./remote-protocol.mjs";
-import { confirmedFingerprints, controllerKeys, defaultRootOf, deskReadOf, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs";
+import { confirmedFingerprints, controllerKeys, defaultRootOf, deskReadOf, loadChannels, loadEndorsements, loadPhones, loadProjects, loadRoots, loadSettings, readJson, saveChannels, saveEndorsements, savePhones, saveProjects, saveSettings, writeJson } from "./remote-store.mjs"; import { keptSetup } from "./remote-setup.mjs"; // CLI 0.11.26: the linking flow's steps, for the phone that just linked
 import { acceptEndorsement } from "./remote-endorse.mjs";
 import { createProject, rootLabel, sessionProjects, worktreeMain } from "./remote-projects.mjs";
 import { agentOptionsOf } from "./remote-inventory.mjs";
@@ -132,7 +132,7 @@ export function createDaemonCore(o) {
       // and the phones and browsers linked to it (remote-admin.mjs).
       ...adminInventory({ projectSecret: o.projectSecret, settings }),
       ...(P.CLI_RELEASE.test(o.version ?? "") ? { cli: { version: o.version, ...(restarting ? { restarting } : {}) } } : {}),
-      ...(peers.readsLive() ? { desk_read: deskReadOf(settings) } : {}), ...(peers.readsVoice() ? { voice: { on: !voiceOff(settings), enrolled: false, read: !voiceOff(settings) && settings.voice_read === true } } : {}), ...(peers.readsWake() && o.wake ? { wake: o.wake.inventory() } : {}), // CLI 0.11.25 `wake` (remote-wake.mjs; WAKE.md): the keyboard's two switches and the signed card, sealed only for a phone that asked (remote-peers.mjs); what the keyboard lets a phone read of the desk; sealed only for a phone that asked `desk_live`
+      ...(peers.readsLive() ? { desk_read: deskReadOf(settings) } : {}), ...(peers.readsVoice() ? { voice: { on: !voiceOff(settings), enrolled: false, read: !voiceOff(settings) && settings.voice_read === true } } : {}), ...(peers.readsWake() && o.wake ? { wake: o.wake.inventory() } : {}), ...(peers.readsSetup() ? ((setup) => (setup ? { setup } : {}))(keptSetup({ now: o.now() })) : {}), // CLI 0.11.25 `wake` (remote-wake.mjs; WAKE.md): the keyboard's two switches and the signed card, sealed only for a phone that asked (remote-peers.mjs); what the keyboard lets a phone read of the desk; sealed only for a phone that asked `desk_live`
       // Every session this computer knows, live or in the journal, newest activity first, with its name and its release task.
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };

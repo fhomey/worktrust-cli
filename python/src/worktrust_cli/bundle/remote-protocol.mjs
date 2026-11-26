@@ -2602,6 +2602,174 @@ export function magicPacket(mac        )             {
   return out;
 }
 
+// ---- packages/remote-protocol/src/setup-steps.ts
+/**
+ * THE COMPUTER'S SETUP, MIRRORED ON THE PHONE (owner, build 37, 2026-11-25, screenshot 65: after "✓ Phone linked" the CLI
+ * still asks at the keyboard, the macOS folder permission for each guarded root, then "May your confirmed phones add a
+ * browser?" and more, while the phone already said it was done). The CLI's linking flow writes where it stands; the
+ * service sends it, sealed, in the inventory of the ONE phone that just linked and asked for it (`setup`); the phone shows
+ * each step as a numbered line after its own four and ends with "Your computer is ready".
+ *
+ * MIRROR ONLY: settings are set at the keyboard only. No command answers a step, and a step carries no words, no path and
+ * no answer: its id (the CLI's question, in the CLI's order), the macOS guarded folder it is about by its generic name
+ * (never a path: the phone already reads its roots), its state and, when skipped, why in one word. Pure: no clock, no I/O.
+ *
+ *   read_along     read along, turned ON by the link without a question (owner, 2026-11-25); informational: done, or skipped
+ *                  with why (turned_off: the person turned it off at that keyboard; unavailable: it could not be turned on)
+ *   desk_steering  steering from the phone (with WorkTrust's steer mod in Claude Code), the same; it needs read along
+ *   voice          voice prompts with Siri, the same; it needs steering
+ *   voice_read     reading answers aloud, the same (owner, 2026-11-25: Siri on is all of it); it needs voice
+ *   reach          "What may this phone reach on this computer?" (the phone's own step 4 already mirrors it)
+ *   folder_access  macOS asks whether the program that runs the agents may read a guarded folder (one per folder)
+ *   endorse        "May your confirmed phones add a browser?"
+ *   modes          "Which agent modes may a phone start here?"
+ *   default_root   "Make the default folder?" (asked once per computer; its own folder_access may follow)
+ */
+
+export const SETUP_STEP_IDS = ["read_along", "desk_steering", "voice", "voice_read", "reach", "folder_access", "endorse", "modes", "default_root"]         ;
+
+/** pending: not reached yet · asked: on the keyboard's screen now · done: answered (or macOS allowed) · skipped: passed over. */
+export const SETUP_STEP_STATES = ["pending", "asked", "done", "skipped"]         ;
+
+/** The macOS guarded folders by their generic names (folder-picker.mjs protectedFolder): Desktop, Documents, Downloads, iCloud Drive. */
+export const SETUP_FOLDERS = ["desktop", "documents", "downloads", "icloud"]         ;
+/**
+ * Why a step was passed over: macOS refused, no answer in time, or the person chose later (Esc, Ctrl+C, "Later"); for the three a
+ * link turns on (CLI 0.11.26): turned off at that keyboard by the person, or could not be turned on there (the terminal says why).
+ */
+export const SETUP_WHY = ["refused", "no_answer", "later", "turned_off", "unavailable"]         ;
+/** Every step once, a folder question for each of the four guarded folders, twice over (a root and the default root). */
+export const MAX_SETUP_STEPS = 16;
+
+export const SETUP_STEP_SPEC = object({ id: oneOf(SETUP_STEP_IDS), folder: optional(oneOf(SETUP_FOLDERS)), state: oneOf(SETUP_STEP_STATES), why: optional(oneOf(SETUP_WHY)) });
+
+export const SETUP_SPEC = object({ phone: id("dev"), steps: list(SETUP_STEP_SPEC, MAX_SETUP_STEPS), ended: bool(), at: int(0) });
+
+/** inventory.get's field (commands.ts spreads it): this phone reads device.inventory `setup`. Only with `extended`. */
+export const SETUP_GET_FIELDS = { setup: optional(bool()) }         ;
+/** device.inventory's field (events.ts spreads it): only in the inventory sealed for `phone`, the one that linked and asked. */
+export const SETUP_INVENTORY_FIELDS = { setup: optional(SETUP_SPEC) }         ;
+
+/** The rules between a setup's fields. → null, or what is wrong (a field name, never a value). */
+export function setupRule(setup                   )                {
+  if (!setup) return null;
+  let last = -1;
+  const seen = new Set        ();
+  for (const [i, step] of setup.steps.entries()) {
+    if ((step.id === "folder_access") !== (step.folder !== undefined)) return `steps.${i}.folder: on a folder question, and only there`;
+    if ((step.state === "skipped") !== (step.why !== undefined)) return `steps.${i}.why: on a skipped step, and only there`;
+    // The CLI's order; a folder question may follow a later one (the default folder's own permission comes after it).
+    const at = SETUP_STEP_IDS.indexOf(step.id);
+    if (step.id !== "folder_access" && at < last) return `steps.${i}.id: out of the CLI's order`;
+    if (step.id !== "folder_access") last = at;
+    const key = `${step.id}:${step.folder ?? ""}`;
+    if (step.id !== "folder_access" && seen.has(key)) return `steps.${i}.id: asked twice`;
+    seen.add(key);
+    if (setup.ended && (step.state === "pending" || step.state === "asked")) return `steps.${i}.state: still open in an ended setup`;
+  }
+  if (setup.steps.filter((s) => s.state === "asked").length > 1) return "steps: more than one asked at once (one keyboard)";
+  return null;
+}
+
+// ---- packages/remote-protocol/src/mail-instructions.ts
+/**
+ * THE PERSON'S INSTRUCTION FILES, SYNCED WITH THE PHONE (owner, 2026-11-25 12:50; docs/remote-agents/MAIL-INSTRUCTIONS.md).
+ * The computer keeps them (the CLI's remote-mail-instructions.mjs: profiles with versions, a built-in `default`); the phone
+ * lists, reads, edits and sends them back, and asks the person's own agent to improve one. Sealed device commands and
+ * transient device events like the rest of mail.ts, which spreads these into its own lists, so check-remote-protocol rule M
+ * holds them too (device scope, transient only, `request_id` inside, at most ten minutes, nothing outside a seal).
+ *
+ *   kind        `mail` first; the field lets later kinds (research …) use the same door
+ *   versions    a write names the `base_version` it edited: a stale base is `instructions.conflict`, never a silent overwrite
+ *   phone only  a browser's instructions.* command is refused by the computer (the mail door's phone-only gate)
+ *   improve     a proposal only: nothing is saved until the person accepts it on the phone (an ordinary put)
+ *   changed     pushed to the phones when the computer's copy changes (by hand, or by another phone); it carries no text
+ * Pure data and rules.
+ */
+
+export const INSTRUCTIONS_KINDS = ["mail"]         ;
+
+/** The store's caps (remote-mail-instructions.mjs): 20 profiles, 8 KB each, a name of 60, a slug of 40. */
+export const INSTRUCTIONS_MAX_ITEMS = 20, INSTRUCTIONS_TEXT_MAX = 8_192, INSTRUCTIONS_NAME_MAX = 60, INSTRUCTIONS_ID_MAX = 40, INSTRUCTIONS_ASK_MAX = 1_000;
+export const INSTRUCTIONS_DEFAULT_ID = "default";
+export const INSTRUCTIONS_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+export const instructionsIdOk = (value         )          => typeof value === "string" && INSTRUCTIONS_ID_RE.test(value);
+export const INSTRUCTIONS_BY = ["computer", "phone"]         ;
+export const INSTRUCTIONS_PRESETS = ["tighten", "friendlier", "formal", "shorter", "clearer"]         ;
+export const INSTRUCTIONS_REFUSALS = ["not_found", "too_large", "limit", "rate_limited", "builtin", "name_taken", "invalid"]         ;
+export const INSTRUCTIONS_IMPROVE_REFUSALS = ["no_agent", "agent_failed", "timeout", "unparseable", "busy", "conflict"]         ;
+export const INSTRUCTIONS_PHASES = ["reading", "drafting"]         ;
+
+const ins = text(INSTRUCTIONS_ID_MAX, 1);
+const kind = oneOf(INSTRUCTIONS_KINDS);
+const words = text(INSTRUCTIONS_TEXT_MAX, 1);
+const name = text(INSTRUCTIONS_NAME_MAX, 1);
+const by = oneOf(INSTRUCTIONS_BY);
+const req = id("cmd");
+
+export const MAIL_INSTRUCTIONS_COMMAND_SPECS = {
+  "instructions.list.get": object({ kind }),
+  "instructions.get": object({ kind, id: ins }),
+  /** No `id`: a new type (the computer makes its id from the name), base_version 0. */
+  "instructions.put": object({ kind, id: optional(ins), name, text: words, base_version: int(0) }),
+  "instructions.remove": object({ kind, id: ins, base_version: int(1) }),
+  /** The built-in default's shipped text again. */
+  "instructions.reset": object({ kind, id: ins, base_version: int(1) }),
+  /** A mailbox's default type (null: the built-in default). */
+  "instructions.assign": object({ kind, account_id: id("mac"), id: nullable(ins) }),
+  /** The person's own agent proposes a better text: the text the phone shows, and what the person asked. Never saved by itself. */
+  "instructions.improve.request": object({ kind, id: ins, base_version: int(0), text: words, ask: text(INSTRUCTIONS_ASK_MAX), preset: optional(oneOf(INSTRUCTIONS_PRESETS)) }),
+}         ;
+
+const INSTRUCTIONS_MINUTE = 60_000;
+export const MAIL_INSTRUCTIONS_TTL_MS = {
+  "instructions.list.get": 2 * INSTRUCTIONS_MINUTE, "instructions.get": 2 * INSTRUCTIONS_MINUTE, "instructions.put": 5 * INSTRUCTIONS_MINUTE, "instructions.remove": 5 * INSTRUCTIONS_MINUTE,
+  "instructions.reset": 5 * INSTRUCTIONS_MINUTE, "instructions.assign": 5 * INSTRUCTIONS_MINUTE, "instructions.improve.request": 10 * INSTRUCTIONS_MINUTE,
+}         ;
+
+export const INSTRUCTIONS_ROW_SPEC = object({
+  id: ins, name, version: int(1), updated_at: int(0), updated_by: by, bytes: int(0, INSTRUCTIONS_TEXT_MAX),
+  /** The mailboxes that use it as their default. */
+  accounts: list(id("mac"), 10),
+});
+export const MAIL_INSTRUCTIONS_EVENT_SPECS = {
+  "instructions.list": object({ request_id: nullable(req), kind, items: list(INSTRUCTIONS_ROW_SPEC, INSTRUCTIONS_MAX_ITEMS) }),
+  "instructions.item": object({ request_id: req, kind, id: ins, name, text: words, version: int(1), updated_at: int(0), updated_by: by }),
+  "instructions.saved": object({ request_id: req, kind, id: ins, version: int(1), updated_at: int(0) }),
+  /** A stale base: the computer's copy, whole, so the phone shows both and the person chooses. */
+  "instructions.conflict": object({ request_id: req, kind, id: ins, name, text: words, version: int(1), updated_at: int(0), updated_by: by }),
+  "instructions.removed": object({ request_id: req, kind, id: ins }),
+  "instructions.refused": object({ request_id: req, code: oneOf(INSTRUCTIONS_REFUSALS) }),
+  /** Pushed to the phones: the computer's copy changed (by hand there, or by another phone). No text. */
+  "instructions.changed": object({ request_id: nullable(req), kind, id: ins, version: int(0), updated_by: by }),
+  "instructions.improve.progress": object({ request_id: req, phase: oneOf(INSTRUCTIONS_PHASES) }),
+  "instructions.improve.proposal": object({ request_id: req, kind, id: ins, base_version: int(0), text: words }),
+  "instructions.improve.refused": object({ request_id: req, code: oneOf(INSTRUCTIONS_IMPROVE_REFUSALS) }),
+}         ;
+
+/** The rules between an instructions command's fields, after the schema. → null, or what is wrong (never a value). */
+export function instructionsCommandRule(type        , value         )                {
+  if (!type.startsWith("instructions.")) return null;
+  const v = value                                                                                ;
+  if (typeof v.id === "string" && !instructionsIdOk(v.id)) return "id: a slug";
+  if (type === "instructions.put" && v.id === undefined && v.base_version !== 0) return "base_version: 0 for a new type";
+  if ((type === "instructions.remove") && v.id === INSTRUCTIONS_DEFAULT_ID) return "id: the built-in default is never removed";
+  if (type === "instructions.improve.request" && !v.ask?.trim() && v.preset === undefined) return "ask or preset: what should change";
+  return null;
+}
+
+/** The rules between an instructions event's fields. */
+export function instructionsEventRule(type        , value         )                {
+  if (!type.startsWith("instructions.")) return null;
+  const v = value                                                      ;
+  if (typeof v.id === "string" && !instructionsIdOk(v.id)) return "id: a slug";
+  if (v.items) {
+    if (v.items.some((i) => !instructionsIdOk(i.id))) return "items: an id that is no slug";
+    if (new Set(v.items.map((i) => i.id)).size !== v.items.length) return "items: an id twice";
+  }
+  return null;
+}
+
 // ---- packages/remote-protocol/src/phone-start.ts
 /**
  * A SESSION STARTED FROM THE PHONE, BUILD 31 AND CLI 0.11.21 (owner, 2026-11-22). Two probes of their own, each asked with
@@ -2852,7 +3020,10 @@ export const MAIL_FORMATS = ["plain", "basic"]         ;
 export const MAIL_REWRITE_KINDS = ["improve", "shorter", "formal", "friendlier", "longer", "bullets", "text", "regenerate"]         ;
 
 /** What a computer offers beyond reading, agent drafts and sending (mail.accounts `features`); absent: none of them. */
-export const MAIL_FEATURES = ["compose", "rewrite", "attachments", "signatures", "format"]         ;
+/** `phone_draft` (CLI 0.11.26, MAIL-ON-PHONE.md §6): a mailbox on the PHONE drafted by this computer's agent from the thread the phone sends sealed.
+ * `draft_stream` (CLI 0.11.26, owner 2026-11-25): the draft's text as the agent writes it (mail.draft.progress `text_delta`), for a request with `stream`.
+ * `instructions` (MAIL-INSTRUCTIONS.md): the instruction files, synced between phone and computer. */
+export const MAIL_FEATURES = ["compose", "rewrite", "attachments", "signatures", "format", "phone_draft", "draft_stream", "instructions"]         ;
 
 export const MAIL_ATTACHMENT_CHUNK = 524_288, MAIL_ATTACHMENT_MAX_FILES = 10, MAIL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024, MAIL_ATTACHMENT_MAX_TOTAL = 25 * 1024 * 1024;
 export const MAIL_ATTACHMENT_MAX_CHUNKS = Math.ceil(MAIL_ATTACHMENT_MAX_BYTES / MAIL_ATTACHMENT_CHUNK);
@@ -2929,6 +3100,8 @@ export const MAIL_QUERY_MAX = 200, MAIL_CURSOR_MAX = 160, MAIL_SECRET_MAX = 256,
 export const MAIL_THREAD_BUDGET_BYTES = 786_432, MAIL_ATTACHMENTS_MAX = 50, MAIL_ATTACHMENT_NAME_MAX = 255, MAIL_INSTRUCTION_MAX = 4_000;
 export const MAIL_DRAFT_BODY_MAX = 65_536, MAIL_NOTES_MAX = 10, MAIL_NOTE_MAX = 300, MAIL_UNDO_MS = 10_000, MAIL_TEMPLATES_MAX = 20;
 export const MAIL_DRAFT_PROMPT_BUDGET = 6_000, MAIL_TEMPLATE_TITLE_MAX = 100, MAIL_TEMPLATE_WHEN_MAX = 500;
+/** A streamed piece of a draft's text (CLI 0.11.26), and how often the computer sends one: at most four a second. */
+export const MAIL_DRAFT_DELTA_MAX = 8_192, MAIL_DRAFT_STREAM_MS = 250;
 
 export const MAIL_PROVIDERS = ["gmail", "outlook", "icloud", "yahoo", "imap"]         ;
 
@@ -2938,7 +3111,14 @@ export const MAIL_DRAFT_MODES = ["reply", "reply_all", "forward", "new"]        
 export const MAIL_DRAFT_STYLES = ["text", "bullets"]         ;
 export const MAIL_CONFIDENCE = ["high", "medium", "low"]         ;
 export const MAIL_DRAFT_PHASES = ["reading", "drafting"]         ;
-export const MAIL_DRAFT_REFUSALS = ["no_agent", "agent_unsupported", "agent_failed", "timeout", "unparseable", "not_found", "busy"]         ;
+/** `model_unknown` (CLI 0.11.26): a `model` the computer's own inventory does not report for that agent; never passed on. */
+export const MAIL_DRAFT_REFUSALS = ["no_agent", "agent_unsupported", "agent_failed", "timeout", "unparseable", "not_found", "busy", "model_unknown"]         ;
+/** Where a held draft's thread came from: absent, this computer's own mailbox; `phone`, a mailbox on the phone (MAIL-ON-PHONE.md §6). */
+export const MAIL_DRAFT_ORIGINS = ["phone"]         ;
+/** An instruction type's id (remote-mail-instructions.mjs SLUG). */
+export const MAIL_INSTRUCTIONS_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** A model as an agent names one: a token that can never be read as a flag or carry a space (checked again against the inventory). */
+export const MAIL_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/@-]{0,127}$/;
 export const MAIL_SEND_FAILURES = ["hash_mismatch", "not_found", "already_used", "auth_failed", "rejected", "interrupted", "unreachable", "transport_unavailable", "untrusted_certificate"]         ;
 export const MAIL_TLS = ["tls", "starttls"]         ;
 /** WHAT A TEMPLATE MAY DO (rule 3): label, archive, draft. Never send: only `mail.send`, approved on the phone, sends. */
@@ -2956,6 +3136,15 @@ const mailAddressSpec = text(MAIL_ADDRESS_MAX, 3);
 const mailRecipients = list(mailAddressSpec, MAIL_RECIPIENTS_MAX);
 const mailServer = object({ host: text(253, 1), port: int(1, 65_535), tls: oneOf(MAIL_TLS) });
 const mailRequest = id("cmd");
+const mailPerson = object({ name: nullable(text(MAIL_NAME_MAX, 1)), address: text(MAIL_ADDRESS_MAX, 1) });
+/**
+ * A THREAD THAT LIVES ON THE PHONE (CLI 0.11.26, MAIL-ON-PHONE.md §6), sealed: what the person's own agent needs to draft a
+ * reply, as untrusted data. The phone's own ids never travel; the computer keeps none of it beyond the draft's 24 hours.
+ */
+const mailPhoneSource = object({
+  kind: oneOf(["phone"]), subject: text(MAIL_SUBJECT_MAX), own_address: mailAddressSpec,
+  messages: list(object({ from: mailPerson, to: list(mailPerson, MAIL_RECIPIENTS_MAX), cc: list(mailPerson, MAIL_RECIPIENTS_MAX), date: int(0), text: text(MAIL_TEXT_MAX) }), MAIL_THREAD_MAX_MESSAGES),
+});
 
 export const MAIL_COMMAND_SPECS = {
   "mail.accounts.get": object({}),
@@ -2969,13 +3158,23 @@ export const MAIL_COMMAND_SPECS = {
   "mail.thread.get": object({ thread_id: id("mth") }),
   "mail.flag": object({ thread_id: id("mth"), read: optional(bool()), starred: optional(bool()) }),
   "mail.draft.request": object({
-    thread_id: optional(id("mth")), account_id: id("mac"), mode: oneOf(MAIL_DRAFT_MODES), style: oneOf(MAIL_DRAFT_STYLES),
+    thread_id: optional(id("mth")), account_id: optional(id("mac")), mode: oneOf(MAIL_DRAFT_MODES), style: oneOf(MAIL_DRAFT_STYLES),
     instruction: text(MAIL_INSTRUCTION_MAX), to: optional(mailRecipients), agent: optional(oneOf(ADAPTER_IDS)),
+    /** CLI 0.11.26: a model of that agent, as the computer's inventory reported it (checked there again); and a phone's thread instead of an account. */
+    model: optional(text(128, 1)), source: optional(mailPhoneSource),
+    /** CLI 0.11.26 (owner, 2026-11-25): the text as the agent writes it, for this phone alone (mail.draft.progress text_delta). */
+    stream: optional(bool()),
+    /** CLI 0.11.26: the person's instruction type to use (a slug); absent: the mailbox's default, else the built-in default. */
+    instructions_id: optional(text(40, 1)),
   }),
   "mail.draft.edit": object({
     draft_id: id("mdr"), to: optional(mailRecipients), cc: optional(mailRecipients), bcc: optional(mailRecipients), subject: optional(text(MAIL_SUBJECT_MAX)), body: optional(text(MAIL_DRAFT_BODY_MAX)),
     /** The format the draft is sent in (mail-compose.ts); a rewrite of the current body (or of `body` sent beside it) by the person's own agent, on the same draft. */
     format: optional(oneOf(MAIL_FORMATS)), rewrite: optional(object({ kind: oneOf(MAIL_REWRITE_KINDS) })),
+    /** CLI 0.11.26: the rewrite's text live as the agent writes it (mail.draft.progress text_delta); only with `rewrite`. */
+    stream: optional(bool()),
+    /** CLI 0.11.26: the person's instruction type to use (remote-mail-instructions.mjs); absent: the mailbox's default. Only with `rewrite`. */
+    instructions_id: optional(text(40, 1)),
   }),
   "mail.decline": object({ draft_id: id("mdr") }),
   /** The draft, and the hash of exactly what the phone showed (mailApprovalHash), after a fresh Face ID. */
@@ -2987,7 +3186,7 @@ export const MAIL_COMMAND_SPECS = {
     actions: list(oneOf(MAIL_TEMPLATE_ACTIONS), MAIL_TEMPLATE_ACTIONS.length, 1), label: optional(text(MAIL_LABEL_MAX, 1)),
     account_id: optional(nullable(id("mac"))), enabled: bool(), remove: optional(bool()),
   }),
-  ...MAIL_COMPOSE_COMMAND_SPECS,
+  ...MAIL_COMPOSE_COMMAND_SPECS, ...MAIL_INSTRUCTIONS_COMMAND_SPECS, // instructions.* (mail-instructions.ts, 2026-11-25)
 }         ;
 
 export const MAIL_COMMAND_TYPES = Object.keys(MAIL_COMMAND_SPECS)                              ;
@@ -2996,10 +3195,9 @@ const MAIL_MINUTE = 60_000;
 export const MAIL_COMMAND_TTL_MS                                            = {
   "mail.accounts.get": 2 * MAIL_MINUTE, "mail.account.add": 10 * MAIL_MINUTE, "mail.account.remove": 10 * MAIL_MINUTE, "mail.list.get": 2 * MAIL_MINUTE,
   "mail.thread.get": 2 * MAIL_MINUTE, "mail.flag": 2 * MAIL_MINUTE, "mail.draft.request": 10 * MAIL_MINUTE, "mail.draft.edit": 5 * MAIL_MINUTE,
-  "mail.decline": 5 * MAIL_MINUTE, "mail.send": 2 * MAIL_MINUTE, "mail.send.undo": 1 * MAIL_MINUTE, "personal.templates.get": 2 * MAIL_MINUTE, "personal.template.set": 10 * MAIL_MINUTE, ...MAIL_COMPOSE_TTL_MS,
+  "mail.decline": 5 * MAIL_MINUTE, "mail.send": 2 * MAIL_MINUTE, "mail.send.undo": 1 * MAIL_MINUTE, "personal.templates.get": 2 * MAIL_MINUTE, "personal.template.set": 10 * MAIL_MINUTE, ...MAIL_COMPOSE_TTL_MS, ...MAIL_INSTRUCTIONS_TTL_MS,
 };
 
-const mailPerson = object({ name: nullable(text(MAIL_NAME_MAX, 1)), address: text(MAIL_ADDRESS_MAX, 1) });
 export const MAIL_TEMPLATE_SPEC = object({
   template_id: id("tpl"), kind: oneOf(["email"]), title: text(MAIL_TEMPLATE_TITLE_MAX, 1), when: text(MAIL_TEMPLATE_WHEN_MAX, 1),
   actions: list(oneOf(MAIL_TEMPLATE_ACTIONS), MAIL_TEMPLATE_ACTIONS.length, 1), label: nullable(text(MAIL_LABEL_MAX, 1)), account_id: nullable(id("mac")),
@@ -3020,11 +3218,15 @@ export const MAIL_MESSAGE_SPEC = object({
 
 /** `request_id` null: a draft an automation made by itself on new mail (personal.template), pushed to every phone. */
 export const MAIL_DRAFT_SPEC = object({
-  request_id: nullable(mailRequest), draft_id: id("mdr"), account_id: id("mac"), thread_id: nullable(id("mth")), mode: oneOf(MAIL_DRAFT_MODES),
+  request_id: nullable(mailRequest), draft_id: id("mdr"), account_id: nullable(id("mac")), thread_id: nullable(id("mth")), mode: oneOf(MAIL_DRAFT_MODES),
   to: list(text(MAIL_ADDRESS_MAX, 1), MAIL_RECIPIENTS_MAX), cc: list(text(MAIL_ADDRESS_MAX, 1), MAIL_RECIPIENTS_MAX), bcc: list(text(MAIL_ADDRESS_MAX, 1), MAIL_RECIPIENTS_MAX),
   subject: text(MAIL_SUBJECT_MAX), body: text(MAIL_DRAFT_BODY_MAX), confidence: oneOf(MAIL_CONFIDENCE), notes: list(text(MAIL_NOTE_MAX, 1), MAIL_NOTES_MAX),
   /** Each file as approved and sent: name, size, type and the SHA-256 of its bytes (mail-compose.ts); `format` plain or basic. */
   attachments: list(MAIL_DRAFT_ATTACHMENT_SPEC, MAIL_ATTACHMENT_MAX_FILES), format: oneOf(MAIL_FORMATS),
+  /** CLI 0.11.26: `phone`, drafted from a thread the phone sent; then `account_id` is null and the computer holds it words-only (never sends it). */
+  origin: optional(oneOf(MAIL_DRAFT_ORIGINS)),
+  /** CLI 0.11.26 ("Written in 12 s"): the run's three moments on the computer's clock; absent for a draft written by hand or an older CLI. */
+  written: optional(object({ started_at: int(0), first_text_at: nullable(int(0)), done_at: int(0), /** the instruction type used and when it last changed (null: the shipped default) */ instructions_id: nullable(text(40, 1)), instructions_at: nullable(int(0)) })),
 });
 
 export const MAIL_EVENT_SPECS = {
@@ -3044,7 +3246,14 @@ export const MAIL_EVENT_SPECS = {
   }),
   "mail.thread": object({ request_id: mailRequest, thread_id: id("mth"), account_id: id("mac"), subject: text(MAIL_SUBJECT_MAX), messages: list(MAIL_MESSAGE_SPEC, MAIL_THREAD_MAX_MESSAGES, 1), older: int(0) }),
   "mail.flagged": object({ request_id: mailRequest, thread_id: id("mth") }),
-  "mail.draft.progress": object({ request_id: mailRequest, phase: oneOf(MAIL_DRAFT_PHASES) }),
+  /**
+   * CLI 0.11.26 (owner, 2026-11-25: "you have the session LIVE on it"): for a request with `stream`, while drafting, the text
+   * as it grows, in order (`seq`), on the draft it will become (`draft_id`, which `mail.decline` stops). Shown as being written,
+   * never sent: only the final mail.draft (its id and approval hash) can be sent; it replaces everything streamed.
+   */
+  "mail.draft.progress": object({ request_id: mailRequest, phase: oneOf(MAIL_DRAFT_PHASES), draft_id: optional(id("mdr")), seq: optional(int(0)), text_delta: optional(text(MAIL_DRAFT_DELTA_MAX, 1)),
+    /** The computer's own clock (CLI 0.11.26, owner: "Thinking · 4 s", then "Writing · 9 s"): when the agent's run started, when its first text came. */
+    started_at: optional(int(0)), first_text_at: optional(int(0)) }),
   "mail.draft": MAIL_DRAFT_SPEC,
   "mail.draft.refused": object({ request_id: mailRequest, code: oneOf(MAIL_DRAFT_REFUSALS) }),
   "mail.declined": object({ request_id: mailRequest, draft_id: id("mdr") }),
@@ -3054,12 +3263,12 @@ export const MAIL_EVENT_SPECS = {
   "mail.send.undone": object({ request_id: mailRequest, draft_id: id("mdr") }),
   "personal.templates": object({ request_id: mailRequest, templates: list(MAIL_TEMPLATE_SPEC, MAIL_TEMPLATES_MAX) }),
   /** `request_id` null: a template's own run on new mail (its last_run_at and last_result), pushed to every phone. */
-  ...MAIL_COMPOSE_EVENT_SPECS,
+  ...MAIL_COMPOSE_EVENT_SPECS, ...MAIL_INSTRUCTIONS_EVENT_SPECS,
   "personal.template": object({ request_id: nullable(mailRequest), template: MAIL_TEMPLATE_SPEC, test_draft_id: nullable(id("mdr")) }),
 }         ;
 
 export const MAIL_EVENT_TYPES = Object.keys(MAIL_EVENT_SPECS)                            ;
-export const isMailType = (type        )          => type.startsWith("mail.") || type.startsWith("personal.");
+export const isMailType = (type        )          => type.startsWith("mail.") || type.startsWith("personal.") || type.startsWith("instructions.");
 
 const MAIL_PRESET                            = new Set(["gmail", "icloud", "yahoo"]);
 
@@ -3076,16 +3285,27 @@ export function mailCommandRule(type        , value         )                {
   if (type === "mail.flag") { const f = value                            ; if (f.read === undefined && f.starred === undefined) return "read or starred, at least one"; }
   if (type === "mail.draft.request") {
     const d = value                                     ;
-    if ((d.mode === "new") !== (d.thread_id === undefined)) return "thread_id: for reply, reply_all and forward, never for new";
+    if (d.model !== undefined && !MAIL_MODEL_RE.test(d.model)) return "model: a model's name, never a flag or a space";
+    if (d.instructions_id !== undefined && !MAIL_INSTRUCTIONS_ID_RE.test(d.instructions_id)) return "instructions_id: a slug";
+    if ((d.account_id === undefined) === (d.source === undefined)) return "account_id or source: exactly one";
+    if (d.source) {
+      const s = d.source;
+      if (d.thread_id !== undefined) return "source: no thread_id (the phone's ids never travel)";
+      if ((d.mode === "new") !== (s.messages.length === 0)) return "source: messages for reply, reply_all and forward, none for new";
+      if (!mailAddressOk(s.own_address) || s.messages.some((m) => [m.from, ...m.to, ...m.cc].some((x) => !mailAddressOk(x.address)))) return "source: e-mail addresses";
+      if (s.messages.reduce((n, m) => n + utf8Encode(m.text).length, 0) > MAIL_THREAD_BUDGET_BYTES) return "source: texts above the thread's budget";
+    } else if ((d.mode === "new") !== (d.thread_id === undefined)) return "thread_id: for reply, reply_all and forward, never for new";
     if (d.to !== undefined && d.mode !== "forward" && d.mode !== "new") return "to: only for forward or new";
     if (d.to?.some((t) => !mailAddressOk(t))) return "to: e-mail addresses";
   }
   if (type === "mail.draft.edit") {
     const u = value                                  ;
+    if ((u.stream !== undefined || u.instructions_id !== undefined) && u.rewrite === undefined) return "stream and instructions_id: only with rewrite";
+    if (u.instructions_id !== undefined && !MAIL_INSTRUCTIONS_ID_RE.test(u.instructions_id)) return "instructions_id: a slug";
     if (Object.keys(u).length === 1) return "names no change";
     if ([...(u.to ?? []), ...(u.cc ?? []), ...(u.bcc ?? [])].some((t) => !mailAddressOk(t))) return "to, cc, bcc: e-mail addresses";
   }
-  { const bad = mailComposeRule(type, value, mailAddressOk); if (bad) return bad; }
+  { const bad = mailComposeRule(type, value, mailAddressOk) ?? instructionsCommandRule(type, value); if (bad) return bad; }
   if (type === "personal.template.set") {
     const t = value                                        ;
     if (new Set(t.actions).size !== t.actions.length) return "actions: each once";
@@ -3098,10 +3318,23 @@ export function mailCommandRule(type        , value         )                {
 
 /** The rules between a mail event's fields, after the schema. → null, or what is wrong. */
 export function mailEventRule(type        , value         )                {
+  { const bad = instructionsEventRule(type, value); if (bad) return bad; }
   if (type === "mail.thread") {
     const t = value                                                   ;
     if (new Set(t.messages.map((m) => m.message_id)).size !== t.messages.length) return "messages: an id twice";
     if (t.messages.reduce((n, m) => n + utf8Encode(m.text).length, 0) > MAIL_THREAD_BUDGET_BYTES) return "messages: texts above the thread's budget";
+  }
+  if (type === "mail.draft.progress") {
+    const g = value                                                           ;
+    if (g.text_delta !== undefined && (g.phase !== "drafting" || g.draft_id === undefined || g.seq === undefined)) return "text_delta: while drafting, with its draft_id and seq";
+    if (g.seq !== undefined && g.text_delta === undefined) return "seq: only with a text_delta";
+    if (g.first_text_at !== undefined && g.seq !== 0) return "first_text_at: on the first piece of text";
+  }
+  if (type === "mail.draft") {
+    const d = value             ;
+    if ((d.origin === "phone") !== (d.account_id === null)) return "account_id: null exactly for a draft of a phone's mailbox";
+    if (d.origin === "phone" && (d.thread_id !== null || d.attachments.length > 0)) return "origin phone: no thread id and no file on the computer";
+    if (d.written && (d.written.done_at < d.written.started_at || (d.written.first_text_at !== null && (d.written.first_text_at < d.written.started_at || d.written.first_text_at > d.written.done_at)))) return "written: started, first text and done in that order";
   }
   if (type === "mail.list") {
     const l = value                                                 ;
@@ -3729,7 +3962,7 @@ export const COMMAND_PAYLOAD_SPECS = {
      * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
      * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
      */
-    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, ...VOICE_GET_FIELDS, ...START_GET_FIELDS, ...WAKE_GET_FIELDS, // `wake` (wake.ts, CLI 0.11.25): this phone reads device.inventory `wake` and may send device.wake; `default_root` and `agent_ref` (phone-start.ts, CLI 0.11.21); `voice` (voice.ts, CLI 0.11.21); `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
+    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, ...VOICE_GET_FIELDS, ...START_GET_FIELDS, ...WAKE_GET_FIELDS, ...SETUP_GET_FIELDS, // `setup` (setup-steps.ts, CLI 0.11.26): this phone reads device.inventory `setup`, the computer's keyboard steps after linking; `wake` (wake.ts, CLI 0.11.25): this phone reads device.inventory `wake` and may send device.wake; `default_root` and `agent_ref` (phone-start.ts, CLI 0.11.21); `voice` (voice.ts, CLI 0.11.21); `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -3861,8 +4094,7 @@ export const COMMAND_TTL_MS                                        = {
 /** A device's own name: printable, no control or format character, not only spaces. */
 export const deviceNameOk = (name         )          => typeof name === "string" && name.trim().length > 0 && name.length <= MAX_DEVICE_NAME && !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/.test(name);
 
-export const isCommandType = (value         )                       =>
-  typeof value === "string" && Object.hasOwn(COMMAND_PAYLOAD_SPECS, value);
+export const isCommandType = (value         )                       => typeof value === "string" && Object.hasOwn(COMMAND_PAYLOAD_SPECS, value);
 
 /** The payload's schema, then the rules between fields. */
 export function validateCommandPayload                       (type   , value         )                             {
@@ -3890,7 +4122,7 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref", "probe_failed", "wake"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref", "probe_failed", "wake", "setup"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
   }
   if (type === "session.attach") {
     const a = payload                                    ;
@@ -3962,10 +4194,13 @@ export const APPROVAL_CLASSES = [
   "secret_read",
   "persistent_rule",
   "outward_message",
+  /** CLI 0.11.26 (owner, 2026-11-25): a search of the public web, allowed by the computer as its keyboard set it, never a phone's decision; a web page (WebFetch), asked on the phone page by page. */
+  "web_search",
+  "web_fetch",
   "other",
 ]         ;
 
-export const REMOTE_APPROVABLE_CLASSES                             = new Set               (["project_edit", "reviewed_command", "outward_message"]);
+export const REMOTE_APPROVABLE_CLASSES                             = new Set               (["project_edit", "reviewed_command", "outward_message", "web_fetch"]);
 export const isRemoteApprovable = (cls               )          => REMOTE_APPROVABLE_CLASSES.has(cls);
 
 export const APPROVAL_ACTION_SPEC = object({
@@ -4163,7 +4398,7 @@ export const EVENT_BODY_SPECS = {
     agent_options: optional(list(AGENT_OPTIONS_SPEC, 16)),
     modes_allowed: optional(list(oneOf(AGENT_MODES), AGENT_MODES.length)),
     /** Part B (owner, 2026-11-12), only for an `extended` phone: the settings page's admin switch, folders, connections (crypto/admin.ts). */
-    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, ...CLI_INVENTORY_FIELDS, ...VOICE_INVENTORY_FIELDS, ...START_INVENTORY_FIELDS, ...WAKE_INVENTORY_FIELDS, // CLI 0.11.25: `wake` (wake.ts), only for a phone that asked; CLI 0.11.21: `default_root` (phone-start.ts), only for a phone that asked; CLI 0.11.21: `voice` (voice.ts), only for a phone that asked; release 36: `desk_sessions` (desk.ts); CLI 0.11.16: `cli`, the daemon's release and restart (cli.ts); each only for a phone that asked
+    ...ADMIN_INVENTORY_FIELDS, ...DESK_INVENTORY_FIELDS, ...CLI_INVENTORY_FIELDS, ...VOICE_INVENTORY_FIELDS, ...START_INVENTORY_FIELDS, ...WAKE_INVENTORY_FIELDS, ...SETUP_INVENTORY_FIELDS, // CLI 0.11.26: `setup` (setup-steps.ts), only for the phone that just linked and asked; CLI 0.11.25: `wake` (wake.ts), only for a phone that asked; CLI 0.11.21: `default_root` (phone-start.ts), only for a phone that asked; CLI 0.11.21: `voice` (voice.ts), only for a phone that asked; release 36: `desk_sessions` (desk.ts); CLI 0.11.16: `cli`, the daemon's release and restart (cli.ts); each only for a phone that asked
     sessions: list(
       object({
         session_id: id("ses"),
@@ -4213,8 +4448,7 @@ export const DEVICE_SCOPED_EVENTS                               = new Set       
 /** Events that answer one command, so their envelope names it (command_id is required). */
 export const COMMAND_RECEIPT_EVENTS                               = new Set                 (["command.device_received", "command.agent_accepted", "command.rejected", "command.queued"]);
 
-export const isDeviceEventType = (value         )                           =>
-  typeof value === "string" && Object.hasOwn(EVENT_BODY_SPECS, value);
+export const isDeviceEventType = (value         )                           => typeof value === "string" && Object.hasOwn(EVENT_BODY_SPECS, value);
 
 /** The body's schema, then the rules between fields. */
 export function validateEventBody                           (type   , value         )                        {
@@ -4278,7 +4512,7 @@ export function validateEventBody                           (type   , value     
     // One report per (adapter, mode) since release 19: Claude Code structured and in a terminal are two reports.
     if (new Set(inv.adapters.map((a) => `${a.adapter}/${a.mode}`)).size !== inv.adapters.length) return refuse("payload", "$body.adapters: an adapter twice");
     { const desk = deskRule(inv.desk_sessions, inv.projects); if (desk) return refuse("payload", `$body.desk_sessions: ${desk}`); }
-    { const cli = cliRule(inv.cli); if (cli) return refuse("payload", `$body.cli.${cli}`); } { const start = startRule(inv); if (start) return refuse("payload", `$body.${start}`); } { const wake = wakeRule(inv.wake); if (wake) return refuse("payload", `$body.wake.${wake}`); }
+    { const cli = cliRule(inv.cli); if (cli) return refuse("payload", `$body.cli.${cli}`); } { const start = startRule(inv); if (start) return refuse("payload", `$body.${start}`); } { const wake = wakeRule(inv.wake); if (wake) return refuse("payload", `$body.wake.${wake}`); } { const setup = setupRule(inv.setup); if (setup) return refuse("payload", `$body.setup.${setup}`); }
   }
   return checked;
 }

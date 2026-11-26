@@ -188,7 +188,7 @@ export function createSessions(ctx) {
     const features = ctx.inventory().features["claude-code"];
     s.token = ctx.approvals.register(s);
     s.mcpFile = writeMcpConfig(join(ctx.runDir, `${s.session_id}.mcp.json`), { node: ctx.node, bridge: ctx.bridgePath, socket: ctx.socket(), token: s.token });
-    const args = claudeArgs({ features, mode: s.agentMode ?? s.mode, model: s.model, resume: claudeResume(ctx, s, resume), sessionRef: s.agent_ref, mcpConfig: s.mcpFile, effort: s.effort ?? null, addDirs: s.extraPaths ?? [] });
+    const args = claudeArgs({ features, mode: s.agentMode ?? s.mode, model: s.model, resume: claudeResume(ctx, s, resume), sessionRef: s.agent_ref, mcpConfig: s.mcpFile, effort: s.effort ?? null, addDirs: s.extraPaths ?? [], web: ctx.web?.() });
     mark(s); // the ledger names the session before the agent writes a line
     s.run = startClaude({ file: ctx.inventory().files["claude-code"], cwd: s.projectPath, env: ctx.agentEnv(), args, onLine: (line) => onLine(s, line), onExit: (how) => onExit(s, how) });
     ctx.journal.recordSession({ session_id: s.session_id, pid: s.run.pid ?? null, ...refs(ctx, s) }); // a later daemon ends it if this one dies (P2-b)

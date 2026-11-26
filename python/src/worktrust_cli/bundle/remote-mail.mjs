@@ -27,14 +27,19 @@ import { draftPrompt, runDraft, runVerdict, verdictPrompt } from "./remote-mail-
 import { draftContext, recipientsFor, threadBody } from "./remote-mail-compose.mjs";
 import { cleanText } from "./remote-mail-text.mjs";
 import { createImapMailbox } from "./remote-mail-imapbox.mjs";
-import { knownBrowser } from "./remote-store.mjs";
+import { knownBrowser, loadPhones } from "./remote-store.mjs";
+import { createInstructionStore } from "./remote-mail-instructions.mjs";
+import { createInstructionsDoor } from "./remote-instructions-door.mjs"; // 2026-11-25 (MAIL-INSTRUCTIONS.md): the instruction files, synced with the phones
 import { createAttachmentStore } from "./remote-mail-attach.mjs";
 import { createSignatures } from "./remote-mail-signatures.mjs";
 import { createComposeDoor } from "./remote-mail-compose-door.mjs";
+import { createPhoneDrafts } from "./remote-mail-phone.mjs"; // CLI 0.11.26: a mailbox on the phone, drafted here, held words only
+import { createDraftStream } from "./remote-mail-stream.mjs"; // CLI 0.11.26: the draft's text live, for the phone that asked
+import { finishDraft } from "./remote-mail-clean.mjs"; // CLI 0.11.26: the e-mail and nothing else; the person's own instruction types
 
 /**
  * o: { dir, emit (the daemon's), now, random, log, every(ms, fn) → stop, later(ms, fn), agentFile(adapter) → path | null,
- *      agentEnv(), openBrowser(url), defaultAgent(), and for tests: vault, indexFallback, fetchImpl, hosts, clientId,
+ *      agentEnv(), openBrowser(url), defaultAgent(), agentModels(adapter) → the models the inventory reports, and for tests: vault, indexFallback, fetchImpl, hosts, clientId,
  *      draftRun(args) → { ok, draft } | { ok: false, code } }
  */
 export async function createMail(o) {
@@ -148,19 +153,50 @@ export async function createMail(o) {
   let drafting = false, agentTail = Promise.resolve();
   /** One personal agent run at a time on this computer (a phone's draft, an automation's verdict or draft). */
   const exclusive = (job) => { const run = agentTail.then(async () => { drafting = true; try { return await job(); } finally { drafting = false; } }); agentTail = run.catch(() => {}); return run; };
-  const agentDraft = (prompt) => { const adapter = o.defaultAgent?.() ?? "claude-code"; return o.draftRun ? o.draftRun({ agent: adapter, prompt }) : runDraft({ agent: adapter, file: o.agentFile(adapter), env: o.agentEnv(), prompt }); };
-  const compose = createComposeDoor({ o, drafts, index, accountOf, attach, signatures, exclusive, agentDraft });
+  // THE INSTRUCTION FILES (MAIL-INSTRUCTIONS.md): one store in mail/instructions, read by every draft and synced by the door below;
+  // a change is pushed to every confirmed PHONE, never a browser.
+  const tellPhones = (type, body) => { for (const p of loadPhones().confirmed ?? []) if (p?.device_id && !knownBrowser(p.device_id)) o.emit(null, type, body, null, "none", { transient: true, only: p.device_id }); };
+  /** One personal run of `agent` (and `model`, already checked against the inventory). */
+  const runAgent = ({ agent, model = null, prompt, onText, signal }) => (o.draftRun ? o.draftRun({ agent, model, prompt, onText, signal })
+    : runDraft({ agent, model, file: o.agentFile(agent), env: o.agentEnv(), prompt, ...(onText && o.agentStreams?.(agent) ? { onText } : {}), signal })); // onText only where the agent streams (inventory: --include-partial-messages)
+  /** LIVE (CLI 0.11.26): a request with `stream` gets its text as it grows (remote-mail-stream.mjs); mail.decline of its draft_id stops the run. */
+  const live = new Map(), instructionStore = o.instructionStore ?? createInstructionStore({ dir: join(o.dir, "instructions"), now: o.now });
+  const beginLive = ({ req, tell, draftId, stream }) => {
+    // HOW LONG A DRAFT TAKES (owner, 2026-11-25): started, first text, done, as counts in this computer's own log (no content); and, for a phone that asked `stream`, on the wire as clock readings.
+    const started = o.now(); let first = null, doneAt = null;
+    const timed = () => { doneAt = o.now(); o.log("mail_draft_timing", { draft_id: draftId, first_text_ms: first === null ? null : first - started, total_ms: doneAt - started }); };
+    if (!stream || !req) return { onText: undefined, signal: undefined, end: timed, extra: {}, written: {}, mark: () => {} };
+    const abort = new AbortController(), s = createDraftStream({ tell, req, draftId, later: o.later, firstAt: () => first });
+    live.set(draftId, { abort, s });
+    let used = { id: null, at: null };
+    return { onText: (t) => { if (first === null && t) first = o.now(); s.push(t); }, signal: abort.signal, end: () => { s.stop(); live.delete(draftId); timed(); }, extra: { draft_id: draftId, started_at: started },
+      mark: (rules) => { used = { id: rules.version > 0 ? rules.id : null, at: rules.updated_at }; }, get written() { return { written: { started_at: started, first_text_at: first, done_at: doneAt ?? o.now(), instructions_id: used.id, instructions_at: used.at } }; } };
+  };
+  const stopLive = (draftId) => { const l = live.get(draftId); if (!l) return false; l.s.stop(); l.abort.abort(); live.delete(draftId); o.log("mail_draft", { outcome: "stopped", draft_id: draftId }); return true; };
+  const agentDraft = (prompt, run = {}) => runAgent({ agent: o.defaultAgent?.() ?? "claude-code", prompt, ...run });
+  const compose = createComposeDoor({ o, drafts, index, accountOf, attach, signatures, exclusive, agentDraft, beginLive, instructions: instructionStore });
+  const phoneDrafts = createPhoneDrafts({ o, drafts, run: runAgent, beginLive, instructions: instructionStore });
+  const instructions = createInstructionsDoor({ store: instructionStore, kind: "mail", now: o.now, random: o.random, log: o.log, exclusive, agentDraft, tellPhones: o.tellPhones ?? tellPhones });
+  /** A model the person chose: only one this computer's inventory reports for that agent (never passed on blindly). */
+  const modelKnown = (agent, model) => model === undefined || (o.agentModels?.(agent) ?? []).includes(model);
   /** One draft run, in the background; its answers go to `tell`. `instruction` already the person's (or a template's test). */
-  async function draftRun({ account, threadId, mode, style, instruction, to, agent, req, tell, draftId = P.mintId("mdr", o.random) }) {
+  async function draftRun({ account, threadId, mode, style, instruction, to, agent, model, stream, instructionsId = null, req, tell, draftId = P.mintId("mdr", o.random) }) {
     const msgs = threadId ? await openThread(threadId) : [];
     const ctx = draftContext({ msgs: msgs ?? [], mode, account, index });
-    if (req) tell("mail.draft.progress", { request_id: req, phase: "drafting" });
-    const prompt = draftPrompt({ mode, style, instruction, thread: ctx.thread, samples: ctx.samples, self: account.address, random: o.random });
+    const on = beginLive({ req, tell, draftId, stream });
+    if (req) tell("mail.draft.progress", { request_id: req, phase: "drafting", ...on.extra });
+    const rules = instructionStore.resolve(account.account_id, instructionsId); on.mark(rules); // the type chosen, else this mailbox's, else the default; read now
+    const prompt = draftPrompt({ mode, style, instruction, thread: ctx.thread, samples: ctx.samples, self: account.address, random: o.random, instructions: rules.text });
     const adapter = agent ?? o.defaultAgent?.() ?? "claude-code";
-    const r = o.draftRun ? await o.draftRun({ agent: adapter, prompt }) : await runDraft({ agent: adapter, file: o.agentFile(adapter), env: o.agentEnv(), prompt });
+    let r = await runAgent({ agent: adapter, model: model ?? null, prompt, onText: on.onText, signal: on.signal });
+    if (!r.ok && r.code === "cancelled") { on.end(); return false; } // stopped from the phone: declined already said; no draft follows
+    if (r.ok) r = await finishDraft({ r, prompt, instruction, again: (p2) => runAgent({ agent: adapter, model: model ?? null, prompt: p2, signal: on.signal }) }); // the e-mail and nothing else: one re-ask, then a noted repair
+    on.end();
+    if (r.ok && rules.note) r = { ...r, draft: { ...r.draft, notes: [...r.draft.notes, rules.note].slice(0, P.MAIL_NOTES_MAX) } };
+    if (!r.ok && r.code === "cancelled") return false;
     if (!r.ok) { o.log("mail_draft", { outcome: r.code }); if (req) tell("mail.draft.refused", { request_id: req, code: r.code }); return false; }
     const rcpt = recipientsFor(mode, ctx.target, account.address, to ?? []);
-    const draft = { request_id: req, draft_id: draftId, account_id: account.account_id, thread_id: threadId ?? null, mode, to: rcpt.to, cc: rcpt.cc, bcc: [], subject: ctx.subject, body: r.draft.body, confidence: r.draft.confidence, notes: r.draft.notes, attachments: [], format: "plain" };
+    const draft = { request_id: req, draft_id: draftId, account_id: account.account_id, thread_id: threadId ?? null, mode, to: rcpt.to, cc: rcpt.cc, bcc: [], subject: ctx.subject, body: r.draft.body, confidence: r.draft.confidence, notes: r.draft.notes, attachments: [], format: "plain", ...on.written };
     if (!P.validateEventBody("mail.draft", draft).ok) { if (req) tell("mail.draft.refused", { request_id: req, code: "unparseable" }); return false; }
     drafts.set(draftId, { draft, state: "ready", phone: null, request_id: req, original: ctx.target?.remote_ref ?? null, target: ctx.target?.message_id ?? null });
     o.log("mail_draft", { outcome: "ready", draft_id: draftId, confidence: draft.confidence });
@@ -181,7 +217,9 @@ export async function createMail(o) {
     const req = env.command_id, phone = env.sender_device_id, tell = tellTo(phone);
     // A PHONE ONLY, FOR NOW (owner, 2026-11-24): a browser's mail command is refused `not_allowed` before anything is read.
     if (!(o.isPhone ?? ((id) => !knownBrowser(id)))(phone)) { o.log("mail_refused", { type: env.type, reason: "not_a_phone" }); return "not_allowed"; }
+    phoneDrafts.sweep(); // a phone's draft lives 24 hours
     if (compose.handles(env.type, p)) return compose.handle(env.type, p, req, tell); // remote-mail-compose-door.mjs
+    if (instructions.handles(env.type)) return instructions.handle(env.type, p, req, phone, tell); // remote-instructions-door.mjs
     switch (env.type) {
       case "mail.accounts.get": tell("mail.accounts", accountsBody(req)); return "taken";
       case "mail.account.add": addAccount(p, tell, req); return "taken";
@@ -205,9 +243,17 @@ export async function createMail(o) {
         tell("mail.flagged", { request_id: req, thread_id: p.thread_id }); return "taken";
       }
       case "mail.draft.request": {
+        const agent = p.agent ?? o.defaultAgent?.() ?? "claude-code";
+        if (!modelKnown(agent, p.model)) { o.log("mail_draft", { outcome: "model_unknown" }); tell("mail.draft.refused", { request_id: req, code: "model_unknown" }); return "taken"; }
+        if (p.source) { // a mailbox on the phone (MAIL-ON-PHONE.md §6): the same job, nothing kept but the words for 24 hours
+          if (drafting) { tell("mail.draft.refused", { request_id: req, code: "busy" }); return "taken"; }
+          tell("mail.draft.progress", { request_id: req, phase: "reading" });
+          exclusive(() => phoneDrafts.draft({ p, req, tell, agent })).catch(() => tell("mail.draft.refused", { request_id: req, code: "agent_failed" }));
+          return "taken";
+        }
         const account = accountOf(p.account_id);
         if (!account || (p.thread_id && index.thread(p.thread_id)[0]?.account_id !== account.account_id)) return "not_found";
-        startDraft({ account, threadId: p.thread_id ?? null, mode: p.mode, style: p.style, instruction: p.instruction, to: p.to, agent: p.agent, req, tell }); return "taken";
+        startDraft({ account, threadId: p.thread_id ?? null, mode: p.mode, style: p.style, instruction: p.instruction, to: p.to, agent: p.agent, model: p.model, stream: p.stream === true, instructionsId: p.instructions_id ?? null, req, tell }); return "taken";
       }
       case "mail.draft.edit": {
         const held = drafts.get(p.draft_id);
@@ -217,8 +263,10 @@ export async function createMail(o) {
         if (!P.validateEventBody("mail.draft", draft).ok) return "not_allowed";
         drafts.set(p.draft_id, { ...held, draft, state: "ready" }); tell("mail.draft", draft); return "taken";
       }
-      case "mail.decline": { if (!drafts.delete(p.draft_id)) return "not_found"; attach.dropDraft(p.draft_id); o.log("mail_draft", { outcome: "declined", draft_id: p.draft_id }); tell("mail.declined", { request_id: req, draft_id: p.draft_id }); return "taken"; }
+      case "mail.decline": { if (stopLive(p.draft_id)) { const h = drafts.get(p.draft_id); if (h) tell("mail.draft", { ...h.draft, request_id: req }); else tell("mail.declined", { request_id: req, draft_id: p.draft_id }); return "taken"; } // a draft still being written: its run stopped, its folder removed; a rewrite stopped leaves the draft as it was
+        if (!drafts.delete(p.draft_id)) return "not_found"; attach.dropDraft(p.draft_id); o.log("mail_draft", { outcome: "declined", draft_id: p.draft_id }); tell("mail.declined", { request_id: req, draft_id: p.draft_id }); return "taken"; }
       case "mail.send": {
+        if (phoneDrafts.isPhone(p.draft_id)) { o.log("mail_refused", { type: env.type, reason: "phone_draft" }); return "not_allowed"; } // words only: the phone sends its own mailbox's mail
         const held = drafts.get(p.draft_id);
         if (held) drafts.set(p.draft_id, { ...held, phone, request_id: req });
         const r = outbox.submit(p.draft_id, p.approval_hash, { phone, request_id: req });
@@ -246,5 +294,5 @@ export async function createMail(o) {
     return "taken";
   }
 
-  return { handle, start: () => { attach.sweep(); o.every(60 * 60_000, () => attach.sweep()); sync.start(); sync.syncAll().catch(() => {}); for (const a of accounts()) watch(a); }, stop: () => { sync.stop(); for (const w of watching.values()) { w.stopped = true; w.client?.close(); } index.close(); }, sync, outbox, index, vault, drafts };
+  return { handle, start: () => { attach.sweep(); o.every(60 * 60_000, () => { attach.sweep(); phoneDrafts.sweep(); }); instructions.watch(); o.every(60_000, () => instructions.watch()); sync.start(); sync.syncAll().catch(() => {}); for (const a of accounts()) watch(a); }, instructions, stop: () => { sync.stop(); for (const w of watching.values()) { w.stopped = true; w.client?.close(); } index.close(); }, sync, outbox, index, vault, drafts };
 }

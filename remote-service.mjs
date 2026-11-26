@@ -14,7 +14,7 @@
  * A NEW RELEASE MOVES THE SERVICE, NEVER CUTTING A TURN (CLI 0.11.15; the owner's iMac, 2026-11-16: three updates while the
  * service kept running 0.11.9, whose payload rules dropped the newer phone's inventory ask: 0 projects). The unit names one
  * verified launcher and launchd and systemd keep the job they loaded, so a release reaches the service only by re-installing:
- *   - `update` calls serviceOnRelease: no service, nothing; a daemon that hands over (daemon.json, 0.11.15 on) is asked
+ *   - `update` calls serviceOnRelease (remote-service-restart.mjs since 0.11.26): no service, nothing; a daemon that hands over (daemon.json, 0.11.15 on) is asked
  *     (restart.json) and moves itself when nothing is at work (daemonBusy); an older daemon is re-installed at once.
  *   - the daemon (createHandover, every 3 s): at start, every ten minutes and when asked, a newer installed release verified
  *     under this release's pinned key is handed over only when idle: launchd through a one-shot job running the NEW
@@ -30,7 +30,7 @@ import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { verifyPackage, writePrivateFile } from "./package-integrity.mjs";
 import { refusedFor, systemRunner } from "./remote-service-home.mjs";
-import { RELEASE, installedRelease, isHandoverLauncher, launcherFor, launcherVersion, newerRelease } from "./remote-launchers.mjs";
+import { RELEASE, installedRelease, launcherFor, newerRelease } from "./remote-launchers.mjs";
 export * from "./remote-launchers.mjs"; // which launcher a unit may be handed to (the npm copies, a Python installation)
 
 export const LABEL = "io.worktrust.remote";
@@ -102,9 +102,9 @@ export function installService({ program, path, platform = process.platform, hom
     mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
     writeFileSync(file, launchdPlist({ program, path, home }), { mode: 0o644 });
     const domain = `gui/${userInfo().uid}`;
-    // A one-shot handover job left behind (review P3-2) goes too; the job itself never boots itself out mid-way.
-    if (!fromHandover) runner("launchctl", ["bootout", `${domain}/${HANDOVER_LABEL}`]);
-    rmSync(handoverPlistPath(home), { force: true });
+    // A one-shot handover job left behind (review P3-2) goes too; the job itself never boots itself out mid-way, and keeps
+    // its file until it ends (0.11.26: the file is how an update knows a move is under way; handoverCommand removes it).
+    if (!fromHandover) { runner("launchctl", ["bootout", `${domain}/${HANDOVER_LABEL}`]); rmSync(handoverPlistPath(home), { force: true }); }
     runner("launchctl", ["bootout", `${domain}/${LABEL}`]);
     return { kind, file, started: runner("launchctl", ["bootstrap", domain, file]), why: refusedFor(runner, home) };
   }
@@ -178,7 +178,7 @@ export function daemonState(home = homedir()) {
   } catch { return null; }
 }
 export const writeDaemonState = (home, state) => writePrivateFile(remoteFile(home, DAEMON_FILE), `${JSON.stringify({ v: 1, ...state })}\n`);
-const reinstalling = (home) => { try { return JSON.parse(readFileSync(remoteFile(home, RESTART_FILE), "utf8"))?.now === true; } catch { return false; } };
+const reinstalling = (home) => { try { const r = JSON.parse(readFileSync(remoteFile(home, RESTART_FILE), "utf8")); return r?.now === true && Math.abs(Date.now() - (r.at ?? 0)) < 120_000; } catch { return false; } }; // 0.11.26: one an update left by a hard stop holds nothing for ever
 /**
  * THE RESTART AN UPDATE IS MAKING NOW (CLI 0.11.16), read by the daemon as the service manager ends it: restart.json naming
  * a release, written in the last half minute (serviceOnRelease leaves it only while it re-installs). → that release, or null.
@@ -190,52 +190,8 @@ export function restartAsked({ home = homedir(), now = Date.now() } = {}) {
   } catch { return null; }
 }
 
-/**
- * THE UPDATE'S STEP (worktrust.mjs `update`, and `remote handover` with `direct`): the service, when installed, onto
- * `program` (this release's runtime, the PATH the unit already had). → the one line to say, or null (no service, or
- * already on this release). A daemon that hands over is ASKED (restart.json) and moves when no task runs. An older daemon
- * cannot be asked, and one that stayed idle and unchanged for waitMs did not move (a release key it does not know): the
- * update, verified itself, re-installs it. Only what is true is said (review P3-3).
- */
-export async function serviceOnRelease({ program, version, platform = process.platform, home = homedir(), runner = systemRunner(home), direct = false, waitMs = 15_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
-  if (servicePlatform(platform) === "foreground") return null;
-  const installed = installedProgram({ platform, home });
-  if (!installed) return null;
-  const daemon = direct ? null : daemonState(home);
-  if (entryOf(installed.program) === entryOf(program) && (!daemon || daemon.version === version)) return null;
-  const reinstall = () => {
-    // A daemon that can hear it (daemon.json) is told why the service manager ends it: it says "restarting" to its phones.
-    if (daemon) { try { writePrivateFile(remoteFile(home, RESTART_FILE), `${JSON.stringify({ v: 1, version, at: Date.now(), now: true })}\n`); } catch { /* unsaid */ } }
-    let done;
-    try { done = installService({ program, path: installed.path ?? process.env.PATH ?? "", platform, home, runner, fromHandover: direct }); } finally { if (daemon) rmSync(remoteFile(home, RESTART_FILE), { force: true }); }
-    return done.started ? `✓ Remote Agent restarted on ${version}.` : `! Remote Agent could not move to ${version}: its service was written (${done.file}) but did not start; npx worktrust remote run shows why.`;
-  };
-  if (!daemon || !isHandoverLauncher(entryOf(program), home)) return reinstall();
-  writePrivateFile(remoteFile(home, RESTART_FILE), `${JSON.stringify({ v: 1, version, at: Date.now() })}\n`);
-  for (const end = Date.now() + waitMs; Date.now() < end;) { await sleep(500); if (daemonState(home)?.version === version) return `✓ Remote Agent restarted on ${version}.`; }
-  const now = daemonState(home);
-  if (now?.version === version) return `✓ Remote Agent restarted on ${version}.`;
-  if (now?.busy) return `Remote Agent still runs ${now.version}: a task is running. It moves to ${version} when the task finishes, or at the next npx worktrust update.`;
-  if (!now && entryOf(installedProgram({ platform, home })?.program ?? []) === entryOf(program)) return `Remote Agent is starting on ${version}.`; // the handover job loaded it
-  return reinstall();
-}
-
-/**
- * `remote handover` (internal): the one-shot job's program, run by the NEW launcher. It moves the service only when this is
- * the installed release, newer than the one the unit runs, and the daemon says no task runs (review P3-1); its job file
- * goes whatever happens (P3-2). The job does not boot itself out (that would end it mid-way): the next handover and
- * `remote app` boot it out first.
- */
-export async function handoverCommand(io, { home = homedir(), platform = process.platform, runner = systemRunner(home) } = {}) {
-  try {
-    const installed = installedProgram({ platform, home }), unit = installed ? launcherVersion(entryOf(installed.program)) : null;
-    const why = installedRelease(home) !== io.version ? "not the installed release" : !installed ? "no service" : !unit || !newerRelease(io.version, unit) ? "not newer than the service" : daemonState(home)?.busy ? "a task is running" : null;
-    if (why) return io.say(`  Remote Agent stays as it is (${why}).`);
-    const r = await io.prepare();
-    const said = await serviceOnRelease({ program: [r.node, ...r.nodeArgs, r.entry, "remote", "run"], version: io.version, platform, home, runner, direct: true });
-    if (said) io.say(`  ${said}`);
-  } finally { rmSync(handoverPlistPath(home), { force: true }); }
-}
+// THE UPDATE'S STEP (serviceOnRelease) and `remote handover` (handoverCommand) live in remote-service-restart.mjs since CLI
+// 0.11.26: the move waits for launchd to take the job and for the daemon to report, and says one line (the owner's iMac).
 
 /**
  * IS ANYTHING AT WORK (review P2-2)? → why, or null: a turn under way, a turn command taken and not yet started (a cold
@@ -277,7 +233,9 @@ export function createHandover({ version, busy, own = null, log = () => {}, anno
     mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
     writeFileSync(file, handoverPlist({ program: withLauncher(current.program, launcher, ["remote", "handover"]), path: current.path ?? "", home }), { mode: 0o644 });
     runner("launchctl", ["bootout", `${domain}/${HANDOVER_LABEL}`]);
-    return runner("launchctl", ["bootstrap", domain, file]);
+    const started = runner("launchctl", ["bootstrap", domain, file]);
+    if (!started) rmSync(file, { force: true }); // 0.11.26: a job that never started leaves no file an update would wait on
+    return started;
   }
   return {
     start() { lastBusy = false; say(false); },
@@ -289,7 +247,8 @@ export function createHandover({ version, busy, own = null, log = () => {}, anno
       if (handing > 0 && now() - handing < giveUpMs) return null;
       if (handing > 0) { handing = 0; log("handover_failed", { to: waiting }); said(false); } // still here: the new launcher did not take over; tried again later
       // An update that is re-installing the service itself right now (`now`, serviceOnRelease) asks nothing of this daemon.
-      const asked = existsSync(remoteFile(home, RESTART_FILE)) && !reinstalling(home);
+      if (reinstalling(home)) return null; // 0.11.26: not even the ten-minute look moves beside a re-install under way
+      const asked = existsSync(remoteFile(home, RESTART_FILE));
       if (!asked && now() - checked < everyMs) return null;
       checked = now();
       const target = installedRelease(home);

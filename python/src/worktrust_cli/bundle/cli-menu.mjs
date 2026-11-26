@@ -133,8 +133,8 @@ export function menuFrame({ header = [], title = null, items, at = 0, ticked = n
  * be, and its digit only says its `quiet` line. `multi`: Space ticks an item that has `tick: true`; the ticked items come back as `ticked`. `header`:
  * the lines, or a function giving them, asked at every draw so a state a command just changed shows at once.
  */
-export async function choose(term, { header = [], title, items: base, top = false, multi = false, footer = null }) {
-  let query = null, items = base, at = Math.max(0, items.findIndex((i) => !i.disabled)); // SEARCH (0.11.21): typed letters filter this list and offer other menus' rows (cli-menu-search.mjs)
+export async function choose(term, { header = [], title, items: base, top = false, multi = false, footer = null, at: start = null }) { // at: the row to open on (0.11.26: back to the same row)
+  let query = null, items = base, at = Number.isInteger(start) && items[start] && !items[start].disabled ? start : Math.max(0, items.findIndex((i) => !i.disabled)); // SEARCH (0.11.21): typed letters filter this list and offer other menus' rows (cli-menu-search.mjs)
   const ticked = new Set(items.filter((i) => i.ticked).map((i) => i.label)), move = (step) => { if (items.some((i) => !i.disabled)) do at = (at + step + items.length) % items.length; while (items[at].disabled); };
   let asked = null; // the row whose digit was pressed though it cannot be chosen (0.11.9), said under the list until the next key
   for (;;) {
@@ -242,7 +242,7 @@ export function headerLines(state) {
     title,
     row("Account", state.account ?? "not recorded: run Check this computer"),
     row("Account type", PLAN_WORDS[state.plan] ?? "not known"), // the server's answer (api/cli/door), never guessed here
-    row("This computer", `${host.length > 28 ? `${host.slice(0, 27)}…` : host} · connected since ${/^\d{4}-\d{2}-\d{2}/.test(String(state.since ?? "")) ? String(state.since).slice(0, 10) : "-"}`),
+    row("This computer", `${host.length > 28 ? `${host.slice(0, 27)}…` : host} · connected since ${/^\d{4}-\d{2}-\d{2}/.test(String(state.since ?? "")) ? String(state.since).slice(0, 10) : "not known"}`), // 0.11.26: a date not recorded, in words
     row("Remote Agent", `${remote.links === null || ["not set up", "off"].includes(remote.word) ? remote.word : `${remote.word}, ${remote.links} connection${remote.links === 1 ? "" : "s"}`}${state.remoteAccess === "premium_required" ? " · needs Premium" : ""}`),
     row("Sharing", `session hook ${known(state.hook, "on", "not installed")} · AI apps ${state.door === "off" ? "off" : state.door === "on" ? `on${Number.isInteger(state.apps) ? ` (${state.apps})` : ""}` : "not known"} · Remote Agent ${remote.word === "not set up" ? "off" : remote.word}`),
   ];

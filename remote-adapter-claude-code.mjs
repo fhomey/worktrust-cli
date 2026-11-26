@@ -85,7 +85,7 @@ export const EDIT_MODE_DENY = Object.freeze(["**/.claude/**", "**/.mcp.json", "*
 /** The agent mode (protocol AGENT_MODES; the older `ask` is `manual`) → Claude Code's own permission mode, from its help. */
 const PERMISSION_OF = { ask: "askMode", manual: "askMode", plan: "planMode", edit: "editMode", auto: "autoMode" };
 
-export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfig, effort = null, addDirs = [], userDenies = userAllowDenies() }) {
+export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfig, effort = null, addDirs = [], userDenies = userAllowDenies(), web = { search: false, fetch: "off" } }) {
   if (!Object.hasOwn(PERMISSION_OF, mode)) throw new Error("the protocol offers the manual, edit, plan and auto modes only");
   const permission = features[PERMISSION_OF[mode]];
   if (!permission) throw new Error("this Claude Code offers no such permission mode");
@@ -99,7 +99,7 @@ export function claudeArgs({ features, mode, model, resume, sessionRef, mcpConfi
   if (!features.disallowed || !features.settingSources) throw new Error("this Claude Code cannot take deny rules or limit its setting sources");
   // --replay-user-messages: Claude Code echoes each user message as it reads it (isReplay), which is how a live steer is
   // known to have entered the running turn (remote-steering.mjs; measured on 2.1.286: at the next tool boundary).
-  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...(features.replay ? ["--replay-user-messages"] : []), "--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY, ...userDenies, ...(unasked ? EDIT_MODE_DENY : []),
+  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", ...(features.replay ? ["--replay-user-messages"] : []), "--permission-mode", permission, "--setting-sources", "user", "--disallowedTools", ...REMOTE_DENY, ...userDenies, ...(unasked ? EDIT_MODE_DENY : []), ...(web.search === true ? [] : ["WebSearch"]), ...(web.fetch === "ask" ? [] : ["WebFetch"]), // CLI 0.11.26: a web tool the keyboard turned off is denied by Claude Code itself too; one it allows still asks the permission tool (remote-approvals.mjs)
     ...(features.allowed ? ["--allowedTools", ...PLAN_TOOLS] : []), ...(features.appendPrompt ? ["--append-system-prompt", PLAN_HINT] : []),
     "--permission-prompt-tool", APPROVAL_TOOL, "--mcp-config", mcpConfig, ...(features.partial ? ["--include-partial-messages"] : []), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...(addDirs.length ? ["--add-dir", ...addDirs] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionRef])];
 }

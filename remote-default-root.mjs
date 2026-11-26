@@ -88,16 +88,18 @@ export async function offerDefaultRoot(io, { at = "paired" } = {}) {
   io.say(`  A default folder for new projects: ${defaultRootDir()}. "New session" on your phone, without a project,`);
   io.say("  asks a project name and makes that one new, empty folder there. Nothing else is opened to the phone.");
   io.say("  Turn it off any time: npx worktrust remote roots default off");
+  io.setup?.asked("default_root"); // CLI 0.11.26: mirrored on the phone that just linked (remote-setup.mjs); its folder question follows in askAccess
   const said = await (io.prompt ?? askKeyboard)("  Make the default folder? [Y/n] ");
   const answer = answerWord(said); // owner, 2026-11-24: y / yes / n / no, any case
   if (answer === "" || answer === "yes") {
     const done = turnOn();
-    if (!done.ok) { io.say(`  ! Not made: ${done.reason}`); return "unanswered"; }
-    io.say(`  ✓ ${done.message}`);
+    if (!done.ok) { io.setup?.skipped("default_root", "later"); io.say(`  ! Not made: ${done.reason}`); return "unanswered"; }
+    io.setup?.done("default_root"); io.say(`  ✓ ${done.message}`);
     await askAccess(io, done.paths);
     return "yes";
   }
-  if (answer === "no") { mark({ root_id: null, answer: "no", at: Date.now() }); io.say(`  No default folder. Later: ${DEFAULT_ROOT_COMMAND}`); return "no"; }
+  if (answer === "no") { mark({ root_id: null, answer: "no", at: Date.now() }); io.setup?.done("default_root"); io.say(`  No default folder. Later: ${DEFAULT_ROOT_COMMAND}`); return "no"; }
+  io.setup?.skipped("default_root", said === null ? "no_answer" : "later");
   io.say(`  No answer: no default folder for now. Later: ${DEFAULT_ROOT_COMMAND}`);
   return "unanswered";
 }

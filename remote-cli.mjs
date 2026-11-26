@@ -25,7 +25,7 @@
  *                                                     (project.create); --git-init runs `git init` in it
  *   remote modes allow|deny edit|auto | status        the ceiling of agent modes a phone may start (0.11.7; default manual
  *                                                     and plan), remote-settings.mjs
- *   remote admin on|off · read-along on|off           managing this computer from the app or the web (part B) · may a phone READ ALONG, live and read-only, with this computer's own sessions (off until you say yes here: asked once after a pairing, Enter is yes; `desk-history on|off`: their closed turns only); `desk-steer on|off` (0.11.20): may it SEND a prompt into a session open here (remote-desk-steer.mjs; needs read along); `voice on|off|remove` (0.11.21): may a phone's voice key (Siri) send one (remote-voice.mjs; needs desk-steer); `awake on|off|status` and `awake lan on|off` (0.11.25): keep this computer awake while the service runs, and Wake-on-LAN through another of your computers (remote-awake.mjs, remote-wake.mjs)
+ *   remote admin on|off · read-along on|off           managing this computer from the app or the web (part B) · may a phone READ ALONG, live and read-only, with this computer's own sessions (on when a phone is linked here, with steering and voice, unless you turned it off here: CLI 0.11.26; `desk-history on|off`: their closed turns only); `desk-steer on|off` (0.11.20): may it SEND a prompt into a session open here (remote-desk-steer.mjs; needs read along); `voice on|off|remove` (0.11.21): may a phone's voice key (Siri) send one (remote-voice.mjs; needs desk-steer); `awake on|off|status` and `awake lan on|off` (0.11.25): keep this computer awake while the service runs, and Wake-on-LAN through another of your computers (remote-awake.mjs, remote-wake.mjs)
  *   remote preview allow|deny <port|file> <folder> | list   what a phone may preview: a dev-server port on 127.0.0.1 or a
  *                                                     built HTML file, per granted folder (rendered with your Chrome)
  *   remote codex on | off                             offer Codex to a phone (off by default): Codex runs the reads it
@@ -45,7 +45,7 @@ import { canonicalProject } from "./remote-policy.mjs";
 import { CONFIRMATION_EXPIRED, IssuerMissing, PairingDenied, PairingExpired, PairingRefused, awaitConfirmation, compactForQr, oneScan, oneScanInvite, pairComputer } from "./remote-pairing.mjs";
 import { startCountdown, waitKey } from "./remote-countdown.mjs";
 import { accessCommand, askLine, connectionsCommand, disconnectCommand, linkedSummary, linkPhone, reachStep, removeOneCommand, removePhones, withName } from "./remote-connections.mjs";
-import { NOT_THIS_HOME, handoverCommand, installService, ownHome, removeService, serviceState, servicePlatform } from "./remote-service.mjs";
+import { NOT_THIS_HOME, ownHome, removeService, servicePlatform } from "./remote-service.mjs"; import { handoverCommand, serviceFacts, serviceLines, startService } from "./remote-service-restart.mjs"; // 0.11.26: a bounded restart that says what is true
 import { terminalQr } from "./remote-qr.mjs";
 import { gatewayLine, keptGatewayState, webSocketAvailable } from "./remote-transport.mjs";
 import { healthLine, keptHealth } from "./remote-health.mjs";
@@ -55,9 +55,9 @@ import { allowCommand, parsePipelineConfig, PIPELINE_FILE } from "./remote-pipel
 import { pipelineState, projectReviewHash, readProjectFile } from "./remote-pipeline.mjs";
 import { openJournal } from "./remote-journal.mjs";
 import { deskReadOf, loadPreviewGrants, savePreviewGrants, loadDeskMarks, loadPipelineReviews, loadRoots, remotePath, saveDeskMarks, savePipelineReviews } from "./remote-store.mjs";
-import { offerAfter, offerReadAlong } from "./remote-read-along.mjs"; import { deskSteerCommand, withdrawInboxes } from "./remote-desk-steer.mjs"; import { uninstallSteerMod } from "./remote-steer-mod.mjs"; import { voiceCommand, voiceLine } from "./remote-voice.mjs"; import { awakeCommand, awakeLines } from "./remote-awake.mjs"; import { ownCard } from "./remote-wake.mjs"; // CLI 0.11.25: Stay reachable and Wake-on-LAN (docs/remote-agents/WAKE.md)
-import { rootLabel } from "./remote-projects.mjs"; import { defaultRootCommand, offerDefaultRoot } from "./remote-default-root.mjs"; import { adminCommand, deskHistoryCommand, deskReadLine, keptReaders, readAlongCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs";
-import { CONFIRM, confirmYes } from "./remote-keyboard.mjs"; // owner, 2026-11-24: every confirmation takes y / yes / n / no
+import { switchesAtLink, switchesOffLines } from "./remote-read-along.mjs"; import { deskSteerCommand, withdrawInboxes } from "./remote-desk-steer.mjs"; import { uninstallSteerMod } from "./remote-steer-mod.mjs"; import { voiceCommand, voiceLine } from "./remote-voice.mjs"; import { awakeCommand, awakeLines } from "./remote-awake.mjs"; import { ownCard } from "./remote-wake.mjs"; // CLI 0.11.25: Stay reachable and Wake-on-LAN (docs/remote-agents/WAKE.md)
+import { rootLabel } from "./remote-projects.mjs"; import { defaultRootCommand, offerDefaultRoot } from "./remote-default-root.mjs"; import { adminCommand, deskHistoryCommand, deskReadLine, keptReaders, readAlongCommand, allowedModes, applySettingsChange, askMacFolderAccess, folderCheck, modesCommand } from "./remote-settings.mjs"; import { webCommand } from "./remote-web.mjs";
+import { CONFIRM, confirmYes } from "./remote-keyboard.mjs"; import { linkSetup } from "./remote-setup.mjs"; // owner, 2026-11-24: every confirmation takes y / yes / n / no
 
 const fingerprintOf = (keys) => P.deviceFingerprint(keys.public);
 /** A question only a person at this keyboard answers: a terminal, then y or yes (confirmYes); --yes, Enter, n and no are No. */
@@ -83,14 +83,10 @@ async function approve(io, road) {
   const chosen = io.flag("gateway") ?? process.env.WORKTRUST_REMOTE_GATEWAY ?? settings.gateway ?? null;
   const gateway = chosen ?? PRODUCTION_GATEWAY;
   if (gateway && !P.isGatewayOrigin(gateway)) io.fail("--gateway is an origin: wss://host[:port], or ws://127.0.0.1:<port> for the dev relay");
-  io.say();
-  io.say("  WorkTrust remote lets your phone steer the AI agents on this computer. It will:");
-  io.say("    - make a REMOTE key pair for this computer (not the measurement key), approved in WorkTrust with your second factor");
-  io.say("    - run a small service while you are logged in, holding one outbound connection; it opens no port");
-  io.say("    - let a phone steer agents only in folders you grant here, and approve only edits inside them, reviewed test,");
-  io.say("      build and lint commands, and messages shown whole; everything else is decided at this keyboard");
-  io.say("    - mark every session it steers, so remote work never counts as your AI Hours");
-  if (!(await io.ask("Continue?"))) return;
+  // A RESTART ASKS NOTHING (0.11.26, the owner's iMac): `--no-pair` on a computer paired and switched on agrees to nothing new.
+  const restart = io.has("no-pair") && !io.has("repair") && settings.enabled === true && Boolean(loadIdentity());
+  if (!restart) for (const line of ["", "  WorkTrust remote lets your phone steer the AI agents on this computer. It will:", "    - make a REMOTE key pair for this computer (not the measurement key), approved in WorkTrust with your second factor", "    - run a small service while you are logged in, holding one outbound connection; it opens no port", "    - let a phone steer agents only in folders you grant here, and approve only edits inside them, reviewed test,", "      build and lint commands, and messages shown whole; everything else is decided at this keyboard", "    - mark every session it steers, so remote work never counts as your AI Hours"]) io.say(line);
+  if (!restart && !(await io.ask("Continue?"))) return;
   ensureRemoteDir();
   let identity = loadIdentity(), ready = null, waitingForPhone = false;
   if (!identity || io.has("repair")) {
@@ -131,10 +127,8 @@ async function approve(io, road) {
   saveSettings({ ...settings, enabled: true, paused: null, gateway: chosen, agent_path: process.env.PATH ?? null });
   if (loadProjects().length === 0 && loadRoots().length === 0) io.say("  No folder is granted yet: npx worktrust remote roots add <folder> (or the menu: npx worktrust › Remote Agent › Roots)");
   if (servicePlatform() === "foreground") { io.say("  ✓ This computer is connected to Remote Agent."); io.say("  Windows: there is no service; run `npx worktrust remote run` and keep that terminal open."); return; }
-  const runtime = await io.prepare();
-  const service = installService({ program: [runtime.node, ...runtime.nodeArgs, runtime.entry, "remote", "run"], path: process.env.PATH ?? "" });
-  io.say(service.started ? `  ✓ The service runs (${service.kind}, while you are logged in; linger stays off).` : service.why ? `  ! Not started (${service.why}): the service file is written (${service.file}); no service manager was asked.` : `  ! The service file was written (${service.file}) but did not start; run \`npx worktrust remote run\` to see why.`);
-  if (service.started) io.say("  ✓ This computer is connected to Remote Agent.");
+  const service = await startService(io, await io.prepare(), { connect: !waitingForPhone }); // bounded: launchd's job taken, then the daemon's word (remote-service-restart.mjs)
+  for (const line of service.lines) io.say(line); if (!service.ok) process.exitCode = 1;
   if (waitingForPhone) return void io.say("  Once it is confirmed: npx worktrust remote pair links a phone, if none is linked yet."); // no relay yet: a phone could not reach it
   if (!io.has("no-pair")) await linkAndGrant(io, ready);
 }
@@ -148,8 +142,9 @@ async function linkAndGrant(io, ready = null) {
   const phone = await linkPhone(io, ready);
   if (!phone) return;
   for (const line of linkedSummary(await withName(phone))) io.say(line);
-  await reachStep(io, keyboardApply(io)); await offerReadAlong(io); // 0.11.19 (owner, 2026-11-21): a phone was linked: read along is asked once, yes by default (remote-read-along.mjs)
-  await offerDefaultRoot(io); // CLI 0.11.21: and the default folder for new projects, once, Enter is yes (remote-default-root.mjs)
+  const setup = linkSetup(io, phone.device_id), sio = { ...io, setup }; // CLI 0.11.26: every question below, mirrored on the phone that linked (remote-setup.mjs)
+  try { switchesAtLink(sio); // CLI 0.11.26 (owner, 2026-11-25): read along, steering and voice ON, not asked; an off typed here stays off (remote-read-along.mjs)
+    await reachStep(sio, keyboardApply(sio)); await offerDefaultRoot(sio); } finally { setup?.end(); } // CLI 0.11.21: and the default folder for new projects, once, Enter is yes (remote-default-root.mjs)
 }
 /** The keyboard's one door for the access step: applySettingsChange, then the macOS folder question; a refusal is said, not fatal. */
 const keyboardApply = (io) => async (change) => {
@@ -173,7 +168,7 @@ async function phones(io, rest) {
     if (!(await askTyped(`Is ${phone.fingerprint} the fingerprint your phone shows?`))) { io.say("  Not confirmed."); return; }
     savePhones({ ...list, pending: list.pending.filter((p) => p !== phone), confirmed: [...list.confirmed.filter((p) => p.fingerprint !== phone.fingerprint), { ...phone, how: "keyboard", confirmed_at: Date.now() }] });
     io.say(`  ✓ Confirmed: phone · ${phone.fingerprint}`);
-    return void (await offerReadAlong(io)); // a phone confirmed at this keyboard: the same question, once
+    return void switchesAtLink(io); // a phone confirmed at this keyboard: the same three on, the same block
   }
   if (rest[0] === "allow-endorse") {
     // At this keyboard only (2026-11-09, remote-endorse.mjs): a phone confirmed here may then add a browser it scanned.
@@ -191,7 +186,7 @@ async function phones(io, rest) {
     return io.say(`  ✓ Disconnected ${all.length}: none of them can steer this computer any more. Live sessions they started keep running here; stop them with npx worktrust remote disable, or pause everything with npx worktrust remote pause.\n  End their keys for your whole account too: app.worktrust.io › Settings › Remote Agent, or Remote Agent settings on your phone.`);
   }
   if (rest[0] === "remove") return removeOneCommand(io, rest[1], askLine); // 0.11.22: names the device and asks first in a terminal (Enter is no)
-  if (io.has("history")) return (await import("./remote-device-history.mjs")).historyCommand(io, { json: io.has("json") }); // 0.11.22: every device ever linked, newest first
+  if (io.has("history")) return (await import("./remote-device-history.mjs")).historyCommand(io, { json: io.has("json"), plain: io.has("plain"), pick: rest[0] ?? null }); // 0.11.22: every device ever linked, newest first; 0.11.26: a table, one device by its number
   io.say(`  Confirmed phones (${list.confirmed.length}):`);
   const when = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
   const how = (p) => p.how === "endorsed" ? `a browser, added by phone ${p.endorsed_by?.fingerprint ?? "?"}${[...list.confirmed, ...list.removed].some((x) => x.device_id === p.endorsed_by?.device_id && !list.confirmed.includes(x)) ? " (since removed)" : ""} on ${when(p.confirmed_at)}` : p.how === "qr" ? "scanned the QR" : "confirmed at the keyboard";
@@ -277,7 +272,7 @@ function releasesCommand(io, rest) {
 }
 
 function status(io) {
-  const settings = loadSettings(), identity = loadIdentity(), keys = identity ? loadKeys() : null, phonesList = loadPhones(), service = serviceState();
+  const settings = loadSettings(), identity = loadIdentity(), keys = identity ? loadKeys() : null, phonesList = loadPhones(), service = serviceFacts();
   const agents = inventory({ env: { ...process.env, PATH: settings.agent_path ?? process.env.PATH } }).reports.filter((r) => r.installed);
   const summary = { enabled: settings.enabled, paused: settings.paused, paired: Boolean(identity), device_id: identity?.device_id ?? null, fingerprint: keys ? fingerprintOf(keys) : null,
     gateway: gatewayOf(settings), gateway_default: settings.gateway === null || settings.gateway === undefined, service, node_websocket: webSocketAvailable(), phones: { confirmed: phonesList.confirmed.length, pending: phonesList.pending.length, browsers_added: phonesList.confirmed.filter((p) => p.how === "endorsed").length, allow_endorse: settings.allow_endorse === true }, projects: loadProjects().length, modes_allowed: allowedModes(settings), admin: settings.admin !== false, desk_read: deskReadOf(settings), desk_steer: settings.desk_steer === true, voice: settings.voice === true, readers: keptReaders(),
@@ -287,14 +282,14 @@ function status(io) {
   io.say(healthLine(summary.health)); if (summary.connection) io.say(gatewayLine(summary.connection)); // the newest sample, a minute old at most (remote-health.mjs); 0.11.17: stopped by the gateway, since when, the next try
   io.say(`  Paired: ${identity ? `${identity.device_id} · key ${summary.fingerprint}` : "no"}`);
   io.say(`  Gateway: ${summary.gateway === PRODUCTION_GATEWAY ? `${new URL(PRODUCTION_GATEWAY).host} (WorkTrust's)` : `${summary.gateway}${isLoopbackGateway(summary.gateway) ? " (this computer: dev relay)" : " (chosen here)"}`}`);
-  io.say(`  Service: ${service.kind === "foreground" ? "none on this system: run `npx worktrust remote run`" : `${service.installed ? "installed" : "not installed"}, ${service.running ? "running" : "not running"}`}`);
+  for (const line of serviceLines(service, { cli: io.version })) io.say(line); // 0.11.26: installed, loaded, the release it runs and the one installed, connected since when
   io.say(`  Phones: ${summary.phones.confirmed} confirmed (${summary.phones.browsers_added} ${summary.phones.browsers_added === 1 ? "browser" : "browsers"} added by a phone), ${summary.phones.pending} pending · Folders granted: ${summary.projects}`);
-  io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`); io.say(deskReadLine(settings)); io.say(voiceLine(settings)); for (const line of awakeLines()) io.say(line);
+  io.say(`  Phones may add a browser: ${summary.phones.allow_endorse ? "yes" : "no"}`); io.say(deskReadLine(settings)); io.say(voiceLine(settings)); for (const line of [...switchesOffLines(settings), ...awakeLines()]) io.say(line);
   io.say(`  Agent modes a phone may start: ${allowedModes(settings).join(", ")} (npx worktrust remote modes)`);
   for (const a of summary.agents) io.say(`  Agent: ${a.adapter} ${a.version ?? ""} · ${a.switched_off ? `installed, switched off: npx worktrust remote ${a.adapter} on` : a.adapter_ready ? "remote adapter ready" : "installed, no adapter yet"} · models: ${a.models}`);
 }
 
-export const remoteCommand = async (args, io) => { const out = await remoteDispatch(args, io); await offerAfter(io, args[0] ?? "help"); return out; }; // every `worktrust remote …`; at its end a computer paired before 0.11.19 is asked about reading along, once, by a person in a terminal (never the service, --json or an agent)
+export const remoteCommand = (args, io) => remoteDispatch(args, io); // every `worktrust remote …` (CLI 0.11.26: no question at its end any more; read along turns on with a link)
 async function remoteDispatch(args, io) {
   const [sub = "help", ...rest] = args;
   if (remoteStopsHere(sub)) return guideToNode(io, ["remote", ...args], { connected: io.connected?.() }); // Node before 22.4: node-guide.mjs
@@ -307,7 +302,7 @@ async function remoteDispatch(args, io) {
     const s = loadSettings();
     saveSettings({ ...s, enabled: false, paused: null, desk_steer: false, voice: false }); uninstallSteerMod(); // the hard off takes steering and its mod (CLI 0.11.20) and voice (0.11.21) with it
     const kind = removeService(); io.say(ownHome(homedir()) ? `  Off. The service is removed (${kind}); the daemon stops by itself within seconds.` : `  Off. The service files in this home are removed (${kind}); no service manager was asked (${NOT_THIS_HOME}).`);
-    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json", "readers.json", "read-along.json", "voice.json", "awake.json", "default-root.json", "steer-origins.json", "notice-keys.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
+    if (io.has("forget")) { for (const f of ["remote-keys.json", "identity.json", "channels.json", "phones.json", "endorsements.json", "invite.json", "journal.jsonl", "projects.json", "pipelines.json", "released.json", "roots.json", "previews.json", "readers.json", "read-along.json", "chosen.json", "voice.json", "awake.json", "default-root.json", "steer-origins.json", "notice-keys.json"]) removeFile(f); io.say("  The remote keys, phones, folders and journal are deleted. The steered-session ledger stays, so earlier remote work stays out of your AI Hours."); }
     return;
   }
   if (sub === "phones") return phones(io, rest);
@@ -318,6 +313,7 @@ async function remoteDispatch(args, io) {
   if (sub === "pipeline") return pipeline(io, rest);
   if (sub === "roots") return roots(io, rest);
   if (sub === "modes") return modesCommand(io, rest); if (sub === "admin") return adminCommand(io, rest); if (sub === "desk-history") return deskHistoryCommand(io, rest); if (sub === "read-along") return readAlongCommand(io, rest); if (sub === "desk-steer") return deskSteerCommand(io, rest, { apply: applySettingsChange, settings: loadSettings }); if (sub === "voice") return voiceCommand(io, rest, { apply: applySettingsChange, settings: loadSettings }); if (sub === "awake") return awakeCommand(io, rest, { card: () => ownCard() });
+  if (sub === "web-search" || sub === "web-pages") return webCommand(io, sub, rest); // CLI 0.11.26: the web tools of a remote session, at this keyboard
   if (sub === "folder-check") return folderCheck(); // internal: the one-shot launchd job of askMacFolderAccess
   if (sub === "handover") return handoverCommand(io); // internal (0.11.15): the one-shot job a daemon hands over through, run by the NEW launcher
   if (sub === "preview") {
@@ -345,5 +341,5 @@ async function remoteDispatch(args, io) {
   if (sub === "terminal") return (await import("./remote-terminal-cli.mjs")).terminalCommand(io, rest, askTyped);
   if (sub === "attach") return (await import("./remote-terminal-cli.mjs")).attachCommand(io, rest);
   if (sub !== "help") { io.say(sub === "enable" ? "  Unknown command: remote enable. Use `npx worktrust remote app` (approve with your phone) or `npx worktrust remote web` (approve in the browser)." : `  Unknown command: remote ${sub}. The remote commands are below.`); process.exitCode = 1; }
-  io.say("  npx worktrust remote app | web | pair | access | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list|default on|off | modes allow|deny edit|auto|status | admin on|off | read-along on|off|status | desk-steer on|off|status | voice on|off|remove|status | awake on|off|status | awake lan on|off | desk-history on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
+  io.say("  npx worktrust remote app | web | pair | access | connections | disconnect <n|name|fingerprint>|--all | status | pause | resume | disable [--forget] | phones [confirm|remove <id>|remove --all|allow-endorse on|off] | projects add|remove|list | run | pipeline review <folder>|status | roots add|remove|list|default on|off | modes allow|deny edit|auto|status | admin on|off | read-along on|off|status | desk-steer on|off|status | voice on|off|remove|status | awake on|off|status | awake lan on|off | web-search on|off|status | web-pages ask|off|status | desk-history on|off | preview allow|deny|list | codex on|off | opencode on|off | terminal on|off|list|start | attach <id> | releases [released <n>]");
 }

@@ -4,7 +4,7 @@
  * systemRunner(home) from here, the only execFileSync of the service code.
  */
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -29,3 +29,14 @@ const execute = (file, args) => { try { execFileSync(file, args, { stdio: "ignor
 const stubsDir = (env = process.env) => (env.WORKTRUST_SERVICE_STUBS && isAbsolute(env.WORKTRUST_SERVICE_STUBS) ? env.WORKTRUST_SERVICE_STUBS : null);
 export const systemRunner = (home) => Object.assign((file, args) => (stubsDir() ? execute(join(stubsDir(), file), args) : ownHome(home) ? execute(file, args) : false), { gated: true });
 export const refusedFor = (runner, home) => (runner.gated === true && !stubsDir() && !ownHome(home) ? NOT_THIS_HOME : null);
+
+/**
+ * THE SYSTEM DOMAIN'S ONE FILE OF OURS (CLI 0.11.27, remote-always.mjs): the LaunchDaemon that runs Remote Agent as this user
+ * with nobody logged in. Its path here so remote-service.mjs and remote-service-restart.mjs can see it without importing
+ * remote-always.mjs (a cycle). `WORKTRUST_SYSTEM_ROOT` (absolute) moves it for the tests; it is only ever READ by the CLI.
+ */
+export const ALWAYS_LABEL = "io.worktrust.remote.always";
+export const systemRoot = (env = process.env) => (env.WORKTRUST_SYSTEM_ROOT && isAbsolute(env.WORKTRUST_SYSTEM_ROOT) ? env.WORKTRUST_SYSTEM_ROOT : "/");
+export const daemonPlistPath = (root = systemRoot()) => join(root, "Library", "LaunchDaemons", `${ALWAYS_LABEL}.plist`);
+export const alwaysDaemon = (platform = process.platform, root = systemRoot()) => platform === "darwin" && existsSync(daemonPlistPath(root));
+export const ALWAYS_UPDATE_LINE = `Remote Agent runs as a system service here (always on): it moves to this release with: sudo launchctl kickstart -k system/${ALWAYS_LABEL}`;

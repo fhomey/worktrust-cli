@@ -71,6 +71,9 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false, isB
   const cliBodyFor = (peer, type, body) => (type === "device.inventory" && body.cli && !cliPeers.has(peer) ? withoutCli(body) : body);
   const withoutRead = ({ desk_read: _drop, ...body }) => body;
   const liveBodyFor = (peer, type, body) => (type === "device.inventory" && "desk_read" in body && !livePeers.has(peer) ? withoutRead(body) : body);
+  // CLI 0.11.27: a desk row's `activity` only for a phone that asked `desk_activity`, a desk page's `tasks` only for one that asked `desk_tasks`.
+  const activityPeers = new Set(), tasksPeers = new Set();
+  const deskWorkBodyFor = (peer, type, body) => (type === "device.inventory" && Array.isArray(body.desk_sessions) && !activityPeers.has(peer) && body.desk_sessions.some((d) => "activity" in d) ? { ...body, desk_sessions: body.desk_sessions.map(({ activity: _drop, ...row }) => row) } : type === "history.page" && body && "tasks" in body && !tasksPeers.has(peer) ? (({ tasks: _drop, ...rest }) => rest)(body) : body);
   const withoutSteer = (body) => ({ ...body, desk_sessions: body.desk_sessions.map(({ steerable: _drop, ...row }) => row) });
   const steerBodyFor = (peer, type, body) => (steerPeers.has(peer) ? body : type === "device.inventory" && Array.isArray(body.desk_sessions) ? withoutSteer(body) : type === "command.rejected" && (body?.reason === "bypass_mode" || body?.reason === "not_prompt") ? { ...body, reason: "not_allowed" } : body);
   // `locked_mode` (0.11.21) only ever reaches a voice key (remote-voice.mjs gate): any other peer, older or not, hears `not_allowed`.
@@ -96,9 +99,11 @@ export function createPeers({ voiceOf = () => false, voiceKey = () => false, isB
     if (payload.extended === true && payload.probe_failed === true && env.sender_device_id) probePeers.add(env.sender_device_id);
     if (payload.extended === true && payload.wake === true && env.sender_device_id) wakePeers.add(env.sender_device_id);
     if (payload.extended === true && payload.setup === true && env.sender_device_id) setupPeers.add(env.sender_device_id);
+    if (payload.extended === true && payload.desk_activity === true && env.sender_device_id) activityPeers.add(env.sender_device_id);
+    if (payload.extended === true && payload.desk_tasks === true && env.sender_device_id) tasksPeers.add(env.sender_device_id);
   }
   // CLI 0.11.21: `default_root` and a row's `agent_ref` leave every inventory last, for a phone that did not ask each (asking needs `extended`, so a phone that never asked that loses both too).
-  return { bodyFor: (channel, record) => startBodyFor(channel.peer_device_id, record.type, bodyFor(channel, record)), note, readsWake: () => wakePeers.size > 0, readsSetup: () => setupPeers.size > 0, readsDesk: () => deskPeers.size > 0, readsCli: () => cliPeers.size > 0, readsLive: (peer) => (peer === undefined ? livePeers.size > 0 : livePeers.has(peer)), readsSteer: (peer) => (peer === undefined ? steerPeers.size > 0 : steerPeers.has(peer)), readsVoice: () => voicePeers.size > 0, readsDefaultRoot: () => rootPeers.size > 0, readsVoiceNotice: (peer) => readyPeers.has(peer) };
+  return { bodyFor: (channel, record) => deskWorkBodyFor(channel.peer_device_id, record.type, startBodyFor(channel.peer_device_id, record.type, bodyFor(channel, record))), note, readsActivity: () => activityPeers.size > 0, readsTasks: (peer) => tasksPeers.has(peer), readsWake: () => wakePeers.size > 0, readsSetup: () => setupPeers.size > 0, readsDesk: () => deskPeers.size > 0, readsCli: () => cliPeers.size > 0, readsLive: (peer) => (peer === undefined ? livePeers.size > 0 : livePeers.has(peer)), readsSteer: (peer) => (peer === undefined ? steerPeers.size > 0 : steerPeers.has(peer)), readsVoice: () => voicePeers.size > 0, readsDefaultRoot: () => rootPeers.size > 0, readsVoiceNotice: (peer) => readyPeers.has(peer) };
 }
 
 /**
@@ -126,5 +131,49 @@ export function createQuietChannels({ now, seenAt = () => null }) {
     heard: (id) => { heard.set(id, now()); },
     drop: (id) => { forgotten.delete(id); heard.delete(id); },
     skip: (channel, record) => forgotten.has(channel.channel_id) || (record.lane === "transient" && now() - heardAt(channel) > QUIET_AFTER_MS),
+  };
+}
+
+/**
+ * A BURST OF PROBES, ONE BODY (CLI 0.11.27; owner, 2026-11-26: build 38 told him to update a computer on 0.11.26). A phone asks
+ * each optional field by a probe of its own, about twenty `inventory.get` at a link; the daemon answered each with a whole
+ * inventory built synchronously (the desk scan, the process list, the projects), one after another through the pacer, so on a
+ * loaded or just-restarted computer the last receipts came after the phone's ten-second wait and read as an older CLI.
+ *
+ *   probe(refresh)   the body built once, FULL (every optional part: remote-daemon.mjs inventoryBody(refresh, true)), kept
+ *                    PROBE_BODY_MS and only while `key` (the settings and the granted projects and roots) is the same; each
+ *                    phone's own `bodyFor` still strips what it did not ask, so the full body is never sealed whole for anyone
+ *   clear()          any other inventory the daemon builds (a session started, a grant changed, a setting, the 15-second desk
+ *                    push) clears it: a probe never answers older than the last inventory sent
+ * Probes keep their arrival order: the daemon dispatches one command at a time, and a probe now costs a lookup.
+ */
+export const PROBE_BODY_MS = 2_000;
+/**
+ * WHAT A HELD PROBE BODY DEPENDS ON beyond the inventories that clear it (release 62): the settings, the granted projects and roots,
+ * and the phones and browsers linked here by id and name (the body's `connections`): a phone linked, renamed (inventory.get
+ * `device_name`, kept just before the probe is answered) or removed, by this daemon or by `remote pair` / `disconnect` at the
+ * keyboard, changes the answer, so the held body is built again.
+ */
+/**
+ * THE EVENTS AFTER WHICH A HELD PROBE BODY IS STALE (release 62 integration; test-remote-cli-daemon's desk case found it: a session
+ * started from the phone (agent.start, voice included) is journaled as session.created and pushes no inventory, so a probe within
+ * PROBE_BODY_MS answered the list from before it). Each changes a row of the body's `sessions` (one added, its state or attention,
+ * its release task) or its projects; anything else (an output delta, a step) moves only a row's time, which the window may hold.
+ */
+export const PROBE_STALE_ON = new Set(["session.created", "agent.attention", "agent.completed", "agent.failed", "agent.stopped", "agent.paused", "project.created", "release.updated"]);
+export const probeKey = ({ settings, projects, roots, phones }) => JSON.stringify([settings, projects.map((p) => p.project_id), roots.map((r) => r.root_id), [...(phones?.confirmed ?? []), ...(phones?.pending ?? [])].map((p) => [p.device_id, p.name ?? null])]);
+export function createInventoryCache({ build, key, now, ttl = PROBE_BODY_MS }) {
+  let held = null, builds = 0;
+  return {
+    probe(refresh) {
+      const k = `${refresh === true}|${key()}`;
+      if (held && held.key === k && now() - held.at < ttl) return held.body;
+      builds += 1;
+      const body = build(refresh === true);
+      held = { key: k, at: now(), body };
+      return body;
+    },
+    clear() { held = null; },
+    get builds() { return builds; },
   };
 }

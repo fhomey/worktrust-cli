@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { verifyPackage, writePrivateFile } from "./package-integrity.mjs";
-import { refusedFor, systemRunner } from "./remote-service-home.mjs";
+import { alwaysDaemon, refusedFor, systemRunner } from "./remote-service-home.mjs";
 import { RELEASE, installedRelease, launcherFor, newerRelease } from "./remote-launchers.mjs";
 export * from "./remote-launchers.mjs"; // which launcher a unit may be handed to (the npm copies, a Python installation)
 
@@ -98,6 +98,7 @@ export { NOT_THIS_HOME, ownHome } from "./remote-service-home.mjs";
 export function installService({ program, path, platform = process.platform, home = homedir(), runner = systemRunner(home), self = false, fromHandover = false }) {
   const kind = servicePlatform(platform);
   if (kind === "launchd") {
+    if (alwaysDaemon(platform)) return { kind, file: null, started: true, why: null, always: true }; // CLI 0.11.27: the system daemon runs it (remote-always.mjs); never a LaunchAgent beside it
     const file = plistPath(home);
     mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
     writeFileSync(file, launchdPlist({ program, path, home }), { mode: 0o644 });

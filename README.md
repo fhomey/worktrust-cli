@@ -67,7 +67,7 @@ computer in WorkTrust under Sources, Devices. More under [Undo](#undo).
 On a computer that is not connected yet:
 
 ```
-  WorkTrust CLI 0.11.26
+  WorkTrust CLI 0.11.27
   Not connected yet
 
 >  1  Look at this computer   npx worktrust look
@@ -84,13 +84,13 @@ On a computer that is not connected yet:
 Once it is connected (80 columns; on a wide terminal each row's sentence stands on the row itself, as a fourth column):
 
 ```
-  WorkTrust CLI 0.11.26
+  WorkTrust CLI 0.11.27
   Account        you@example.com
   This computer  imac · connected since 2026-11-03
   Remote Agent   approved, 2 connections
   Sharing        session hook on · AI apps on (7) · Remote Agent approved
 
-   1  Update WorkTrust · up to date (0.11.26)   npx worktrust update
+   1  Update WorkTrust · up to date (0.11.27)   npx worktrust update
 >  2  Check this computer                      npx worktrust
    3  Remote Agent ›                           npx worktrust remote …
    4  Import earlier history ›                 npx worktrust history …
@@ -191,6 +191,20 @@ this keyboard, and it has its own key, apart from the measuring key.
 1. `npx worktrust remote app` shows a QR code here. You scan it with the WorkTrust app and approve this computer with your authenticator. `npx worktrust remote web` does the same in your browser.
 2. `npx worktrust remote projects add <folder>` allows a folder. A phone can start an agent only in folders you allowed here.
 3. `npx worktrust remote pair` shows a QR code for a phone: five minutes, one phone, once.
+
+**A computer without a screen** (a server over SSH, a VM, a Mac in a rack). Over SSH, or on Linux without a display,
+`npx worktrust remote pair` (and `remote app`) prints beside the QR two codes and this computer's key: 8 characters to type in
+the WorkTrust app under Remote › Connect a computer › Trouble scanning? (this terminal then shows your phone's key and asks you
+to confirm it with y), or 58 characters to paste (it links at once). `--code` shows them at a screen too. Link only if the
+keys match; both work once, for ten minutes, the long one stops after five wrong tries, and they are shown only in a terminal
+you sit at, never in a pipe, with `--yes` or in an AI agent's shell.
+
+**Running with nobody logged in** is off. `npx worktrust remote service always on` turns it on for this computer, after
+saying what it means: Remote Agent after every restart with nobody logged in, as you (never root), able to start agents in
+your granted folders while nobody watches. On macOS it prints the `sudo` commands for a LaunchDaemon that runs as you (the CLI
+runs none and keeps no password); on Linux it turns on lingering. With nobody logged in the macOS login keychain stays
+locked: mail and an agent that keeps its sign-in there (Claude Code on macOS) wait for a login. `remote service always off`
+removes it. The phone's side of the codes needs the WorkTrust app build that reads them (docs/remote-agents/HEADLESS.md).
 
 **What a phone can do.** Start an agent in an allowed folder, follow it, answer it, and approve by class: a file edit
 inside the project, a test, build or lint command from a short reviewed list, and a message an agent wants to send, shown

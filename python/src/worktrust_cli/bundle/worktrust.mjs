@@ -83,7 +83,7 @@ const command = args.includes("--help") ? "help" : args.includes("--version") ? 
 const flag = (name) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : undefined; };
 const has = (name) => args.includes(`--${name}`);
 /** This CLI's version, said to the door so the app can tell which computer runs an old one (check-cli-package holds it equal to package.json). */
-const CLI_VERSION = "0.11.26";
+const CLI_VERSION = "0.11.27";
 /**
  * HOW THIS CLI MEASURES, AS A NUMBER OF ITS OWN (0.10.31; owner, 2026-10-28: 0.10.30 offered a re-measure it had no reason
  * to offer). Raised ONLY when what is measured changes: the timeline, the seconds, the tokens, the steering, the session
@@ -119,7 +119,7 @@ const ORIGIN = (flag("origin") ?? process.env.WORKTRUST_ORIGIN ?? "https://app.w
 const MCP = flag("url") ?? process.env.WORKTRUST_MCP_URL ?? `${ORIGIN}/api/mcp`;
 const HOME_DIR = join(homedir(), ".worktrust");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-desk-sessions.mjs", "remote-notices.mjs", "remote-pace.mjs", "remote-history.mjs", "remote-history-file.mjs", "remote-history-claude.mjs", "remote-history-journal.mjs", "remote-catch-up.mjs", "remote-turns.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-service-home.mjs", "remote-service-restart.mjs", "remote-awake.mjs", "remote-wake.mjs", "remote-wake-doors.mjs", "remote-launchers.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "cli-stop.mjs", "cli-look.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-device-history.mjs", "remote-admin.mjs", "remote-health.mjs", "remote-read-along.mjs", "remote-history-follow.mjs", "remote-history-mask.mjs", "remote-peers.mjs", "remote-steer-mod.mjs", "remote-desk-steer.mjs", "remote-voice.mjs", "remote-voice-speech.mjs", "remote-keyboard.mjs", "remote-default-root.mjs", "cli-menu-switches.mjs", "cli-menu-search.mjs", "remote-mail-files.mjs", "remote-mail-text.mjs", "remote-mail-index.mjs", "remote-mail-draft.mjs", "remote-mail-outbox.mjs", "remote-mail-vault.mjs", "remote-mail-graph.mjs", "remote-mail-sync.mjs", "remote-mail-templates.mjs", "remote-mail-compose.mjs", "remote-mail.mjs", "remote-mail-cli.mjs", "remote-mail-mime.mjs", "remote-mail-imap.mjs", "remote-mail-smtp.mjs", "remote-mail-imapbox.mjs", "remote-mail-attach.mjs", "remote-mail-signatures.mjs", "remote-mail-compose-door.mjs", "remote-mail-phone.mjs", "remote-setup.mjs", "remote-mail-stream.mjs", "remote-mail-instructions.mjs", "remote-instructions-door.mjs", "remote-mail-clean.mjs", "remote-web.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "credential-decoy.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
+const SCRIPTS = ["credential-store.mjs", "remote-protocol.mjs", "remote-store.mjs", "remote-policy.mjs", "remote-journal.mjs", "remote-steered.mjs", "remote-inventory.mjs", "remote-claude-events.mjs", "remote-claude-progress.mjs", "remote-attachments.mjs", "remote-preview.mjs", "remote-coalesce.mjs", "remote-steering.mjs", "remote-codex-events.mjs", "remote-adapter-codex.mjs", "remote-opencode-events.mjs", "remote-adapter-opencode.mjs", "remote-opencode-session.mjs", "remote-adapter-terminal.mjs", "remote-terminal-sessions.mjs", "remote-terminal-cli.mjs", "remote-screen-states.mjs", "remote-screen-approvals.mjs", "remote-screen-push.mjs", "remote-cdp.mjs", "remote-live-preview.mjs", "remote-projects.mjs", "remote-pipeline-config.mjs", "remote-pipeline-parsers.mjs", "remote-pipeline.mjs", "remote-releases.mjs", "remote-release-plans.mjs", "remote-adapter-claude-code.mjs", "remote-approval-bridge.mjs", "remote-approvals.mjs", "remote-sessions.mjs", "remote-session-list.mjs", "remote-desk-sessions.mjs", "remote-desk-activity.mjs", "remote-notices.mjs", "remote-pace.mjs", "remote-history.mjs", "remote-history-file.mjs", "remote-history-claude.mjs", "remote-history-journal.mjs", "remote-catch-up.mjs", "remote-turns.mjs", "remote-changes.mjs", "remote-endorse.mjs", "remote-daemon.mjs", "remote-transport.mjs", "remote-run.mjs", "remote-service.mjs", "remote-service-home.mjs", "remote-service-restart.mjs", "remote-awake.mjs", "remote-wake.mjs", "remote-wake-doors.mjs", "remote-launchers.mjs", "remote-pairing.mjs", "remote-qr.mjs", "remote-cli.mjs", "remote-agent-switch.mjs", "remote-settings.mjs", "folder-picker.mjs", "cli-menu.mjs", "cli-menu-remote.mjs", "cli-colour.mjs", "cli-stop.mjs", "cli-look.mjs", "node-guide.mjs", "remote-countdown.mjs", "remote-connections.mjs", "remote-device-history.mjs", "remote-admin.mjs", "remote-health.mjs", "remote-read-along.mjs", "remote-history-follow.mjs", "remote-history-mask.mjs", "remote-peers.mjs", "remote-steer-mod.mjs", "remote-desk-steer.mjs", "remote-voice.mjs", "remote-voice-speech.mjs", "remote-keyboard.mjs", "remote-default-root.mjs", "cli-menu-switches.mjs", "cli-menu-search.mjs", "remote-mail-files.mjs", "remote-mail-text.mjs", "remote-mail-index.mjs", "remote-mail-draft.mjs", "remote-mail-outbox.mjs", "remote-mail-vault.mjs", "remote-mail-graph.mjs", "remote-mail-sync.mjs", "remote-mail-templates.mjs", "remote-mail-compose.mjs", "remote-mail.mjs", "remote-mail-cli.mjs", "remote-mail-mime.mjs", "remote-mail-imap.mjs", "remote-mail-smtp.mjs", "remote-mail-imapbox.mjs", "remote-mail-attach.mjs", "remote-mail-signatures.mjs", "remote-mail-compose-door.mjs", "remote-mail-phone.mjs", "remote-setup.mjs", "remote-mail-stream.mjs", "remote-mail-instructions.mjs", "remote-instructions-door.mjs", "remote-mail-clean.mjs", "remote-web.mjs", "remote-headless.mjs", "remote-phone-app.mjs", "remote-always.mjs", "credential-vault.mjs", "credential-vault-scripts.mjs", "credential-decoy.mjs", "history-outbox.mjs", "setup-mcp.mjs", "log-session.mjs", "count-behaviour.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "claude-mod.mjs", "package-integrity.mjs", "worktrust-launch.mjs", "project-modes.mjs", "commit-rules.mjs", "git-commits.mjs", "self-update.mjs", "history-progress.mjs"];
 /** The modules the scripts import by name from beside them; a download keeps that name. */
 const IMPORTED = new Set(["project-modes.mjs", "transcript-readers.mjs", "session-readers.mjs", "session-databases.mjs", "session-local-models.mjs", "config-edits.mjs", "stretch-evidence.mjs", "chat-exports.mjs", "export-facts.mjs", "stack-rules.mjs", "runtime-install.mjs", "orchestration-contract.mjs", "orchestration-evidence.mjs", "orchestration-report.mjs", "commit-rules.mjs", "git-commits.mjs"]);
 const downloaded = (name) => (IMPORTED.has(name) ? name : `${name}.download.mjs`);
@@ -1487,7 +1487,7 @@ async function status() {
   const key = keyStore.load();
   say(`  Credential storage: ${keyStore.protected() ? "OS vault + encrypted local file" : "private local file; use worktrust protect-key after updating"}`);
   say(key ? `  Key: in ${KEY_PLACE}, ${key.device ? "bound to this computer, " : ""}last renewed ${String(key.renewedAt ?? "").slice(0, 10) || "never"}` : "  Key: not on this computer (or written into the apps' settings with --direct)");
-  if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded (coupled by an older version; `npx worktrust connect` records it)");
+  if (key) say(key.account ? `  Account: ${key.account}${key.coupledAt ? `, coupled ${String(key.coupledAt).slice(0, 10)}` : ""}` : "  Account: not recorded yet (coupled before 0.6.9; filled in by itself at the next contact with WorkTrust)");
   say(sessionHookHere() ? "  Session hook: installed" : "  Session hook: not installed");
   if (typeof globalThis.WebSocket !== "function") say(`  Remote Agent: needs Node 22.4 or later (this is ${process.versions.node})`);
   say(`  AI work lines: ${doorLine()}`);
@@ -1665,11 +1665,12 @@ async function followDoorWish(key) {
   if (!key.device || (state?.checkedAt && Date.now() - Date.parse(state.checkedAt) < 10 * 60_000)) return;
   let wish = null, doorClock = NaN;
   try {
-    const url = new URL("/api/cli/door", key.url).href, body = "{}";
+    const url = new URL("/api/cli/door", key.url).href, body = doorBody(key);
     const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, "user-agent": `worktrust-cli/${CLI_VERSION}`, ...proof(key.device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(3000) });
     if (response.ok) { wish = await response.json(); doorClock = Date.parse(response.headers.get("date") ?? ""); }
   } catch { /* offline: asked again next time */ }
   saveDoorState({ checkedAt: new Date().toISOString() });
+  await keepPhoneApp(wish); await fillAccount(key, wish?.account);
   await followMeasureWish(key, wish);
   await followUpdateWish(key, wish, doorClock);
   if (!DOOR_MODES.includes(wish?.mode) || wish.mode === state?.mode || !(Date.parse(wish.at) > Date.parse(state?.since ?? state?.asked ?? 0))) return;
@@ -1681,6 +1682,37 @@ async function followDoorWish(key) {
   await accepted(key.url, key.token, key.device, doorModeAgent());
 }
 /**
+ * A KEY COUPLED BEFORE 0.6.9 FILLS ITS OWN ACCOUNT (CLI 0.11.27; the owner's iMac, 2026-11-26: "Account not recorded: run Check
+ * this computer", "connected since not known" for a computer coupled for months). The key records `account`, `accountRef` and
+ * `coupledAt` only since 0.6.9, and only `connect` writes them; an update, a renewal and "Check this computer" never did. Until
+ * the key holds all three, both door asks send `{"identity":true}` (doorBody) and WorkTrust answers the masked account, its
+ * opaque reference and this key's coupling moment (api/cli/door); fillAccount writes ONLY the missing fields, under the renewal
+ * lock, into the key just read again, and only while it holds the same token. Nothing is overwritten; offline, an older server
+ * or a malformed answer changes nothing. The key then reads as a key coupled today would.
+ */
+const keyLacksAccount = (key) => !key?.account || !key?.accountRef || !key?.coupledAt;
+const doorBody = (key) => (keyLacksAccount(key) ? JSON.stringify({ identity: true }) : "{}");
+const accountLabelOk = (v) => typeof v === "string" && v.length <= 80 && /^[^\s@]{0,4}\*\*\*@[^\s@]{0,4}\*\*\*(\.[A-Za-z0-9-]{1,24})?$/.test(v);
+const coupledOk = (v) => typeof v === "string" && Number.isFinite(Date.parse(v)) && Date.parse(v) <= Date.now() + 86_400_000;
+async function fillAccount(key, account) {
+  if (!keyLacksAccount(key) || !account || typeof account !== "object" || has("dry-run")) return;
+  const found = { account: accountLabelOk(account.label) ? account.label : null, accountRef: typeof account.ref === "string" && /^[A-Za-z0-9_-]{22}$/.test(account.ref) ? account.ref : null, coupledAt: coupledOk(account.coupledAt) ? new Date(Date.parse(account.coupledAt)).toISOString() : null };
+  try {
+    await withLock(async () => {
+      const now = keyStore.load();
+      if (!now || now.token !== key.token) return;
+      const missing = Object.fromEntries(Object.entries(found).filter(([field, value]) => value !== null && !now[field]));
+      if (Object.keys(missing).length > 0) keyStore.save({ ...now, ...missing });
+    });
+  } catch { /* not filled: asked again at the next door ask */ }
+}
+/**
+ * THE NEWEST PHONE APP (CLI 0.11.27; owner, 2026-11-26; remote-phone-app.mjs): the door's `phone_app` (the newest build per
+ * platform and its link) is kept for the Remote Agent menu's "Update the phone app (QR)", only where Remote Agent is set up.
+ * An older server sends none: nothing is kept and no row is shown. Never fails the ask.
+ */
+async function keepPhoneApp(answer) { try { if (answer?.phone_app) (await import("./remote-phone-app.mjs")).keepNewest(answer.phone_app); } catch { /* not kept: asked again next time */ } }
+/**
  * THE ACCOUNT'S TYPE, FOR THE MENU (owner, 2026-11-14; 0.11.10): the same signed ask as followDoorWish, read-only here (no
  * wish is acted on), three seconds at most. `account` is WorkTrust's own answer for this key's owner: `plan` (free | premium,
  * else not known), `remote` (open | premium_required, else not known: only premium_required locks Remote Agent in the menu)
@@ -1689,9 +1721,10 @@ async function followDoorWish(key) {
 async function askAccount(key) {
   if (!key?.device) return null;
   try {
-    const url = new URL("/api/cli/door", key.url).href, body = "{}";
+    const url = new URL("/api/cli/door", key.url).href, body = doorBody(key);
     const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key.token}`, "user-agent": `worktrust-cli/${CLI_VERSION}`, ...proof(key.device, url, body) }, body, redirect: "error", signal: AbortSignal.timeout(3000) });
-    const account = response.ok ? (await response.json())?.account : null;
+    const answer = response.ok ? await response.json() : null, account = answer?.account;
+    await keepPhoneApp(answer); await fillAccount(key, account);
     if (!account || typeof account !== "object") return null;
     let upgrade = null; try { const at = new URL(account.upgrade); upgrade = at.origin === new URL(key.url).origin && /^https?:$/.test(at.protocol) ? at.href : null; } catch { upgrade = null; }
     return { plan: ["free", "premium"].includes(account.plan) ? account.plan : null, remoteAccess: ["open", "premium_required"].includes(account.remote) ? account.remote : null, upgrade };
@@ -1933,7 +1966,7 @@ if (command === "default" && BUNDLED && (await import("./cli-menu.mjs")).menuWan
   const state = async () => {
     if (latest === undefined) { const v = await newestVersion(); latestKnown = v !== null; latest = v && semverNewer(v, CLI_VERSION) ? v : null; }
     let key = null; try { key = keyStore.load(); } catch { key = null; }
-    if (key && Date.now() - accountAt > 60_000) { account = await askAccount(key); accountAt = Date.now(); }
+    if (key && Date.now() - accountAt > 60_000) { account = await askAccount(key); accountAt = Date.now(); try { key = keyStore.load() ?? key; } catch { /* as read */ } } // 0.11.27: the ask may just have filled an older key's account
     // `installed` is read again at every ask (0.11.8): the menu's Update item says "up to date" the moment an update ends.
     // THE SUMMARY'S FACTS (0.11.9): what this computer's own files say, never the key: its name, the day it was coupled, whether
     // the session hook stands in Claude Code's settings, and how many AI apps' doors the person agreed to (the consent record).

@@ -831,6 +831,14 @@ export const ATTACHMENT_TYPES = [
 ]         ;
 
 export const MAX_ATTACHMENTS_PER_PROMPT = 20;
+/**
+ * A FILE FOR A SESSION OPEN AT THE DESK (owner, 2026-11-26; DESK-STEERING.md §Files): `desk_ref` names the desk session (Claude
+ * Code's own uuid, under a project the computer's inventory lists) instead of a session of the computer's daemon. The computer keeps
+ * the file in that granted project's inbox (`.worktrust/inbox/desk-<uuid>/`), never a path from the phone. Sent only to a computer
+ * whose probe read `desk_attach` (desk.ts): an older one refuses the unknown key and keeps nothing.
+ */
+export const ATTACHMENT_DESK_REF_SPEC = object({ session_ref: text(36, 36), project_id: id("prj") });
+const DESK_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export const PREVIEW_VIEWPORTS = { mobile: { width: 390, height: 844 }, tablet: { width: 820, height: 1180 }, desktop: { width: 1440, height: 900 } }         ;
 export const PREVIEW_CHUNK_BYTES = 524_288;
@@ -849,10 +857,11 @@ export const TRANSFER_COMMAND_SPECS = {
     chunk: int(0, MAX_ATTACHMENT_CHUNKS - 1),
     chunks: int(1, MAX_ATTACHMENT_CHUNKS),
     data: b64({ max: ATTACHMENT_CHUNK_BYTES }),
+    desk_ref: optional(ATTACHMENT_DESK_REF_SPEC),
   }),
   // `attachment_id` (CLI 0.11.18): only what arrived of that ONE file. An older computer refuses a payload with a field it
   // does not know, before its journal and without a receipt, so it can never take this for "clear the whole inbox".
-  "attachment.clear": object({ attachment_id: optional(id("att")) }),
+  "attachment.clear": object({ attachment_id: optional(id("att")), desk_ref: optional(ATTACHMENT_DESK_REF_SPEC) }),
   "preview.targets": object({ project_id: id("prj") }),
   "preview.render": object({
     preview_id: id("pvw"),
@@ -904,7 +913,7 @@ export const TRANSFER_EVENT_SPECS = {
 }         ;
 
 export const attachmentRule = (a                                                          )                =>
-  a.chunk >= a.chunks ? "a chunk past the count" : a.chunks !== Math.ceil(a.size / ATTACHMENT_CHUNK_BYTES) ? "a chunk count that is not the size's" : null;
+  a.chunk >= a.chunks ? "a chunk past the count" : a.chunks !== Math.ceil(a.size / ATTACHMENT_CHUNK_BYTES) ? "a chunk count that is not the size's" : a.desk_ref !== undefined && !DESK_UUID.test(a.desk_ref.session_ref) ? "desk_ref.session_ref: Claude Code's own uuid" : null;
 export const previewRule = (r                                                          )                =>
   r.target === "port" ? (r.port === null || !PREVIEW_PATH.test(r.path) ? "a port and a path on it" : null) : r.port !== null || !/^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]+\.html?$/.test(r.path) ? "a project file, an .html one, and no port" : null;
 
@@ -2110,6 +2119,24 @@ export const MAX_DESK_SESSIONS = 20;
 export const MAX_DESK_TITLE = 80;
 const CLAUDE_SESSION_REF = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/**
+ * WHETHER A DESK SESSION WORKS NOW (CLI 0.11.27; owner, 2026-11-26: "several sessions are busy, but this is not visible at
+ * Overview"). Read on the computer from what Claude Code writes, never a word of it: the transcript's last lines (is a turn
+ * open: the person's words or a tool's result wait for the model, or a step waits for its result), when it and the session's
+ * own sub-agent transcripts were last written, and whether a Claude Code process still holds the session. Sealed per row of
+ * `desk_sessions`, only for a phone that asked `inventory.get` `desk_activity`, and only while the keyboard lets phones read
+ * along (`desk_read` live): a state, the newest write's time, and how many of its sub-agents wrote in the last two minutes.
+ *
+ *   working    a turn is open and the session was written in the last two minutes, or a sub-agent of it wrote then
+ *   step_open  a turn is open with a step waiting for its result, nothing written for longer, and a Claude Code process still
+ *              holds the session (within an hour): a long command, or a question waiting at the desk; the reader cannot tell
+ *   waiting    the turn ended (the agent answered, or the person interrupted it) within the last half hour: it waits for words
+ *   idle       anything else, said as "last active", never as running
+ */
+export const DESK_ACTIVITY_STATES = ["working", "step_open", "waiting", "idle"]         ;
+
+export const DESK_ACTIVITY_SPEC = object({ state: oneOf(DESK_ACTIVITY_STATES), since: int(0), agents: int(0, 100) });
+
 export const DESK_SESSION_SPEC = object({
   session_ref: text(36, 36),
   project_id: id("prj"),
@@ -2118,6 +2145,8 @@ export const DESK_SESSION_SPEC = object({
   model: nullable(text(128, 1)),
   /** CLI 0.11.20 (STEER below): a prompt may be sent into this session now. Only for a phone that asked `desk_steer`. */
   steerable: optional(bool()),
+  /** CLI 0.11.27 (ACTIVITY above): what the computer can tell of the session's work now. Only for a phone that asked `desk_activity`. */
+  activity: optional(DESK_ACTIVITY_SPEC),
 });
 
 /**
@@ -2129,7 +2158,8 @@ export const DESK_SESSION_SPEC = object({
 export const DESK_READS = ["off", "history", "live"]         ;
 
 /** inventory.get's field (commands.ts spreads it): this phone reads `desk_read` and may follow a desk session. Only with `extended`. */
-export const DESK_GET_FIELDS = { desk_live: optional(bool()), desk_steer: optional(bool()) }         ;
+/** `desk_attach` (owner, 2026-11-26): this phone may send files with a prompt into a desk session (transfer.ts `desk_ref`, agent.prompt `attachments` beside `desk_ref`). */
+export const DESK_GET_FIELDS = { desk_live: optional(bool()), desk_steer: optional(bool()), desk_attach: optional(bool()), desk_activity: optional(bool()), desk_tasks: optional(bool()) }         ; // CLI 0.11.27: `desk_activity` (a desk row's `activity`, above) and `desk_tasks` (history.ts `tasks`: a desk session's task list and its jobs, on its own page)
 
 /** device.inventory's fields (events.ts spreads them): `desk_sessions` only for a phone that asked `inventory.get` `desk_sessions`, `desk_read` only for one that asked `desk_live`. */
 export const DESK_INVENTORY_FIELDS = { desk_sessions: optional(list(DESK_SESSION_SPEC, MAX_DESK_SESSIONS)), desk_read: optional(oneOf(DESK_READS)) }         ;
@@ -2148,7 +2178,7 @@ export const DESK_REF_SPEC = object({ session_ref: text(36, 36), project_id: id(
 export function deskRefRule(p                                                                                                                                  )                {
   if (p.desk_ref === undefined) return null;
   if (!CLAUDE_SESSION_REF.test(p.desk_ref.session_ref)) return "desk_ref.session_ref: Claude Code's own uuid";
-  if (p.interrupt !== undefined || p.attachments !== undefined || p.model !== undefined) return "desk_ref: words alone (no interrupt, file or model)";
+  if (p.interrupt !== undefined || p.model !== undefined) return "desk_ref: words and files (no interrupt or model)"; // files since the owner's word of 2026-11-26, only to a computer that read `desk_attach`
   return null;
 }
 
@@ -2184,8 +2214,17 @@ export function deskRule(desk                                    , projects     
  *                older daemon answers `voice.enrol` with `unknown_type` and refuses a `voice` binding at the handshake.
  */
 
-/** How a voice prompt names its session: only the newest steerable one of the project (a later phase may add more). */
-export const VOICE_SESSIONS = ["newest"]         ;
+/**
+ * HOW A VOICE PROMPT NAMES ITS SESSION (phase 1 `newest`; CLI 0.11.27 and build 39, docs/remote-agents/VOICE-CONVERSATION.md §2, §4):
+ *   newest  the project's newest steerable desk session, decided at the computer (phase 1)
+ *   ref     the desk session `session_ref` names (Claude Code's own uuid, from the phone's stored list), under that project
+ *   last    the session this voice key's last accepted prompt went to (a reply in a conversation), kept at the computer
+ *   new     a new session of the computer's own daemon in that project (owner, 2026-11-26; CLI 0.11.27 refused it `unsupported`, and
+ *           Siri says so): plan when sent locked, else Manual, never above the computer's modes ceiling; it then counts as `last`
+ * Every value but `newest` reaches only a computer that read the probe `voice_session` (VOICE_GET_FIELDS). Nothing new on the wire.
+ */
+export const VOICE_SESSIONS = ["newest", "ref", "last", "new"]         ;
+
 /**
  * WHERE THE WORDS WERE SPOKEN, AS THE PHONE'S SIRI EXTENSION SAW ITS AUDIO ROUTE (owner, 2026-11-22): a HINT, never proof, and
  * never shown as more than that ("Sent by voice through a headset").
@@ -2193,7 +2232,9 @@ export const VOICE_SESSIONS = ["newest"]         ;
 export const VOICE_ROUTES = ["headset", "phone", "carplay"]         ;
 
 /** `unlock_sig` (voice audit P2-1): the unlock key's signature over the command id (issuer-requests.ts voiceUnlockBytes), only with `locked: false`. */
-export const VOICE_REF_SPEC = object({ project_id: id("prj"), session: oneOf(VOICE_SESSIONS), locked: bool(), route: optional(oneOf(VOICE_ROUTES)), unlock_sig: optional(b64({ exact: 64 })) });
+export const VOICE_REF_SPEC = object({ project_id: id("prj"), session: oneOf(VOICE_SESSIONS), session_ref: optional(text(36, 36)), locked: bool(), route: optional(oneOf(VOICE_ROUTES)), unlock_sig: optional(b64({ exact: 64 })) });
+
+const VOICE_SESSION_REF = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * WHERE A STEERED PROMPT CAME FROM, ON ITS USER TURN IN A DESK SESSION'S HISTORY (owner, 2026-11-22; VOICE-SIRI.md §9; history.ts
@@ -2217,7 +2258,7 @@ export const VOICE_LOCKED_MODES = ["default", "plan"]         ;
 /** `voice.enrol`: the voice key's issuer binding (kind `voice`, `parent` = the sending phone). */
 export const VOICE_ENROL_SPEC = object({ binding: token(4096) });
 /** inventory.get's field (commands.ts spreads it): this phone reads `voice` and may enrol a voice key. Only with `extended`. */
-export const VOICE_GET_FIELDS = { voice: optional(bool()), voice_read: optional(bool()), steer_via: optional(bool()), voice_notice: optional(bool()) }         ; // voice_notice (build 31, device-notice.ts): this phone hears "Answer ready" as a device notice; // voice_read: this phone may offer "Read answers aloud" and reads `voice.read`; steer_via: it reads a user turn's `via` (history.ts)
+export const VOICE_GET_FIELDS = { voice: optional(bool()), voice_read: optional(bool()), steer_via: optional(bool()), voice_notice: optional(bool()), voice_session: optional(bool()) }         ; // voice_session (CLI 0.11.27, build 39): this phone may name a session (`ref`, `last`, `new`) and read `last`; // voice_notice (build 31, device-notice.ts): this phone hears "Answer ready" as a device notice; // voice_read: this phone may offer "Read answers aloud" and reads `voice.read`; steer_via: it reads a user turn's `via` (history.ts)
 /** device.inventory's field (events.ts spreads it): only for a phone that asked `voice`; `enrolled` is THIS phone's voice key. */
 export const VOICE_INVENTORY_FIELDS = { voice: optional(object({ on: bool(), enrolled: bool(), read: optional(bool()) })) }         ; // `read`: the keyboard's `remote voice read`, only for a phone that asked `voice_read`
 
@@ -2226,6 +2267,8 @@ export function voiceRefRule(p                                                  
   if (p.voice_ref === undefined) return null;
   if (p.desk_ref !== undefined || p.interrupt !== undefined || p.attachments !== undefined || p.model !== undefined) return "voice_ref: words alone (no desk_ref, interrupt, file or model)";
   if (p.voice_ref.unlock_sig !== undefined && p.voice_ref.locked) return "voice_ref.unlock_sig: only with locked false";
+  if ((p.voice_ref.session === "ref") !== (p.voice_ref.session_ref !== undefined)) return "voice_ref.session_ref: with session ref, and only then";
+  if (p.voice_ref.session_ref !== undefined && !VOICE_SESSION_REF.test(p.voice_ref.session_ref)) return "voice_ref.session_ref: Claude Code's own uuid";
   return null;
 }
 
@@ -2241,7 +2284,9 @@ export function voiceRefRule(p                                                  
  * ends (`truncated` when the rest was left out: "Open WorkTrust to read it").
  */
 export const VOICE_ANSWER_MAX_CHARS = 4_000, VOICE_ANSWER_PART_CHARS = 600, VOICE_ANSWER_MAX_PARTS = 20;
-export const VOICE_READ_SPEC = object({ project_id: id("prj") });
+/** `session: "last"` (CLI 0.11.27): the last finished reply of the session this voice key last sent to, not the project's newest. */
+export const VOICE_READ_SESSIONS = ["last"]         ;
+export const VOICE_READ_SPEC = object({ project_id: id("prj"), session: optional(oneOf(VOICE_READ_SESSIONS)) });
 export const VOICE_EVENT_SPECS = { "voice.answer": object({ command_id: nullable(id("cmd")), parts: list(text(VOICE_ANSWER_PART_CHARS, 1), VOICE_ANSWER_MAX_PARTS, 1), running: bool(), truncated: bool() }) }         ;
 /** voice.answer's rule between fields: the parts together at most VOICE_ANSWER_MAX_CHARS. → null, or what is wrong. */
 export const voiceAnswerRule = (a                                       )                => (a.parts.reduce((n, p) => n + p.length, 0) > VOICE_ANSWER_MAX_CHARS ? "parts: 4,000 characters at most together" : null);
@@ -2770,6 +2815,34 @@ export function instructionsEventRule(type        , value         )             
   return null;
 }
 
+// ---- packages/remote-protocol/src/phone-app.ts
+/**
+ * THE PHONE APP'S BUILD, TOLD TO THE COMPUTER (CLI 0.11.27; owner, 2026-11-26: "update the phone app (QR)";
+ * docs/remote-agents/PHONE-APP-UPDATE.md). The phone names its own build number and platform inside the sealed
+ * `inventory.get` it already sends after every link and reconnect, so the computer's menu can say when a linked phone runs
+ * an older build than the newest WorkTrust published. The relay sees an inventory.get as before, never the number.
+ *
+ * ASKED BY A PROBE OF ITS OWN (remote-client inventory-asks.ts), never in the one extended ask: a computer before 0.11.27
+ * refuses an inventory.get with an unknown field (schema.ts: exact keys), so the field rides only a probe of its own until
+ * that computer received one, and an older computer's refusal costs that probe alone. A phone that sends nothing (an older
+ * build, the web, Expo Go) is "not known" on the computer, never "outdated".
+ */
+
+export const PHONE_APP_PLATFORMS = ["ios", "android"]         ;
+
+/** CFBundleVersion on iOS and versionCode on Android are whole numbers here (EAS keeps them, autoIncrement). */
+export const MAX_APP_BUILD = 999_999_999;
+export const APP_BUILD_SPEC = object({ build: int(1, MAX_APP_BUILD), platform: oneOf(PHONE_APP_PLATFORMS) });
+
+/** inventory.get's field (commands.ts spreads it): this phone's own build. Only with `extended`, only after its probe. */
+export const APP_GET_FIELDS = { app_build: optional(APP_BUILD_SPEC) }         ;
+
+/** A build as a phone reports it, or null for anything else (a string, a zero, an unknown platform). */
+export function appBuildOf(raw         )                  {
+  const checked = validate(APP_BUILD_SPEC, raw);
+  return checked.ok ? checked.value : null;
+}
+
 // ---- packages/remote-protocol/src/phone-start.ts
 /**
  * A SESSION STARTED FROM THE PHONE, BUILD 31 AND CLI 0.11.21 (owner, 2026-11-22). Two probes of their own, each asked with
@@ -2867,6 +2940,26 @@ export const HISTORY_FOLLOW_MS = 120_000, HISTORY_FOLLOW_RENEW_MS = 80_000;
 export const HISTORY_FOLLOW_ENDS = ["off", "paused", "gone", "busy"]         ;
 
 const CLAUDE_REF = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * A DESK SESSION'S TASKS (CLI 0.11.27; owner, 2026-11-26: "Tasks is empty, while this session has several jobs to do"). On a
+ * desk session's OWN page (never a detail or a subagent's page), only for a phone that asked `inventory.get` `desk_tasks`, and
+ * only while the keyboard lets phones read along: the session's to-do list as Claude Code itself keeps it (TaskCreate and
+ * TaskUpdate, else the last TodoWrite; the main agent's alone), each item's words (masked like every desk prose) and state,
+ * `cut` when it has more than sent or names a task never seen created; and its jobs: the sub-agents it started and the
+ * commands it ran in the background, each by its label, how far it is as the transcript shows it (`unknown`: its end was
+ * never seen) and when it started. Words the agent wrote, on the read-along path only: sealed for that phone, on the
+ * transient lane, kept by nobody.
+ */
+export const HISTORY_MAX_TASKS = 50, HISTORY_MAX_JOBS = 20, HISTORY_MAX_TASK_TITLE = 200;
+export const HISTORY_TASK_STATES = ["pending", "in_progress", "completed"]         ;
+export const HISTORY_JOB_KINDS = ["agent", "command"]         ;
+export const HISTORY_JOB_STATES = ["running", "done", "failed", "unknown"]         ;
+export const HISTORY_TASKS_SPEC = object({
+  items: list(object({ title: text(HISTORY_MAX_TASK_TITLE, 1), state: oneOf(HISTORY_TASK_STATES) }), HISTORY_MAX_TASKS),
+  cut: bool(),
+  jobs: list(object({ label: text(HISTORY_MAX_TASK_TITLE, 1), kind: oneOf(HISTORY_JOB_KINDS), state: oneOf(HISTORY_JOB_STATES), since: nullable(int(0)) }), HISTORY_MAX_JOBS),
+});
 
 /** One item of a session's history. Flat, every field but the first three optional: historyItemRule says which a kind carries. */
 export const HISTORY_ITEM_SPEC = object({
@@ -2968,6 +3061,8 @@ export const HISTORY_EVENT_SPECS = {
      * `end` why the follow is over (the page then carries nothing else).
      */
     follow: optional(object({ after: nullable(token(HISTORY_MAX_HEAD)), end: optional(oneOf(HISTORY_FOLLOW_ENDS)) })),
+    /** CLI 0.11.27 (above): the desk session's task list and jobs, only for the phone that asked `desk_tasks`. */
+    tasks: optional(HISTORY_TASKS_SPEC),
   }),
 }         ;
 
@@ -2987,6 +3082,7 @@ export function historyPageRule(page             )                {
   if (page.parent === undefined && page.items.some((i) => i.subagent !== undefined)) return "items: a subagent's steps only in its own page";
   if (page.follow !== undefined && (page.session_ref === undefined || page.item !== undefined || page.parent !== undefined)) return "follow: only on a desk session's own page";
   if (page.follow?.end !== undefined && page.status !== "not_modified") return "follow.end: the page that ends a follow carries nothing else";
+  if (page.tasks !== undefined && (page.session_ref === undefined || page.item !== undefined || page.parent !== undefined || page.follow?.end !== undefined)) return "tasks: only on a desk session's own page";
   return null;
 }
 
@@ -3960,9 +4056,9 @@ export const COMMAND_PAYLOAD_SPECS = {
     desk_sessions: optional(bool()),
     /**
      * Release 37: this phone asks a session's events after a sequence (session.attach `after`, the catch-up). Only with
-     * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own.
+     * `extended`; an older computer drops the unknown field, so the phone asks it by a probe of its own. CLI 0.11.27 `combined`: every optional field in ONE ask (inventory-asks.ts plan); probed alone, 0.11.26 refuses it.
      */
-    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), ...DESK_GET_FIELDS, ...VOICE_GET_FIELDS, ...START_GET_FIELDS, ...WAKE_GET_FIELDS, ...SETUP_GET_FIELDS, // `setup` (setup-steps.ts, CLI 0.11.26): this phone reads device.inventory `setup`, the computer's keyboard steps after linking; `wake` (wake.ts, CLI 0.11.25): this phone reads device.inventory `wake` and may send device.wake; `default_root` and `agent_ref` (phone-start.ts, CLI 0.11.21); `voice` (voice.ts, CLI 0.11.21); `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
+    catch_up: optional(bool()), cli: optional(bool()), history: optional(bool()), combined: optional(bool()), ...DESK_GET_FIELDS, ...VOICE_GET_FIELDS, ...START_GET_FIELDS, ...WAKE_GET_FIELDS, ...SETUP_GET_FIELDS, ...APP_GET_FIELDS, // `app_build` (phone-app.ts, CLI 0.11.27): this phone's own build and platform, asked by a probe of its own; `setup` (setup-steps.ts, CLI 0.11.26): this phone reads device.inventory `setup`, the computer's keyboard steps after linking; `wake` (wake.ts, CLI 0.11.25): this phone reads device.inventory `wake` and may send device.wake; `default_root` and `agent_ref` (phone-start.ts, CLI 0.11.21); `voice` (voice.ts, CLI 0.11.21); `desk_live` (desk.ts, CLI 0.11.19); `history` (history.ts): this phone asks history.get and reads history.page; CLI 0.11.16, `cli`: this phone reads device.inventory `cli` (cli.ts), under the same two rules as catch_up
   }),
   /** This computer's remote settings, each optional. Pausing from the phone is soft; `worktrust remote disable` at the
    * desk is the hard off, which no message can undo. */
@@ -4093,7 +4189,6 @@ export const COMMAND_TTL_MS                                        = {
 
 /** A device's own name: printable, no control or format character, not only spaces. */
 export const deviceNameOk = (name         )          => typeof name === "string" && name.trim().length > 0 && name.length <= MAX_DEVICE_NAME && !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/.test(name);
-
 export const isCommandType = (value         )                       => typeof value === "string" && Object.hasOwn(COMMAND_PAYLOAD_SPECS, value);
 
 /** The payload's schema, then the rules between fields. */
@@ -4122,7 +4217,7 @@ export function validateCommandPayload                       (type   , value    
     if (i.device_name !== undefined && (i.extended !== true || !deviceNameOk(i.device_name))) return refuse("payload", "$payload.device_name: printable words, with extended");
     if (i.model_switch !== undefined && i.extended !== true) return refuse("payload", "$payload.model_switch: with extended");
     if (i.desk_sessions !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_sessions: with extended");
-    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["voice", "voice_read", "steer_via", "voice_notice", "default_root", "agent_ref", "probe_failed", "wake", "setup"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
+    if (i.catch_up !== undefined && i.extended !== true) return refuse("payload", "$payload.catch_up: with extended"); if (i.cli !== undefined && i.extended !== true) return refuse("payload", "$payload.cli: with extended"); if (i.history !== undefined && i.extended !== true) return refuse("payload", "$payload.history: with extended"); if (i.desk_live !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_live: with extended"); if (i.desk_steer !== undefined && i.extended !== true) return refuse("payload", "$payload.desk_steer: with extended"); for (const k of ["desk_attach", "voice", "voice_read", "steer_via", "voice_notice", "voice_session", "default_root", "agent_ref", "probe_failed", "wake", "setup", "app_build", "desk_activity", "desk_tasks", "combined"]         ) if (i[k] !== undefined && i.extended !== true) return refuse("payload", `$payload.${k}: with extended`);
   }
   if (type === "session.attach") {
     const a = payload                                    ;

@@ -302,11 +302,12 @@ export function createHistory(o) {
    * The same resolve as a page (the keyboard's desk switch, the grant, the session in this computer's own list) and the same
    * transcript reader; never a page, never sealed here: → { id, at, text } or a reject reason.
    */
-  async function lastAnswer(ref, projectId) {
-    const subject = resolve({ session_ref: ref, project_id: projectId });
+  async function lastAnswer(ref, projectId, sessionId = null) { // `sessionId` (owner, 2026-11-26): a session this daemon runs, which a voice prompt started
+    const subject = resolve(sessionId ? { session_id: sessionId } : { session_ref: ref, project_id: projectId });
+    if (sessionId && typeof subject !== "string" && subject.saved?.project_id !== projectId) return "not_found";
     if (typeof subject === "string") return subject;
     let page = null;
-    try { page = await fromTranscript(subject, { session_ref: ref, project_id: projectId, before: null, max_bytes: P.HISTORY_PAGE_MAX_BYTES }, null, { request: `cmd_${"A".repeat(22)}`, ...subject.name, live_seq: 0 }); } catch { page = null; }
+    try { page = await fromTranscript(subject, { ...(sessionId ? { session_id: sessionId } : { session_ref: ref, project_id: projectId }), before: null, max_bytes: P.HISTORY_PAGE_MAX_BYTES }, null, { request: `cmd_${"A".repeat(22)}`, ...subject.name, live_seq: 0 }); } catch { page = null; }
     const items = Array.isArray(page?.items) ? page.items : [];
     const at = items.findLastIndex((i) => i.kind === "answer" && typeof i.text === "string" && i.text.length > 0);
     if (at < 0) return "not_found";

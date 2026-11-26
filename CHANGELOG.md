@@ -2,6 +2,54 @@
 
 The WorkTrust CLI, newest first. What the tool is and how to use it: [README.md](README.md).
 
+## 0.11.27: link a computer without a screen, see your desk sessions working, send files into them, and start a session with Siri
+
+**Link a computer without a screen.** On a server over SSH, a virtual machine or a Mac without a display, `npx worktrust remote
+pair` (and `remote app`) now prints two codes beside the QR code, with this computer's key: 8 characters to type in the
+WorkTrust app under Remote, Connect a computer, Trouble scanning? (this terminal then shows your phone's key and links only
+after you answer y), or 58 characters to paste. Over SSH, or on Linux without a display, the codes show by themselves;
+`--code` shows them at a screen too. They work once, for ten minutes, the long code stops after five wrong tries, and they
+are shown only in a terminal you sit at, never in a pipe, with `--yes` or in an AI agent's shell. Compare the keys before you
+link.
+
+**Running with nobody logged in.** `npx worktrust remote service always on|off|status` keeps the Remote Agent running after
+every restart with nobody logged in, as you and never as root. It is off until you turn it on here, after the CLI says what
+it means. On macOS the CLI prints the `sudo` commands for you to run (it runs none and keeps no password); on Linux it turns
+on lingering. With nobody logged in, the macOS keychain stays locked, so mail and an agent that keeps its sign-in there wait
+for a login. Over SSH, `remote status` says what a restart with nobody logged in does.
+
+**Your desk sessions, working or waiting.** While your keyboard lets phones read along, a Claude Code session open at your
+desk now tells the phone whether it is working, has a step open (a long command, or a question waiting at the desk), waits
+for you, or is idle, and how many of its sub-agents are busy. This computer works that out from what Claude Code writes, and
+it travels as a state and numbers only, without any of the session's text. A session you follow through read-along also
+sends its task list and the names of the sub-agents and background commands it started, each with how far it is, sealed
+for your phone like the rest of read-along. Your phone shows them on its Overview and under Tasks.
+
+**Photos and files into a desk session.** A prompt you send from your phone into a session open at your desk may now carry
+photos and files. They are saved in that project, under `.worktrust/inbox/`, never in a place the phone names, and the
+prompt hands their paths to the session. A voice prompt never carries a file.
+
+**Siri: the session you mean, or a new one.** A voice prompt may now name its session: the newest, one by its number, or the
+last one you spoke to, and a reply goes into that same session. Siri may also start a new session in a folder you allowed:
+in plan mode when the phone was locked, in manual mode otherwise, never above what this computer allows. The answer of a
+session this computer runs itself is read back the same way, "Answer ready" reaches your phone without waiting for the app
+to be opened, and the log names each step with its reason (`voice_ready`, `voice_answer`), never your words.
+
+**Update the phone app.** When a phone linked to this computer runs an older WorkTrust app build, the Remote Agent menu shows
+an "Update the phone app" row, with a QR code to the update when there is a link, and `remote status` says it in one line.
+
+**Your account, filled in by itself.** On a computer connected before CLI 0.6.9, the account, its reference and "connected
+since" were never recorded, and the menu asked you to run a check that could not fill them. They are now filled in by
+themselves the next time the CLI asks WorkTrust; what is still not known reads "not known".
+
+**A busy computer is no longer taken for an old one.** When your phone connects it asks this computer many short questions at
+once. They are now answered from one reading, so a loaded or just restarted computer answers in time instead of looking like
+an older CLI on the phone.
+
+**Getting it.** Run `npx worktrust@latest update`: it restarts the Remote Agent on the new version. The phone side of the
+codes, the desk sessions' state and tasks, files into a desk session, Siri's sessions and the update row needs the next
+WorkTrust app build.
+
 ## 0.11.26: one command updates and reconnects, linking turns the phone features on, drafts you watch being written, and AI drafts for mail on your phone
 
 **One command updates and reconnects.** `npx worktrust update` now brings your Remote Agent back on the new release by

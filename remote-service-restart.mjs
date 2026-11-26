@@ -30,7 +30,7 @@ import { readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { writePrivateFile } from "./package-integrity.mjs";
-import { refusedFor, systemRunner } from "./remote-service-home.mjs";
+import { ALWAYS_UPDATE_LINE, alwaysDaemon, refusedFor, systemRunner } from "./remote-service-home.mjs";
 import { DAEMON_FILE, LABEL, RESTART_FILE, UNIT, entryOf, handoverPlistPath, daemonState, installService, installedProgram, installedRelease, isHandoverLauncher, launcherVersion, newerRelease, serviceState, servicePlatform } from "./remote-service.mjs";
 
 export const ASK_MS = 30_000, RESTART_MS = 20_000, SETTLE_MS = 20_000, TAKE_MS = 6_000, BUSY_MS = 15_000, STALE_JOB_MS = 120_000;
@@ -130,6 +130,7 @@ export function verdict(done, seen, version, { connect = true } = {}) {
  */
 export async function serviceOnRelease({ program, version, platform = process.platform, home = homedir(), runner = systemRunner(home), direct = false, waitMs = ASK_MS, settleMs = SETTLE_MS, clock = Date.now, sleep = pause, say = () => {} }) {
   if (servicePlatform(platform) === "foreground") return null;
+  if (alwaysDaemon(platform)) return { ok: true, line: ALWAYS_UPDATE_LINE }; // CLI 0.11.27: a system daemon moves only with root (remote-always.mjs); never a LaunchAgent beside it
   let installed = installedProgram({ platform, home });
   if (!installed || !switchedOn(home)) return null; // never created here, and never started when switched off
   const on = (unit) => entryOf(unit.program) === entryOf(program);

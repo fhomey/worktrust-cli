@@ -116,16 +116,18 @@ export const knownBrowser = (deviceId, phones = loadPhones()) => { const p = pho
  * ONLY by the person's own commands at this keyboard (`remote read-along on|off`, `remote desk-history off`, `remote desk-steer
  * on|off`, `remote voice on|off`, `remote voice read on|off`; check-remote-cli rule W): a link and an update turn on what is null
  * and never what is "off". Voice on brings reading answers aloud with it unless `voice_read` is "off" (owner, 2026-11-25).
+ * `always` (CLI 0.11.27, remote-always.mjs): running with nobody logged in, written by `remote service always on|off` alone;
+ * nothing turns it on but that typed command.
  * A computer asked by 0.11.19 to 0.11.25 kept its answer in read-along.json (`{ answer: "yes" | "no", at }`): read here as
  * read along's choice while chosen.json has none, never written again.
  */
-export const SWITCH_NAMES = Object.freeze(["read_along", "desk_steering", "voice", "voice_read"]);
+export const SWITCH_NAMES = Object.freeze(["read_along", "desk_steering", "voice", "voice_read", "always"]);
 const chosenWord = (v) => (v === "on" || v === "off" ? v : null);
 export const loadReadAlongAsk = () => { const kept = readJson("read-along.json"); return kept && (kept.answer === "yes" || kept.answer === "no") ? { answer: kept.answer, at: Number.isSafeInteger(kept.at) ? kept.at : null } : null; };
 export function loadChosen() {
   const kept = readJson("chosen.json") ?? {}, legacy = loadReadAlongAsk(), at = kept.at && typeof kept.at === "object" ? kept.at : {};
-  const word = { read_along: chosenWord(kept.read_along) ?? (legacy ? (legacy.answer === "yes" ? "on" : "off") : null), desk_steering: chosenWord(kept.desk_steering), voice: chosenWord(kept.voice), voice_read: chosenWord(kept.voice_read) };
-  return { ...word, at: { read_along: Number.isSafeInteger(at.read_along) ? at.read_along : chosenWord(kept.read_along) ? null : (legacy?.at ?? null), desk_steering: Number.isSafeInteger(at.desk_steering) ? at.desk_steering : null, voice: Number.isSafeInteger(at.voice) ? at.voice : null, voice_read: Number.isSafeInteger(at.voice_read) ? at.voice_read : null } };
+  const word = { read_along: chosenWord(kept.read_along) ?? (legacy ? (legacy.answer === "yes" ? "on" : "off") : null), desk_steering: chosenWord(kept.desk_steering), voice: chosenWord(kept.voice), voice_read: chosenWord(kept.voice_read), always: chosenWord(kept.always) };
+  return { ...word, at: { read_along: Number.isSafeInteger(at.read_along) ? at.read_along : chosenWord(kept.read_along) ? null : (legacy?.at ?? null), desk_steering: Number.isSafeInteger(at.desk_steering) ? at.desk_steering : null, voice: Number.isSafeInteger(at.voice) ? at.voice : null, voice_read: Number.isSafeInteger(at.voice_read) ? at.voice_read : null, always: Number.isSafeInteger(at.always) ? at.always : null } };
 }
 /** `name`: one of SWITCH_NAMES; `on`: what the person typed. */
 export function saveChosen(name, on, now = Date.now()) {

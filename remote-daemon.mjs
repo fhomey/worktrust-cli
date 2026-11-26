@@ -18,11 +18,10 @@ import { createProject, rootLabel, sessionProjects, worktreeMain } from "./remot
 import { agentOptionsOf } from "./remote-inventory.mjs";
 import { allowedModes, applySettingsChange } from "./remote-settings.mjs";
 import { adminInventory } from "./remote-admin.mjs";
-import { createPeers, createQuietChannels } from "./remote-peers.mjs";
-import { createNotices, projectNameOf } from "./remote-notices.mjs";
+import { createInventoryCache, createPeers, createQuietChannels, PROBE_STALE_ON, probeKey } from "./remote-peers.mjs"; import { createNotices, projectNameOf } from "./remote-notices.mjs";
 import { createCatchUp } from "./remote-catch-up.mjs";
-import { createHistory } from "./remote-history.mjs";
-import { createDeskSteer, withOrigins } from "./remote-desk-steer.mjs"; import { createVoice, voiceOff } from "./remote-voice.mjs";
+import { createHistory } from "./remote-history.mjs"; import { createDeskTasks } from "./remote-desk-activity.mjs";
+import { createDeskSteer, withOrigins } from "./remote-desk-steer.mjs"; import { createVoice, voiceOff } from "./remote-voice.mjs"; import { countPairTry } from "./remote-headless.mjs"; import { notePhoneApp } from "./remote-phone-app.mjs"; // CLI 0.11.27: a phone's own build (inventory.get `app_build`)
 
 // What a paused computer still answers: reading, configuring, disconnecting, and taking work away (a pipeline's cancel).
 const LIVE_COMMANDS = new Set(["preview.live_start", "preview.live_input", "preview.live_viewport", "preview.live_follow"]);
@@ -38,6 +37,7 @@ export function createDaemonCore(o) {
   let sessions = null, approvals = o.approvals ?? null, releases = null;
 
   const peers = createPeers({ voiceOf: (phone) => voice.enrolledFor(phone), voiceKey: (peer) => voice.isVoice(peer) }); // what each phone asked to read, and what is sealed for it (remote-peers.mjs); a browser reads along since 0.11.20 (its key reaches the relay only after its Remote PIN)
+  const probeAnswers = createInventoryCache({ build: (refresh) => inventoryBody(refresh, true), key: () => probeKey({ settings: loadSettings(), projects: loadProjects(), roots: loadRoots(), phones: loadPhones() }), now: o.now }); // CLI 0.11.27: a burst of inventory.get probes answered from ONE full body (remote-peers.mjs); any other build clears it
   const quiet = createQuietChannels({ now: o.now, seenAt: (peer) => loadPhones().confirmed.find((p) => p.device_id === peer)?.seen_at ?? null }); // CLI 0.11.22: a channel the gateway refused by name, or (an older gateway) a peer silent for days, gets no transient event (remote-peers.mjs)
   // THE RESTART, SAID BEFORE IT HAPPENS (remote-service.mjs createHandover, remote-run.mjs stop): one ordinary inventory naming
   // `cli.restarting` (the relay lists what may be transient, and an inventory is not). announceRestart(false) withdraws it.
@@ -91,7 +91,7 @@ export function createDaemonCore(o) {
       return sealAll({ session_id: sessionId, event_seq: seq, type, occurred_at: o.now(), command_id: null, notify: "none", lane: "transient", body }, { replayed: only !== null, only });
     }
     const record = { session_id: sessionId, event_seq: o.journal.nextSeq(sessionId), type, occurred_at: o.now(), command_id: commandId, notify, body, ...(local ? { local } : {}) };
-    o.journal.recordEvent(record);
+    o.journal.recordEvent(record); voice.observe(record); if (PROBE_STALE_ON.has(type)) probeAnswers.clear(); // a session a voice prompt started here: its answer and its approval, said to that key (remote-voice.mjs, owner 2026-11-26); the held probe body never outlives a change of the sessions list (remote-peers.mjs)
     sealAll(record);
   }
 
@@ -100,18 +100,18 @@ export function createDaemonCore(o) {
   const { catchUp, replay } = createCatchUp({ journal: o.journal, known: (id) => Boolean(sessions?.get?.(id) || o.journal.session(id)), room: () => o.room?.(), log: o.log,
     sealFor: (record, phone) => sealAll(record, { replayed: true, only: phone }) });
   // A PAGE OF HISTORY (remote-history.mjs; PROTOCOL.md §History): read here, sealed for the phone that asked ALONE, on the transient lane, journaled nowhere.
-  // READING ALONG (CLI 0.11.19, remote-history-follow.mjs): only for a phone that asked `desk_live` and that the keyboard still confirms; its pages leave through the same one seal.
+  const deskTasks = createDeskTasks({ desk: o.desk, live: () => deskReadOf(loadSettings()) === "live", reads: (phone) => peers.readsTasks(phone), now: o.now }); // READING ALONG (CLI 0.11.19, remote-history-follow.mjs): only for a phone that asked `desk_live` and that the keyboard still confirms; its pages leave through the same one seal; CLI 0.11.27: a desk page carries the session's `tasks` for a phone that asked `desk_tasks` (remote-desk-activity.mjs)
   const history = createHistory({ journal: o.journal, sessions: () => sessions, desk: o.desk, settings: loadSettings, agentEnv: o.agentEnv, now: o.now, room: () => o.room?.(), log: o.log, every: o.every,
     readsLive: (phone) => peers.readsLive(phone), confirmed: (phone) => [...channels.values()].some((c) => c.peer_device_id === phone && confirmed().has(c.peer_fingerprint)),
     projects: () => (o.projectSecret ? sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: o.projectSecret }) : loadProjects()),
-    sealPage: (body, phone) => { if (phone) emit(null, "history.page", withOrigins(body), null, "none", { transient: true, only: phone }); } }); // the guard is `only` and confirmed() in sealAll: one channel, of a phone the keyboard still confirms
+    sealPage: (body, phone) => { if (phone) emit(null, "history.page", withOrigins(deskTasks.forPage(body, phone)), null, "none", { transient: true, only: phone }); } }); // the guard is `only` and confirmed() in sealAll: one channel, of a phone the keyboard still confirms
 
   // STEERING A DESK SESSION (CLI 0.11.20, remote-desk-steer.mjs): its receipts name the command alone (device receipts), journaled as every other.
-  const steer = createDeskSteer({ desk: o.desk, settings: loadSettings, readsSteer: (phone) => peers.readsSteer(phone) && [...channels.values()].some((c) => c.peer_device_id === phone && confirmed().has(c.peer_fingerprint)), voiceStill: (key) => voice.still(key), ended: (id, p) => { voice.replyAfter(id, p).catch(() => o.log("voice_answer_failed", {})); voice.answerReady(p); }, now: o.now, every: o.every, log: o.log,
+  const steer = createDeskSteer({ desk: o.desk, files: (space, ids, root) => o.attachments?.referenceText(space, ids, root) ?? null, settings: loadSettings, readsSteer: (phone) => peers.readsSteer(phone) && [...channels.values()].some((c) => c.peer_device_id === phone && confirmed().has(c.peer_fingerprint)), voiceStill: (key) => voice.still(key), ended: (id, p) => { voice.replyAfter(id, p).catch(() => o.log("voice_answer_failed", {})); voice.answerReady(p); }, now: o.now, every: o.every, log: o.log,
     settle: (id, outcome) => { if (outcome === "taken") { o.journal.advance(id, { kind: "agent_accepted" }, o.now()); emit(null, "command.agent_accepted", {}, id); } else { o.journal.advance(id, { kind: "device_rejected", expired: outcome === "expired" }, o.now(), outcome); emit(null, "command.rejected", { reason: outcome }, id); } } });
 
-  const voice = createVoice({ settings: loadSettings, phones: loadPhones, desk: o.desk, steer, projects: () => (o.projectSecret ? sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: o.projectSecret }) : loadProjects()), now: o.now, log: o.log, issuerKeys: o.issuerKeys, account: o.local.claims.sub, lastAnswer: (ref, project) => history.lastAnswer(ref, project), deviceNotice: (phone, label) => { const n = peers.readsVoiceNotice(phone) ? notices.sealDevice(phone, self, label) : null; if (n) o.send({ frame: "device_notice", phone, notice: n }); return n !== null; }, answer: (peer, body) => emit(null, "voice.answer", body, null, "none", { transient: true, only: peer }) }); // VOICE PROMPTS WITH SIRI (CLI 0.11.21, remote-voice.mjs): a phone's voice key, enrolled by its phone, sends agent.prompt `voice_ref` alone
-  function inventoryBody(refresh) {
+  const voice = createVoice({ settings: loadSettings, phones: loadPhones, desk: o.desk, steer, projects: () => (o.projectSecret ? sessionProjects({ projects: loadProjects, roots: loadRoots, projectSecret: o.projectSecret }) : loadProjects()), now: o.now, log: o.log, issuerKeys: o.issuerKeys, account: o.local.claims.sub, lastAnswer: (ref, project, sid) => history.lastAnswer(ref, project, sid), mintSession: () => P.mintId("ses", o.random), allowed: () => allowedModes(loadSettings()), start: (env, payload) => (!sessions ? "unsupported" : o.health?.()?.refusing === true ? "busy" : sessions.handle(env, payload)), promptInto: (env, payload) => (sessions ? sessions.handle(env, payload) : "not_found"), sessionOf: (id) => sessions?.get?.(id) ?? o.journal.session(id), changed: () => emit(null, "device.inventory", inventoryBody(false)), deviceNotice: (phone, label) => { const n = notices.sealDevice(phone, self, label); if (n) o.send({ frame: "device_notice", phone, notice: n }); return n !== null ? "sent" : "no_notice_key"; }, listening: (peer) => [...channels.values()].some((c) => c.peer_device_id === peer), answer: (peer, body) => emit(null, "voice.answer", body, null, "none", { transient: true, only: peer }) }); // VOICE PROMPTS WITH SIRI (CLI 0.11.21, remote-voice.mjs): a phone's voice key, enrolled by its phone, sends agent.prompt `voice_ref` alone
+  function inventoryBody(refresh, full = false) { if (!full) probeAnswers.clear(); // `full` (CLI 0.11.27, remote-peers.mjs createInventoryCache): every optional part, built once for a burst of probes; bodyFor strips per phone what it did not ask
     const settings = loadSettings();
     const inv = o.inventory(refresh);
     const body = {
@@ -125,19 +125,19 @@ export function createDaemonCore(o) {
         const main = worktreeMain(p.path);
         return { project_id: p.project_id, label: (basename(p.path) || p.path).slice(0, 256), path: p.path.slice(0, 4096), last_used_at: null, root_id: p.root_id ?? null, ...(main ? { main: main.slice(0, 4096) } : {}) };
       }),
-      roots: loadRoots().slice(0, 20).map((r) => ({ root_id: r.root_id, label: rootLabel(r.path), git_init: r.git_init === true })), ...(peers.readsDefaultRoot() ? { default_root: ((id) => (loadRoots().slice(0, 20).some((r) => r.root_id === id) ? id : null))(defaultRootOf()) } : {}), // CLI 0.11.21: the root the keyboard made (remote-default-root.mjs), read only; sealed only for a phone that asked `default_root`
+      roots: loadRoots().slice(0, 20).map((r) => ({ root_id: r.root_id, label: rootLabel(r.path), git_init: r.git_init === true })), ...((full || peers.readsDefaultRoot()) ? { default_root: ((id) => (loadRoots().slice(0, 20).some((r) => r.root_id === id) ? id : null))(defaultRootOf()) } : {}), // CLI 0.11.21: the root the keyboard made (remote-default-root.mjs), read only; sealed only for a phone that asked `default_root`
       // Sealed only for a phone that asked `extended` (remote-peers.mjs bodyFor): what each agent offers, and the keyboard's ceiling.
       ...(inv.features ? { agent_options: agentOptionsOf(inv), modes_allowed: allowedModes(settings) } : {}),
       // Part B, also only for an `extended` phone: the admin switch, the folders this computer suggests (by its own ids),
       // and the phones and browsers linked to it (remote-admin.mjs).
       ...adminInventory({ projectSecret: o.projectSecret, settings }),
       ...(P.CLI_RELEASE.test(o.version ?? "") ? { cli: { version: o.version, ...(restarting ? { restarting } : {}) } } : {}),
-      ...(peers.readsLive() ? { desk_read: deskReadOf(settings) } : {}), ...(peers.readsVoice() ? { voice: { on: !voiceOff(settings), enrolled: false, read: !voiceOff(settings) && settings.voice_read === true } } : {}), ...(peers.readsWake() && o.wake ? { wake: o.wake.inventory() } : {}), ...(peers.readsSetup() ? ((setup) => (setup ? { setup } : {}))(keptSetup({ now: o.now() })) : {}), // CLI 0.11.25 `wake` (remote-wake.mjs; WAKE.md): the keyboard's two switches and the signed card, sealed only for a phone that asked (remote-peers.mjs); what the keyboard lets a phone read of the desk; sealed only for a phone that asked `desk_live`
+      ...((full || peers.readsLive()) ? { desk_read: deskReadOf(settings) } : {}), ...((full || peers.readsVoice()) ? { voice: { on: !voiceOff(settings), enrolled: false, read: !voiceOff(settings) && settings.voice_read === true } } : {}), ...((full || peers.readsWake()) && o.wake ? { wake: o.wake.inventory() } : {}), ...((full || peers.readsSetup()) ? ((setup) => (setup ? { setup } : {}))(keptSetup({ now: o.now() })) : {}), // CLI 0.11.25 `wake` (remote-wake.mjs; WAKE.md): the keyboard's two switches and the signed card, sealed only for a phone that asked (remote-peers.mjs); what the keyboard lets a phone read of the desk; sealed only for a phone that asked `desk_live`
       // Every session this computer knows, live or in the journal, newest activity first, with its name and its release task.
       sessions: (sessions?.listAll?.() ?? sessions?.list() ?? []).map((s) => ({ ...s, ...(releases?.ownerOf(s.session_id) ?? {}) })).slice(0, 100),
     };
     // Release 36, read only while a phone that asked is linked: this computer's own Claude Code sessions, under the projects above.
-    if (o.desk && peers.readsDesk()) { try { body.desk_sessions = o.desk.list().filter((d) => body.projects.some((p) => p.project_id === d.project_id)).map((d) => (peers.readsSteer() ? { ...d, steerable: steer.steerable(d, settings) } : d)); } catch { o.log("desk_unreadable", {}); } } // `steerable` sealed only for a phone that asked `desk_steer` (remote-peers.mjs)
+    if (o.desk && (full || peers.readsDesk())) { try { body.desk_sessions = o.desk.list({ activity: (full || peers.readsActivity()) && deskReadOf(settings) === "live" }).filter((d) => body.projects.some((p) => p.project_id === d.project_id)).map((d) => ((full || peers.readsSteer()) ? { ...d, steerable: steer.steerable(d, settings) } : d)); } catch { o.log("desk_unreadable", {}); } } // `steerable` sealed only for a phone that asked `desk_steer` (remote-peers.mjs)
     return body;
   }
 
@@ -237,8 +237,8 @@ export function createDaemonCore(o) {
     if (settings.paused !== null && !DEVICE_COMMANDS.has(env.type)) return "remote_paused";
     if (env.type === "inventory.get") {
       peers.note(payload, env);
-      if (payload.device_name && env.sender_device_id) rememberName(env.sender_device_id, payload.device_name);
-      emit(null, "device.inventory", inventoryBody(payload.refresh_models));
+      if (payload.device_name && env.sender_device_id) rememberName(env.sender_device_id, payload.device_name); if (payload.app_build && env.sender_device_id) notePhoneApp(env.sender_device_id, payload.app_build, o.now()); // CLI 0.11.27: kept on its record for the menu's "Update the phone app"
+      emit(null, "device.inventory", probeAnswers.probe(payload.refresh_models)); // CLI 0.11.27: one full body for a burst of probes, in arrival order
       return "taken";
     }
     if (env.type === "device.configure") return configure(payload, env);
@@ -313,7 +313,7 @@ export function createDaemonCore(o) {
       if (accepted.code === "not_confirmed" && hello.pair_proof === undefined && inspected.value.phone.kind === "phone" && !phones.pending.some((p) => p.fingerprint === phone.fingerprint)) { // a voice key is never listed as a pending phone
         savePhones({ ...phones, pending: [...phones.pending, { ...phone, seen_at: o.now() }].slice(-MAX_PENDING_PHONES) });
       }
-      return o.log("hello_refused", { code: accepted.code });
+      countPairTry(live, hello, accepted.code, o.now()); return o.log("hello_refused", { code: accepted.code }); // CLI 0.11.27: wrong proofs spend the invite at PAIR_TRIES
     }
     if (accepted.value.phone.kind === "voice" && !voice.fresh(accepted.value.phone)) return o.log("hello_refused", { code: "stale_binding" }); if (accepted.value.paired) { // voice audit P2-1: an older binding than the newest seen for that key is refused
       // Spent before the welcome leaves: an invite pairs one phone, once.
@@ -345,6 +345,6 @@ export function createDaemonCore(o) {
     attach(s, a, r = null) { sessions = s; approvals = a; releases = r; },
     controllers: () => controllerKeys(loadPhones()),
     phoneOnline: () => channels.size > 0 && (o.online?.() ?? true),
-    channels: () => [...channels.values()],
+    channels: () => [...channels.values()], deskProject: (ref, sender) => steer.deskProject(ref, sender), // a desk session's files go to its own granted project (owner, 2026-11-26; remote-attachments.mjs)
   };
 }

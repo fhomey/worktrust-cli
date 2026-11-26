@@ -22,6 +22,12 @@
  *   a restart      which file an id names is memory; after a restart it is read back from this computer's own journal
  *                  (the `attachment.stored` it recorded for a whole, checked file), only when no clear came after it and
  *                  the file is still a regular file in that session's inbox.
+ *
+ * A SESSION OPEN AT THE DESK (owner, 2026-11-26; DESK-STEERING.md §Files): a chunk naming `desk_ref` goes to that desk session's
+ * own granted project, as the desk door resolves it (`ctx.deskProject`: steering on, a phone that asked `desk_steer`, the session in
+ * this computer's own list), into `.worktrust/inbox/desk-<uuid>/`: the same checks, caps, names and modes, the receipts device
+ * receipts, no `attachment.stored` (no daemon session to put it on), the id held in memory only. The prompt names the files by
+ * their ABSOLUTE paths (referenceText with the project's root), the way Claude Code's Read tool takes a file, an image as an image.
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -88,7 +94,7 @@ const ignoreInbox = (inboxes) => { const file = join(inboxes, ".gitignore"); if 
 const sizeOf = (dir) => { try { return readdirSync(dir).reduce((n, f) => { const st = lstatSync(join(dir, f)); return n + (st.isFile() ? st.size : st.isDirectory() ? sizeOf(join(dir, f)) : 0); }, 0); } catch { return 0; } };
 
 export function createAttachments(ctx) {
-  // ctx: { journal, now, emit, projects(), sessionProject(session_id) → project | null, log }
+  // ctx: { journal, now, emit, projects(), sessionProject(session_id) → project | null, log, deskProject?(desk_ref, sender) → { path, space } | null (owner, 2026-11-26) }
   const done = new Map(); // `${session_id}/${attachment_id}` -> relative path
   let lastPut = -Infinity; // 0.11.15: an upload in the last two minutes holds a handover (its file is named by the next prompt)
 
@@ -111,20 +117,27 @@ export function createAttachments(ctx) {
     return stored.body.path;
   }
 
+  /** Where a command's files live: a desk session's granted project (`desk_ref`, by the desk door's word) or the daemon session's. → { project, space, desk } | null. */
+  function placeOf(env, payload) {
+    if (payload?.desk_ref !== undefined) { const d = ctx.deskProject?.(payload.desk_ref, env.sender_device_id) ?? null; return d && /^desk-[0-9a-f-]{36}$/.test(d.space) ? { project: { path: d.path }, space: d.space, desk: true } : null; }
+    const project = ctx.sessionProject(env.session_id);
+    return project ? { project, space: env.session_id, desk: false } : null;
+  }
+
   function put(env, a) {
     lastPut = ctx.now();
-    const project = ctx.sessionProject(env.session_id);
-    if (!project) return "not_found";
+    const place = placeOf(env, a);
+    if (!place) return "not_found";
     const bad = P.attachmentRule(a);
     if (bad) return "unsupported";
     // A read-only project, a full disk: the phone is told no, never left waiting for an answer.
-    try { return store(env, a, project); } catch (error) { ctx.log?.("attachment_failed", { code: String(error?.code ?? error?.name ?? "Error").slice(0, 40) }); return "not_allowed"; }
+    try { return store(env, a, place); } catch (error) { ctx.log?.("attachment_failed", { code: String(error?.code ?? error?.name ?? "Error").slice(0, 40) }); return "not_allowed"; }
   }
 
-  function store(env, a, project) {
-    const key = `${env.session_id}/${a.attachment_id}`;
+  function store(env, a, { project, space, desk }) {
+    const key = `${space}/${a.attachment_id}`;
     if (done.has(key)) return "conflict";
-    const inbox = realDir(project.path, [".worktrust", "inbox", env.session_id]);
+    const inbox = realDir(project.path, [".worktrust", "inbox", space]);
     const parts = inbox && realDir(inbox, [".parts", a.attachment_id]);
     if (!inbox || !parts) return "unsupported";
     ignoreInbox(dirname(inbox));
@@ -149,10 +162,10 @@ export function createAttachments(ctx) {
       writeOnce(file, whole);
       const kept = heic ? heicToJpeg(file, join(dirname(parts), `${a.attachment_id}.jpg`)) : file;
       if (!plainIn(inbox, kept)) { rmSync(kept, { force: true }); return "unsupported"; }
-      path = [".worktrust", "inbox", env.session_id, basename(kept)].join("/");
+      path = [".worktrust", "inbox", space, basename(kept)].join("/");
       done.set(key, path);
     }
-    ctx.emit(env.session_id, "attachment.stored", { attachment_id: a.attachment_id, received, chunks: a.chunks, path, size: a.size, content_type: a.content_type }, env.command_id);
+    if (!desk) ctx.emit(env.session_id, "attachment.stored", { attachment_id: a.attachment_id, received, chunks: a.chunks, path, size: a.size, content_type: a.content_type }, env.command_id); // a desk file: its receipt says it, no session to put a record on
     return "taken";
   }
 
@@ -175,25 +188,25 @@ export function createAttachments(ctx) {
   }
 
   function clear(env, payload) {
-    const project = ctx.sessionProject(env.session_id);
-    if (!project) return "not_found";
+    const place = placeOf(env, payload);
+    if (!place) return "not_found";
     // A read-only project, a full disk: a refusal with a receipt, as for a put, never a frame that failed (review P3-3).
-    try { return clearIn(env, payload, project); } catch (error) { ctx.log?.("attachment_failed", { code: String(error?.code ?? error?.name ?? "Error").slice(0, 40) }); return "not_allowed"; }
+    try { return clearIn(env, payload, place); } catch (error) { ctx.log?.("attachment_failed", { code: String(error?.code ?? error?.name ?? "Error").slice(0, 40) }); return "not_allowed"; }
   }
 
-  function clearIn(env, payload, project) {
+  function clearIn(env, payload, { project, space, desk }) {
     const id = payload?.attachment_id ?? null;
-    const forget = () => { for (const key of [...done.keys()]) if (id ? key === `${env.session_id}/${id}` : key.startsWith(`${env.session_id}/`)) done.delete(key); };
+    const forget = () => { for (const key of [...done.keys()]) if (id ? key === `${space}/${id}` : key.startsWith(`${space}/`)) done.delete(key); };
     // Sealed as `{ removed }` alone, every time; the clear of one file names its id for this computer's journal only.
-    const cleared = (removed) => { forget(); ctx.emit(env.session_id, "attachment.cleared", { removed }, env.command_id, "none", id ? { local: { attachment_id: id } } : {}); return "taken"; };
+    const cleared = (removed) => { forget(); if (!desk) ctx.emit(env.session_id, "attachment.cleared", { removed }, env.command_id, "none", id ? { local: { attachment_id: id } } : {}); return "taken"; };
     // The inbox as it stands, never made: a clear of a session with no inbox removes nothing and leaves no folder behind.
-    const inbox = existingDir(project.path, [".worktrust", "inbox", env.session_id]);
+    const inbox = existingDir(project.path, [".worktrust", "inbox", space]);
     if (inbox === false) return "unsupported";
     if (inbox === null) return cleared(0);
     if (id) {
       // ONE file (the phone gave up on it, or its message did not go): what arrived of it, and the file when it was stored whole.
       // Never through a `.parts` that is a link or a file: only a real folder of this inbox is removed from.
-      const path = storedPath(env.session_id, id), parts = join(inbox, ".parts"), st = statOf(parts);
+      const path = storedPath(space, id), parts = join(inbox, ".parts"), st = statOf(parts);
       if (st && (st.isSymbolicLink() || !st.isDirectory())) return "unsupported";
       if (st) { rmSync(join(parts, id), { recursive: true, force: true }); rmSync(join(parts, `${id}.jpg`), { force: true }); }
       if (path) rmSync(join(inbox, basename(path)), { force: true });
@@ -211,11 +224,14 @@ export function createAttachments(ctx) {
      * The words that tell the agent where its attachments are, appended to a prompt; null when one is not stored whole
      * in this session (the prompt is then refused, never sent without the file it names).
      */
-    referenceText(sessionId, ids) {
+    referenceText(sessionId, ids, root = null) {
       if (!ids?.length) return "";
       const paths = ids.map((id) => storedPath(sessionId, id));
       if (paths.some((p) => !p)) return null;
-      return `\n\nAttached from the phone (files in this project, read them as needed):\n${paths.map((p) => `- ${p}`).join("\n")}`;
+      // A desk session (owner, 2026-11-26): `root` its project, the paths absolute, as Claude Code's Read tool takes a file (an image read as an image).
+      let base = null;
+      if (root !== null) { try { base = realpathSync(root); } catch { return null; } }
+      return `\n\nAttached from the phone (files in this project, read them as needed):\n${paths.map((p) => `- ${base ? join(base, ...p.split("/")) : p}`).join("\n")}`;
     },
   };
 }

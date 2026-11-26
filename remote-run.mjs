@@ -171,7 +171,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   // to give (a grant left behind by a project since un-granted must not come back to life through its root).
   const grantedProject = (id) => { const s = journal.session(id); return s ? loadProjects().find((p) => p.project_id === s.project_id) ?? null : null; };
   // Files from the phone (into the session's project inbox) and the local preview (2026-11-07).
-  const attachments = createAttachments({ journal, now: Date.now, emit: (...a) => core.emit(...a), log, sessionProject });
+  const attachments = createAttachments({ journal, now: Date.now, emit: (...a) => core.emit(...a), log, sessionProject, deskProject: (ref, sender) => core.deskProject(ref, sender) }); // owner, 2026-11-26: a desk session's files, by the desk door's word
   const preview = createPreview({ emit: (...a) => core.emit(...a), projects: loadProjects, grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log });
   // The live preview (release 19): the session's granted page, live, over the browser's pipe; one per computer.
   const live = createLivePreview({ emit: (...a) => core.emit(...a), grants: loadPreviewGrants, env: () => agentEnv(loadSettings()), log, now: Date.now, sessionProject: grantedProject });
@@ -293,5 +293,7 @@ export async function runDaemon({ say = (l) => process.stdout.write(`${l}\n`), v
   handover?.start();
   health.start();
   awake.sync(); setInterval(() => { const before = awake.state(); try { if (awake.sync() !== before) core.emit(null, "device.inventory", core.inventoryBody(false)); } catch { log("awake_error", {}); } }, 15_000).unref(); // `remote awake on|off` at the keyboard, taken within 15 s
+  // CLI 0.11.27 (remote-desk-activity.mjs): a desk session that starts or stops working is told within 15 s, sealed, and only while a phone that asked `desk_activity` is linked (else the rows carry no state and nothing changes).
+  let deskWork = ""; setInterval(() => { try { const body = core.inventoryBody(false), stamp = (body.desk_sessions ?? []).map((d) => (d.activity ? `${d.session_ref}:${d.activity.state}:${d.activity.agents}` : "")).join(","); if (stamp !== deskWork) { const told = deskWork !== "" || stamp.replace(/,/g, "") !== ""; deskWork = stamp; if (told) core.emit(null, "device.inventory", body); } } catch { log("desk_activity_error", {}); } }, 15_000).unref();
   return new Promise(() => {});
 }

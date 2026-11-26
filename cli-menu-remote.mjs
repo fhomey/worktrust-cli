@@ -18,6 +18,7 @@ import { allowedModes, ceilingOf } from "./remote-settings.mjs";
 import { HEALTH_REFUSAL, keptHealth } from "./remote-health.mjs";
 import { defaultRootOf } from "./remote-store.mjs";
 import { ask, defaultRootItem, permissionsRow, switchItems } from "./cli-menu-switches.mjs";
+import { behindPhones, updateLines, updateRow } from "./remote-phone-app.mjs";
 
 const BACK = { label: "← Back", hint: "Esc", back: true }; // its name and its key say it: no sentence of its own (owner, 2026-11-14)
 const tilde = (path) => (path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path);
@@ -248,6 +249,16 @@ export async function showUpgrade(term, io, url) {
   return !(k.ctrl && k.name === "c");
 }
 
+/**
+ * "Update the phone app (QR)" (CLI 0.11.27; owner, 2026-11-26; remote-phone-app.mjs): which phones run an older build, then
+ * the QR of the update's link, or where to update in words; any key for the menu.
+ */
+export async function showPhoneUpdate(term, behind, { color = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR } = {}) {
+  term.write(`${updateLines(behind, { color }).join("\n")}\n\n  ${muted("Press any key for the menu.")}\n`);
+  const k = await term.anyKey();
+  return !(k.ctrl && k.name === "c");
+}
+
 /** Remote Agent ›. The rows are read again after every command, so an approval made here opens the other steps at once. */
 export async function remoteMenu(term, io, header) {
   let state = (await io.state?.()) ?? null; // the account's answer (plan, remoteAccess, upgrade), read again after every command below
@@ -263,7 +274,8 @@ export async function remoteMenu(term, io, header) {
     const red = keptHealth()?.level === "red" ? [{ label: "Health: heavy memory load", note: { text: "red", tone: "red" }, hint: "npx worktrust remote status", info: `${HEALTH_REFUSAL}. New sessions wait; running ones continue. Enter shows the figures.`, run: () => runShown(term, io, ["remote", "status"]) }] : [];
     const settings = (() => { try { return loadSettings(); } catch { return {}; } })(), run = (args) => runShown(term, io, args);
     const modesNote = (() => { try { return { plan: "Manual, Plan", edit: "+ Edit", auto: "+ Auto" }[ceilingOf(allowedModes(loadSettings()))]; } catch { return null; } })(); // 0.11.14: the ceiling in a word
-    return [...(waiting ? [awaitingRow(waiting, run)] : []), ...remoteItems(approved, paused, {
+    const behind = (() => { try { return behindPhones(); } catch { return []; } })(), update = updateRow(behind, () => showPhoneUpdate(term, behind)); // CLI 0.11.27: a linked phone on an older build, said first after a waiting link
+    return [...(waiting ? [awaitingRow(waiting, run)] : []), ...(update ? [update] : []), ...remoteItems(approved, paused, {
       health: red[0], permissions: permissionsRow(settings, () => level(term, header, "Permissions", () => permissionItems(switchItems((() => { try { return loadSettings(); } catch { return {}; } })(), run), modesRow({ modes: () => modesMenu(term, io, header), modesNote })), io)),
       approve: () => level(term, header, approved ? "Approve this computer again (new keys)" : "Approve this computer", () => [
         { label: "With the WorkTrust app", hint: `npx worktrust remote app${approved ? " --repair" : ""}`, info: "One QR: the app approves and links this phone.", run: road("app") },

@@ -132,7 +132,7 @@ function writePrivate(file, text) {
 }
 
 export function createDeskSteer(o) {
-  // o: { desk (remote-desk-sessions.mjs createDesk), settings(), readsSteer(phone), voiceStill?(voiceKey) and ended?(commandId, prompt) (CLI 0.11.21, remote-voice.mjs), now(), every?(run, ms), log(kind, fields), settle(commandId, outcome) (outcome "taken" or a reject reason), home? }
+  // o: { files?(space, ids, root) (owner, 2026-11-26: the stored files' words, remote-attachments.mjs referenceText), desk (remote-desk-sessions.mjs createDesk), settings(), readsSteer(phone), voiceStill?(voiceKey) and ended?(commandId, prompt) (CLI 0.11.21, remote-voice.mjs), now(), every?(run, ms), log(kind, fields), settle(commandId, outcome) (outcome "taken" or a reject reason), home? }
   const dir = () => steerDir(o.home ?? homedir());
   withdrawInboxes(o.home ?? homedir()); // what a daemon before this one left waiting is never delivered later (review P2-1)
   const pending = new Map(); // command_id → { ref, project_id, session_id, phone, at, taken }
@@ -143,6 +143,17 @@ export function createDeskSteer(o) {
   const mark = (p, first, last) => { try { appendSteered({ v: 1, steered: "remote", adapter: "claude-code", agent_session_ref: p.ref, remote_session_id: p.session_id, project_id: p.project_id, how: "attached", first_steered_at: first, last_steered_at: last }); return true; } catch { return false; } };
   const waiting = (ref) => [...pending.values()].some((p) => p.ref === ref) || (() => { try { return readdirSync(join(dir(), ref, "inbox")).some((n) => n.endsWith(".json")); } catch { return false; } })();
   const clean = (ref, id) => { for (const f of [join(dir(), ref, "inbox", `${id}.json`), join(dir(), ref, "inbox", `${id}.withdrawn`), join(dir(), ref, "receipts", `${id}.json`)]) rmSync(f, { force: true }); };
+
+  /**
+   * WHERE A DESK SESSION'S FILES FROM THE PHONE GO (owner, 2026-11-26; remote-attachments.mjs): its own granted project, as this
+   * computer's desk list says (never a path from the phone), only while steering is on and the sender asked `desk_steer`. → { path,
+   * space } or null.
+   */
+  function deskProject(dref, sender) {
+    if (steerOff(o.settings()) || o.readsSteer(sender) !== true || !UUID.test(dref?.session_ref ?? "")) return null;
+    const found = o.desk?.find(dref.session_ref, dref.project_id) ?? null;
+    return found?.projectPath ? { path: found.projectPath, space: `desk-${dref.session_ref}` } : null;
+  }
 
   /** Whether a row of the desk list may be offered for steering now (device.inventory `steerable`, for a phone that asked). */
   function steerable(row, settings = o.settings()) {
@@ -158,9 +169,13 @@ export function createDeskSteer(o) {
     const ref = payload.desk_ref?.session_ref, projectId = payload.desk_ref?.project_id, voice = how.voice === true;
     if (steerOff(o.settings())) return "not_allowed";
     if (!voice && o.readsSteer(env.sender_device_id) !== true) return "not_allowed"; // it never asked: it would not know the answers
-    if (!UUID.test(ref ?? "") || !CMD.test(env.command_id) || payload.attachments !== undefined || payload.model !== undefined || payload.interrupt !== undefined) return "unsupported";
+    if (!UUID.test(ref ?? "") || !CMD.test(env.command_id) || (payload.attachments !== undefined && (voice || typeof o.files !== "function")) || payload.model !== undefined || payload.interrupt !== undefined) return "unsupported"; // files (owner, 2026-11-26): never from a voice key
     if (!deskPromptOk(payload.text)) return "not_prompt"; // a shell line or a command, maybe run as such in the session: never sent
-    if (!o.desk?.find(ref, projectId)) return "not_found"; // not in this computer's own list, or not under that granted project
+    const found = o.desk?.find(ref, projectId) ?? null;
+    if (!found) return "not_found"; // not in this computer's own list, or not under that granted project
+    // FILES (owner, 2026-11-26; DESK-STEERING.md §Files): each stored whole in this desk session's own inbox, named by its absolute path; one missing refuses the prompt.
+    const named = payload.attachments?.length ? o.files(`desk-${ref}`, payload.attachments, found.projectPath) : "";
+    if (named === null) return "not_found";
     const alive = aliveOf(dir(), ref, o.now());
     if (alive !== "ok") return alive;
     if (Array.isArray(how.modes) && (!aliveChecksModes(dir(), ref) || !how.modes.includes(aliveModeOf(dir(), ref, o.now())))) return "locked_mode"; // a locked phone: only a session that asks before it acts, and only a mod that checks that again itself
@@ -174,7 +189,7 @@ export function createDeskSteer(o) {
     // The ledger names the desk session only once the turn started (`submitted`, tick below; review P2-3): a refused or withdrawn prompt marks nothing.
     try {
       for (const sub of ["inbox", "receipts"]) mkdirSync(join(dir(), ref, sub), { recursive: true, mode: 0o700 });
-      writePrivate(join(dir(), ref, "inbox", `${env.command_id}.json`), JSON.stringify({ v: 1, command_id: env.command_id, text: payload.text, at: p.at, ...(Array.isArray(how.modes) ? { modes: how.modes } : {}) })); // audit P1-1: the mod checks the locked send's modes again at delivery
+      writePrivate(join(dir(), ref, "inbox", `${env.command_id}.json`), JSON.stringify({ v: 1, command_id: env.command_id, text: payload.text + named, at: p.at, ...(Array.isArray(how.modes) ? { modes: how.modes } : {}) })); // audit P1-1: the mod checks the locked send's modes again at delivery
     } catch { o.log("steer_unwritable", {}); return "unsupported"; }
     sent.push(p.at);
     pending.set(env.command_id, p);
@@ -207,7 +222,7 @@ export function createDeskSteer(o) {
     if (pending.size === 0 && running.size === 0 && stop) { stop(); stop = null; }
   }
 
-  return { prompt, steerable, tick, pending: () => pending.size, stop: () => { stop?.(); stop = null; } };
+  return { prompt, steerable, tick, deskProject, pending: () => pending.size, stop: () => { stop?.(); stop = null; } };
 }
 
 /** What `remote status` and `remote desk-steer status` say. */

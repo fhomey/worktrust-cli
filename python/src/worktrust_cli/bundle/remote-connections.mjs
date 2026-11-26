@@ -17,7 +17,7 @@ import { createInterface } from "node:readline/promises";
 import { gatewayOf, loadIdentity, loadKeys, loadPhones, loadProjects, loadRoots, loadSettings, random, removeFile, savePhones, writeJson } from "./remote-store.mjs";
 import * as P from "./remote-protocol.mjs";
 import { SCAN_DISTANCE, qrHelp, qrWindow, terminalQr } from "./remote-qr.mjs";
-import { pairingQrText, seededInvite } from "./remote-pairing.mjs";
+import { pairingQrText, seededInvite } from "./remote-pairing.mjs"; import { BURNED_LINE, codeLines, codeWanted, confirmAsked, inviteBurned } from "./remote-headless.mjs"; // CLI 0.11.27: link a server (docs/remote-agents/HEADLESS.md)
 import { onLetter, watchKeys } from "./cli-stop.mjs";
 import { startCountdown } from "./remote-countdown.mjs";
 import { suggestedFolders } from "./folder-picker.mjs";
@@ -134,7 +134,6 @@ export async function disconnectCommand(io, rest, ask, tty = Boolean(process.std
 
 /** How long `remote app` waits for the phone that scanned its one QR before it shows the pairing QR (0.11.10). */
 export const ONE_SCAN_WAIT_MS = 30_000;
-const pretty = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
 
 /**
  * LINK A PHONE (`remote pair`, and the end of `remote app`; moved here from remote-cli.mjs in 0.11.10). Without `ready`: a new
@@ -172,13 +171,13 @@ export async function linkPhone(io, ready = null, { waitMs = ONE_SCAN_WAIT_MS, n
     io.say();
     io.say(SCAN_DISTANCE); // CLI 0.11.26 (build 37, item E): a phone's wide lens does not focus at 10 cm; the app's 0.5× does
     if (showLink) io.say(`  Link: ${pairingQrText(invite)}`);
-    io.say(`  No camera? Type this code in the app: ${pretty(code)} (then confirm the phone here with \`npx worktrust remote phones\`)`);
+    for (const line of codeLines(io, pairingQrText(invite), keys.public, code)) io.say(line); // CLI 0.11.27: the 8 characters to type (confirmed here), the QR's own code to paste, this computer's key
     io.say("  The code and the QR work once, for ten minutes. Ctrl+C cancels.");
     const help = qrHelp({ tty: Boolean(process.stdout.isTTY && process.stdin.isTTY), program: process.env.TERM_PROGRAM ?? "" }); for (const line of help) io.say(line);
     if (help.length) { letter(); letter = onLetter("o", () => io.say(`  Opened the QR in a window: ${window.open()} (deleted when this ends)`)); }
     bar = countdown?.({ expiresAt: until, windowMs: Math.max(1, until - since) }) ?? null;
   };
-  if (ready) io.say("  Linking the phone that scanned the code …"); else show();
+  if (ready && !codeWanted(io)) io.say("  Linking the phone that scanned the code …"); else show(); // --code: shown at once, the approval may have been typed
   const cancel = () => { settle(); removeFile("invite.json"); process.exit(130); };
   process.once("SIGINT", cancel);
   const before = new Set(loadPhones().pending.map((p) => p.fingerprint));
@@ -186,11 +185,11 @@ export async function linkPhone(io, ready = null, { waitMs = ONE_SCAN_WAIT_MS, n
   try {
     while (now() < until) {
       await new Promise((resolve) => setTimeout(resolve, tick));
-      const phones = loadPhones();
+      const phones = loadPhones(); if (inviteBurned()) { settle(); io.say(BURNED_LINE); return null; } // spent by wrong proofs (remote-headless.mjs)
       const paired = phones.confirmed.find((p) => p.how === "qr" && p.confirmed_at >= since);
       if (paired) { settle(); return paired; }
       const asked = phones.pending.find((p) => !before.has(p.fingerprint));
-      if (asked) { settle(); io.say(`  A phone asked by code (${asked.fingerprint}). Confirm it at this keyboard: npx worktrust remote phones confirm ${asked.fingerprint}`); return null; }
+      if (asked) { settle(); return confirmAsked(io, asked); } // CLI 0.11.27: the typed code's phone, its key confirmed here with y (remote-headless.mjs)
       if (!shown && now() - started >= waitMs) show("  No phone linked by itself (the code was opened with the camera, or the app is older): scan this in the WorkTrust app.");
     }
   } finally { settle(); process.off("SIGINT", cancel); release(); letter(); window.remove(); }

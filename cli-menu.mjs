@@ -240,7 +240,7 @@ export function headerLines(state) {
   const known = (value, yes, no) => (value === true ? yes : value === false ? no : "not known");
   return [
     title,
-    row("Account", state.account ?? "not recorded: run Check this computer"),
+    row("Account", state.account ?? "not known"), // 0.11.27: an older key fills it at the next door ask (worktrust.mjs fillAccount); no command can, so none is named
     row("Account type", PLAN_WORDS[state.plan] ?? "not known"), // the server's answer (api/cli/door), never guessed here
     row("This computer", `${host.length > 28 ? `${host.slice(0, 27)}…` : host} · connected since ${/^\d{4}-\d{2}-\d{2}/.test(String(state.since ?? "")) ? String(state.since).slice(0, 10) : "not known"}`), // 0.11.26: a date not recorded, in words
     row("Remote Agent", `${remote.links === null || ["not set up", "off"].includes(remote.word) ? remote.word : `${remote.word}, ${remote.links} connection${remote.links === 1 ? "" : "s"}`}${state.remoteAccess === "premium_required" ? " · needs Premium" : ""}`),

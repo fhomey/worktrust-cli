@@ -27,8 +27,9 @@ import { join } from "node:path";
 import * as P from "./remote-protocol.mjs";
 import { maskKeys } from "./remote-history-mask.mjs";
 import { typedWords } from "./remote-history-claude.mjs";
+import { deskActivity, sideWrites, turnOf } from "./remote-desk-activity.mjs";
 
-export const HELD_WINDOW_MS = 30_000;
+export const HELD_WINDOW_MS = 30_000, SCAN_MS = 2_000;
 const SLICE = 64 * 1024;
 const MAX_READS = 60; // transcripts opened per listing at most, newest first
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -80,7 +81,8 @@ export function transcriptFacts(file) {
   const first = head.map(typed).find(Boolean) ?? null;
   const title = named && oneLine(named) ? cut(maskKeys(named), P.MAX_DESK_TITLE) : first ? cut(first, P.MAX_DESK_TITLE) : null; // masked before the cut: a key the cut would split is not sent in part
   const models = all.filter((l) => l.type === "assistant" && typeof l.message?.model === "string" && /^[A-Za-z0-9._:@\[\]-]{1,128}$/.test(l.message.model) && l.message.model !== "<synthetic>");
-  return { cwd, title, model: models.at(-1)?.message.model ?? null };
+  // CLI 0.11.27 (remote-desk-activity.mjs): whether a turn is open, from the last lines; counts only, kept on this computer.
+  return { cwd, title, model: models.at(-1)?.message.model ?? null, turn: turnOf(tail.length ? tail : head) };
 }
 
 /**
@@ -110,7 +112,7 @@ export function deskSessions({ home = homedir(), projects, exclude = new Set(), 
     if (!facts) { try { facts = transcriptFacts(f.file); } catch { continue; } cache.set(key, facts); }
     if (!samePath(facts.cwd, f.project.path)) continue; // another folder whose name encodes the same: not this project
     seen.add(f.ref);
-    out.push({ session_ref: f.ref, project_id: f.project.project_id, last_activity_at: f.mtime, title: facts.title, model: facts.model, file: f.file, projectPath: f.project.path });
+    out.push({ session_ref: f.ref, project_id: f.project.project_id, last_activity_at: f.mtime, title: facts.title, model: facts.model, file: f.file, projectPath: f.project.path, turn: facts.turn ?? { turn: "unknown", openSteps: 0, openAgents: 0 } });
   }
   if (cache.size > 200) for (const k of [...cache.keys()].slice(0, cache.size - 200)) cache.delete(k);
   return out;
@@ -173,15 +175,35 @@ export function heldBy(entry, { now, procs }) {
 }
 
 /**
+ * THE ROWS WITH WHAT EACH SESSION IS DOING (CLI 0.11.27, protocol desk.ts `activity`; remote-desk-activity.mjs decides). The
+ * process list is read once, and only when a quiet open turn needs it (whether Claude Code still holds that session);
+ * unreadable, it says nothing either way (`held` null: such a session is not called work).
+ */
+export function withActivity(rows, { now, processes }) {
+  let procs;
+  const held = (d) => { if (procs === undefined) procs = processes(); const why = heldBy(d, { now, procs }); return why === "unknown" ? null : why !== null; };
+  return rows.map((d) => {
+    const side = sideWrites(d.file);
+    const quietOpen = d.turn.turn === "open" && now - Math.max(d.last_activity_at, ...side) > 2 * 60_000;
+    return { ...deskRow(d), activity: deskActivity(d.turn, { now, wroteAt: d.last_activity_at, side, held: quietOpen ? held(d) : null }) };
+  });
+}
+
+/**
  * The daemon's desk: `list()` the inventory's rows, `resumable(ref, projectId)` → null, `not_found` (not in this computer's
  * own list, or not under that project) or `in_use` (held). Both read the store afresh; nothing from a phone is trusted.
  */
 export function createDesk({ projects, journal, now = Date.now, home = homedir(), processes = () => claudeProcesses(), platform = process.platform }) {
   const cache = new Map();
   const own = () => new Set(journal.sessions().map((j) => j.agent_session_ref).filter((r) => typeof r === "string"));
-  const scan = () => deskSessions({ home, projects: projects(), exclude: own(), cache });
+  // CLI 0.11.27: ONE scan serves the inventory, a burst of probes and the read-along's resolve (every second while followed) for SCAN_MS; the held check reads its own clock.
+  let scanned = null, scans = 0;
+  const stampOf = (list) => list.map((p) => { try { return `${p.project_id}:${lstatSync(join(home, ".claude", "projects", encodeProjectDir(p.path))).mtimeMs}`; } catch { return `${p.project_id}:-`; } }).join("|"); // a folder's own time moves when a transcript is added or removed
+  const scan = () => { const t = now(), list = projects(), exclude = own(), stamp = `${stampOf(list)}#${[...exclude].sort().join(",")}`; if (scanned && scanned.stamp === stamp && t - scanned.at < SCAN_MS && t >= scanned.at) return scanned.rows; scans += 1; const rows = deskSessions({ home, projects: list, exclude, cache }); scanned = { at: t, stamp, rows }; return rows; };
   return {
-    list: () => (platform === "win32" ? [] : scan().map(deskRow)), // Windows: no process list without a shell, so none is shown free
+    get scans() { return scans; }, // how many times the store was read (the probe-burst test counts it)
+    // Windows: no process list without a shell, so none is shown free. `activity` (CLI 0.11.27): each row's state as well, for a phone that asked it.
+    list: ({ activity = false } = {}) => (platform === "win32" ? [] : activity ? withActivity(scan(), { now: now(), processes }) : scan().map(deskRow)),
     /** For the history (remote-history.mjs): the transcript of a session of this list under that project, or null. Kept on this computer. */
     find(ref, projectId) { const d = platform === "win32" || typeof ref !== "string" ? null : scan().find((x) => x.session_ref === ref && x.project_id === projectId); return d ? { file: d.file, projectPath: d.projectPath, last_activity_at: d.last_activity_at } : null; },
     resumable(ref, projectId) {

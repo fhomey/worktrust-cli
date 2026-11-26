@@ -13,7 +13,13 @@
  *   one command  from a voice peer the daemon takes agent.prompt `voice_ref` and nothing else (`not_allowed`): words only, a
  *                prompt of two minutes at most, one per 20 s and 30 a day per voice key, then the project (granted, listed)
  *                and its newest steerable session (none: `not_found`); `locked: true` reaches only a session in `default`
- *                or `plan` (else `locked_mode`); then every desk-steer rule, unchanged.
+ *                or `plan` (else `locked_mode`); then every desk-steer rule, unchanged. Since CLI 0.11.27 the session may be named
+ *                (pickVoiceSession: `ref` a chosen one of that project, `last` the one this key's last accepted prompt went to,
+ *                within thirty minutes; docs/remote-agents/VOICE-CONVERSATION.md).
+ *   a new one    (owner, 2026-11-26; VOICE-CONVERSATION.md §7 Q1) `new` is the daemon's OWN agent.start (remote-sessions.mjs: journal
+ *                before agent, grant, cap, modes ceiling, approvals in the app), Claude Code with the words as its first prompt, in
+ *                PLAN when locked, else Manual, never above the ceiling (voiceStartPayload); then this key's `last`; its answer
+ *                from its own agent.completed, an approval it waits on said in words (observe). A voice key approves nothing.
  *   what it hears  only the receipts of its OWN commands (gate below; remote-daemon.mjs sealAll): never an inventory, a
  *                history, a live step or an approval; its channel ends after its last receipt or two minutes.
  *   read aloud   (owner, 2026-11-22, also on a locked phone) only when its binding says `read` (the phone's own switch, signed
@@ -38,8 +44,44 @@ const LAST = new Set(["command.agent_accepted", "command.rejected"]);
 
 /** Anything but every switch on (voice, desk steering, read along, the closed turns) is off. */
 export const voiceOff = (s) => steerOff(s) || s?.voice !== true;
-export const loadVoice = () => { const v = readJson("voice.json") ?? {}; return { peers: Array.isArray(v.peers) ? v.peers : [], sends: v.sends && typeof v.sends === "object" ? v.sends : {}, reads: v.reads && typeof v.reads === "object" ? v.reads : {} }; };
-export const saveVoice = (v) => writeJson("voice.json", { v: 1, peers: v.peers, sends: v.sends, reads: v.reads ?? {} });
+export const loadVoice = () => { const v = readJson("voice.json") ?? {}; const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {}); return { peers: Array.isArray(v.peers) ? v.peers : [], sends: obj(v.sends), reads: obj(v.reads), last: obj(v.last) }; };
+/** `last` (CLI 0.11.27): per voice key, the session its last accepted prompt went to `{ project_id, session_ref, at }`, ids only. */
+export const saveVoice = (v) => writeJson("voice.json", { v: 1, peers: v.peers, sends: v.sends, reads: v.reads ?? {}, last: v.last ?? {} });
+/** Keep only the entries of keys still listed (a key removed takes its counts and its last session along). */
+const keptFor = (map, ids) => Object.fromEntries(Object.entries(map ?? {}).filter(([k]) => ids.includes(k)));
+/**
+ * A CONVERSATION'S SESSION (CLI 0.11.27; docs/remote-agents/VOICE-CONVERSATION.md §4): a reply (`session: "last"`) reaches the session
+ * this voice key's last accepted prompt went to only within this long of that prompt (proposed: thirty minutes).
+ */
+export const VOICE_LAST_MS = 30 * 60_000;
+/**
+ * WHICH SESSION A VOICE PROMPT GOES TO (CLI 0.11.27; VOICE-CONVERSATION.md §2, §4, §7 Q1). Pure. `rows`: this computer's desk list,
+ * `steerable(row)`: the desk door's own heartbeat rule, `last`: this voice key's kept last session (or null). → `{ session_ref }`
+ * (a desk session), `{ session_id }` (a session this daemon runs, one a voice prompt started), `{ start: true }` or a reject reason:
+ *   newest  the newest steerable session of the project (phase 1)
+ *   ref     the named session, when it is this project's and steerable; anything else `not_found` (never another session instead)
+ *   last    the kept session, when it is this project's and within VOICE_LAST_MS (a desk one also steerable); else `not_found`
+ *   new     a new session of this daemon's own (owner, 2026-11-26), in the named project
+ */
+export function pickVoiceSession({ ref, rows, steerable, last = null, now }) {
+  const mine = (rows ?? []).filter((d) => d.project_id === ref?.project_id && steerable(d));
+  const one = (sessionRef) => (mine.some((d) => d.session_ref === sessionRef) ? { session_ref: sessionRef } : "not_found");
+  if (ref?.session === "newest") { const newest = mine.sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))[0]; return newest ? { session_ref: newest.session_ref } : "not_found"; }
+  if (ref?.session === "ref") return typeof ref.session_ref === "string" ? one(ref.session_ref) : "not_found";
+  if (ref?.session === "last") return last && last.project_id === ref.project_id && Number.isSafeInteger(last.at) && now - last.at <= VOICE_LAST_MS && now >= last.at - 60_000 ? (typeof last.session_id === "string" ? { session_id: last.session_id } : one(last.session_ref)) : "not_found";
+  if (ref?.session === "new") return { start: true };
+  return "not_found";
+}
+/** A NEW SESSION BY VOICE (owner, 2026-11-26): the mode. Locked → plan (it plans and changes nothing); unlocked → manual (asks before it acts, as a new session from the app with no mode chosen); one the keyboard's ceiling does not allow → `not_allowed`. */
+export const voiceNewMode = (locked, allowed) => ((m) => (allowed.includes(m) ? m : "not_allowed"))(locked ? "plan" : "manual");
+/** The agent.start a voice `new` becomes: Claude Code, the keyboard's default model for it, that mode on its base, no resume, the words as its first prompt; never an effort, an extra project, a file or a name. → the payload, or a reject reason. */
+export function voiceStartPayload({ text, locked, settings, allowed }) {
+  const mode = voiceNewMode(locked, allowed); if (mode === "not_allowed") return mode;
+  return { adapter: "claude-code", model: (settings?.default_adapter ?? "claude-code") === "claude-code" ? settings?.default_model ?? null : null, permission_mode: mode === "plan" ? "plan" : "ask", resume: null, prompt: text, name: null };
+}
+/** A voice-started session waits on an approval: what Siri says (a voice prompt never approves; the app does). */
+export const VOICE_WAITING = "It is waiting for your approval in the WorkTrust app. Siri cannot approve it.";
+const RUN_MODES = ["manual", "plan"]; // the modes a voice prompt starts, and the only ones a LOCKED reply reaches in a session this daemon runs
 /** The last of a key's uses within a day, and whether one more fits `gap` and `perDay`. */
 const within = (list, now) => (list ?? []).filter((at) => Number.isSafeInteger(at) && now - at < DAY_MS && at <= now + 60_000);
 const roomFor = (list, now, gap, perDay) => list.length < perDay && (list.length === 0 || now - Math.max(...list) >= gap);
@@ -70,8 +112,10 @@ export function acceptVoiceEnrol({ settings, phones, voice, sender, payload, iss
 }
 
 export function createVoice(o) {
-  // o: { settings(), phones(), desk, steer, projects(), now(), log(kind, fields), issuerKeys, account, lastAnswer(ref, projectId), answer(peer, body) }
+  // o: { settings(), phones(), desk, steer, projects(), now(), log(kind, fields), issuerKeys, account, lastAnswer(ref, projectId, sessionId?), answer(peer, body), deviceNotice?(phone, label) → "sent" | a reason, listening?(peer) whether a channel of that key is open (CLI 0.11.27),
+  //     a new session by voice (owner, 2026-11-26): mintSession(), allowed() the keyboard's ceiling, start(env, payload) / promptInto(env, payload) the daemon's own sessions (null or a reason), sessionOf(id) its live or journaled record, changed?() }
   const owned = new Map(); // command_id → { peer, kind: "prompt" | "read" }: its receipts (and a reply) go to that key's channel alone
+  const runs = new Map(); // command_id → { phone, session_id, project_id, first }: a voice prompt in a session this daemon runs, until its turn ends (observe)
   const readFlag = new Map(); // voice key → the `read` its binding said at its last handshake (the phone renews the binding at each unlock)
   const live = () => livePeers(loadVoice(), o.phones(), o.now());
   const peerOf = (id) => live().find((v) => v.device_id === id) ?? null;
@@ -98,9 +142,11 @@ export function createVoice(o) {
     if (!o.projects().some((p) => p.project_id === payload.project_id)) return "not_found";
     let rows = [];
     try { rows = o.desk.list().filter((d) => d.project_id === payload.project_id); } catch { return "not_found"; }
-    const newest = rows.sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))[0];
-    if (!newest) return "not_found";
-    const answer = await o.lastAnswer(newest.session_ref, payload.project_id);
+    // `session: "last"` (CLI 0.11.27, a conversation picked up again): the session this key last sent to, read whether or not it is steerable now.
+    const kept = payload.session === "last" ? voice.last[peer.device_id] : null;
+    const target = payload.session === "last" ? pickVoiceSession({ ref: { project_id: payload.project_id, session: "last" }, rows, steerable: () => true, last: kept ?? null, now }) : pickVoiceSession({ ref: { project_id: payload.project_id, session: "newest" }, rows, steerable: () => true, now });
+    if (typeof target === "string") return "not_found";
+    const answer = await o.lastAnswer(target.session_ref ?? null, payload.project_id, target.session_id ?? null); // a session a voice prompt started here: by its own id
     if (typeof answer === "string") return answer;
     if (!say(peer.device_id, null, answer, answer.running === true)) return "not_found"; // before the acceptance: the acceptance ends the channel
     o.log("voice_read", { phone: peer.parent.fingerprint, project_id: payload.project_id });
@@ -128,16 +174,43 @@ export function createVoice(o) {
     saveVoice({ ...voice, sends: { ...voice.sends, [peer.device_id]: [...sent, now].slice(-VOICE_PER_DAY) } });
     if (!o.projects().some((p) => p.project_id === ref.project_id)) return "not_found"; // granted and listed here, by its id only
     let rows = [];
-    try { rows = o.desk.list().filter((d) => d.project_id === ref.project_id && o.steer.steerable(d, settings)); } catch { return "not_found"; }
-    const newest = rows.sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))[0];
-    if (!newest) return "not_found";
+    try { rows = ref.session === "new" ? [] : o.desk.list(); } catch { return "not_found"; }
+    // CLI 0.11.27 (VOICE-CONVERSATION.md §2, §4): the newest, a chosen one, the conversation's last, or (owner, 2026-11-26) a new one.
+    const picked = pickVoiceSession({ ref, rows, steerable: (d) => o.steer.steerable(d, settings), last: voice.last[peer.device_id] ?? null, now });
+    if (typeof picked === "string") return picked;
+    const newest = picked;
     // Voice audit P2-1: "sent unlocked" is believed only with the unlock key's signature over this command id (that key is readable
     // on the phone only while it is unlocked); without it, or with one that does not verify under the binding's unlock_pub, the
     // prompt counts as sent LOCKED (default and plan only), whatever `locked` says.
     const locked = !unlockedSend(peer, env.command_id, ref);
+    if (newest.start || newest.session_id) return ran(env, peer, ref, now, locked, newest.start ? startNew(env, payload.text, ref, locked) : replyInto(env, payload.text, newest.session_id, locked));
     const out = o.steer.prompt(env, { text: payload.text, desk_ref: { session_ref: newest.session_ref, project_id: ref.project_id } }, { voice: true, modes: locked ? P.VOICE_LOCKED_MODES : null, route: ref.route });
     if (out !== null) return out;
-    o.log("voice_steered", { phone: peer.parent.fingerprint, locked, project_id: ref.project_id });
+    const after = loadVoice(); // the conversation's session: a reply (`session: "last"`) goes here, ids only
+    saveVoice({ ...after, last: { ...after.last, [peer.device_id]: { project_id: ref.project_id, session_ref: newest.session_ref, at: now } } });
+    o.log("voice_steered", { phone: peer.parent.fingerprint, locked, project_id: ref.project_id, session: ref.session });
+    return null;
+  }
+  /** `new`: the daemon's own agent.start in the granted project, the spoken words its first prompt. → { session_id } or a reason. */
+  function startNew(env, text, ref, locked) {
+    const payload = voiceStartPayload({ text, locked, settings: o.settings(), allowed: o.allowed?.() ?? ["manual", "plan"] }); if (typeof payload === "string") return payload;
+    const sessionId = o.mintSession(), out = o.start({ ...env, type: "agent.start", session_id: sessionId, project_id: ref.project_id }, payload);
+    return out === null ? { session_id: sessionId } : out;
+  }
+  /** A reply (`last`) into the session a voice prompt started here: locked, only while it runs in manual or plan. → { session_id } or a reason. */
+  function replyInto(env, text, sessionId, locked) {
+    const s = o.sessionOf?.(sessionId) ?? null, mode = s ? s.agentMode ?? s.agent_mode ?? (s.mode === "plan" ? "plan" : "manual") : null;
+    if (!s || s.closed) return "not_found"; if (locked && !RUN_MODES.includes(mode)) return "locked_mode";
+    const out = o.promptInto({ ...env, session_id: sessionId }, { text });
+    return out === null ? { session_id: sessionId } : out;
+  }
+  /** Either way: the session is this key's `last` (ids only) and its turn is watched for the answer (observe). */
+  function ran(env, peer, ref, now, locked, out) {
+    if (typeof out === "string") { o.log("voice_refused", { reason: out, session: ref.session }); return out; }
+    const after = loadVoice(); saveVoice({ ...after, last: { ...after.last, [peer.device_id]: { project_id: ref.project_id, session_id: out.session_id, at: now } } });
+    runs.set(env.command_id, { phone: peer.device_id, session_id: out.session_id, project_id: ref.project_id, first: now });
+    o.log(ref.session === "new" ? "voice_started" : "voice_steered", { phone: peer.parent.fingerprint, locked, project_id: ref.project_id, session: ref.session });
+    o.changed?.();
     return null;
   }
 
@@ -145,7 +218,6 @@ export function createVoice(o) {
     enrol, prompt, isVoice, mayRead,
     /** Everything a voice key sends: its prompt, or (reading aloud) the last reply; nothing else (`not_allowed`). */
     handle: (env, payload) => (env.type === "voice.read_last" ? readLast(env, payload) : prompt(env, payload)),
-    /** A voice hello's binding (handshake): what it says of reading, as the phone set it at its last unlock. */
     /** A voice hello the handshake accepted: its binding's read flag, expiry and iat are kept (P2-3: the renewed binding is the one that counts). */
     opened(binding) {
       if (binding?.kind !== "voice") return;
@@ -155,25 +227,51 @@ export function createVoice(o) {
     },
     /** Whether a voice hello's binding is not older than the newest seen for that key (P2-1); the daemon refuses it otherwise. */
     fresh: (binding) => binding?.kind !== "voice" || bindingFresh(loadVoice(), binding),
-    /** The steer mod said the turn a voice prompt started ENDED: its reply, to that key alone, if both gates let it read. */
     /**
      * "ANSWER READY" (build 31, protocol device-notice.ts): a voice-steered desk turn ended (the steer mod's `ended`): its voice
      * key's PARENT phone gets the content-free device notice, sealed under that phone's notice key, only if that phone asked
      * `voice_notice` (the daemon's deviceNotice checks it). Two names and the time; nothing the agent wrote.
      */
+    /**
+     * CLI 0.11.27 (VOICE-CONVERSATION.md §1.2 Break 2b, Break 3): sent to the parent whether or not the daemon heard its `voice_notice`
+     * probe since it started (that set is memory only, empty after every restart until the APP connects; a phone holding a voice key
+     * here is build 31 or newer, which opens device notices), and said in the log with a reason when not sent. → "sent" or the reason.
+     */
     answerReady(p) {
-      if (!p?.voice) return false;
+      if (!p?.voice) return "not_voice";
+      const told = (outcome) => { o.log("voice_ready", outcome === "sent" ? { sent: true } : { sent: false, reason: outcome }); return outcome; };
       const key = loadVoice().peers.find((v) => v.device_id === p.phone), parent = key?.parent?.device_id;
-      if (!parent || !o.phones().confirmed.some((x) => x.device_id === parent) || typeof o.deviceNotice !== "function") return false;
+      if (!parent) return told("no_key");
+      if (!o.phones().confirmed.some((x) => x.device_id === parent)) return told("no_parent");
+      if (typeof o.deviceNotice !== "function") return told("no_door");
       const project = o.projects().find((x) => x.project_id === p.project_id);
-      return o.deviceNotice(parent, project ? String(project.path ?? "").split(/[\\/]/).filter(Boolean).at(-1) ?? null : null);
+      return told(o.deviceNotice(parent, project ? String(project.path ?? "").split(/[\\/]/).filter(Boolean).at(-1) ?? null : null) === "sent" ? "sent" : "no_notice_key");
     },
-    async replyAfter(commandId, p) {
-      const mine = owned.get(commandId);
-      if (!p?.voice || !mine || mine.kind !== "prompt" || !mayRead(mine.peer)) return;
-      const answer = await o.lastAnswer(p.ref, p.project_id);
-      if (typeof answer === "string" || (Number.isSafeInteger(answer.at) && answer.at < p.first - 1_000)) return; // never an older reply
-      say(mine.peer, commandId, answer, false);
+    /** The reply to a voice key's own prompt, read aloud only while Siri still listens on its channel (VOICE-CONVERSATION.md Break 1); logged either way, never its words. */
+    async replyAfter(commandId, p, given = null) { // `given`: the answer a session this daemon runs said in its own agent.completed (observe)
+      const mine = owned.get(commandId), not = (reason) => { o.log("voice_answer", { said: false, reason }); };
+      if (!p?.voice) return;
+      if (!mine || mine.kind !== "prompt") return not("not_mine");
+      if (!mayRead(mine.peer)) return not("not_reading");
+      if (typeof o.listening === "function" && !o.listening(mine.peer)) return not("siri_gone");
+      const answer = given ?? await o.lastAnswer(p.ref, p.project_id);
+      if (typeof answer === "string") return not("unreadable");
+      if (Number.isSafeInteger(answer.at) && answer.at < p.first - 1_000) return not("older"); // never an older reply
+      o.log("voice_answer", say(mine.peer, commandId, answer, false) ? { said: true } : { said: false, reason: "empty" });
+    },
+    /** A session a voice prompt started or continued here (owner, 2026-11-26), every journaled event: the desk turn's `ended` road. An approval it waits on is said in words (the app approves); agent.completed is read aloud (replyAfter's gates) and "Answer ready" sent; failed or stopped ends the watch. */
+    observe(record) {
+      const run = runs.get(record?.command_id), mine = run ? owned.get(record.command_id) : null;
+      if (!run || !mine) return null;
+      const p = { voice: true, phone: run.phone, session_id: run.session_id, project_id: run.project_id, first: run.first };
+      if (record.type === "agent.attention" && record.body?.needs === "approval") { const can = mayRead(mine.peer) && (typeof o.listening !== "function" || o.listening(mine.peer)); o.log("voice_waiting", { said: can && say(mine.peer, record.command_id, { text: VOICE_WAITING }, true) }); return null; }
+      if (record.type === "agent.failed" || record.type === "agent.stopped") { runs.delete(record.command_id); o.log("voice_answer", { said: false, reason: record.type === "agent.failed" ? "failed" : "stopped" }); return null; }
+      if (record.type !== "agent.completed") return null;
+      runs.delete(record.command_id);
+      const text = record.body?.result?.answer ?? record.body?.summary ?? "";
+      const reading = this.replyAfter(record.command_id, p, { text, at: record.occurred_at, running: false }).catch(() => o.log("voice_answer_failed", {}));
+      this.answerReady(p);
+      return reading;
     },
     /** Whether this phone's voice key is enrolled here (device.inventory `voice.enrolled`, for that phone alone). */
     enrolledFor: (phone) => live().some((v) => v.parent?.device_id === phone),
@@ -189,7 +287,7 @@ export function createVoice(o) {
      */
     gate(channel, record) {
       const peer = channel.peer_device_id, voice = isVoice(peer) || [...owned.values()].some((m) => m.peer === peer);
-      if (!voice) return record && (owned.has(record.command_id) || record.type === "voice.answer") ? "skip" : "send";
+      if (!voice) return record && ((owned.has(record.command_id) && HEARS.has(record.type)) || record.type === "voice.answer") ? "skip" : "send"; // a voice command's receipts and answers are its key's alone; a session it started is the phone's to see and approve
       if (!isVoice(peer) || o.now() - (channel.established_at ?? 0) > VOICE_CHANNEL_MS) return "drop";
       if (record?.type === "voice.answer") { // the reply to its own prompt (ends the channel), or its read_last answer, sealed before that command's acceptance
         if (record.lane !== "transient") return "skip";
@@ -205,7 +303,7 @@ export function createVoice(o) {
     /** A phone or a voice key gone (removed here, unpaired, revoked): its voice keys go. → the voice keys removed. */
     drop(deviceId) {
       const voice = loadVoice(), gone = voice.peers.filter((v) => v.device_id === deviceId || v.parent?.device_id === deviceId).map((v) => v.device_id);
-      if (gone.length) { saveVoice({ peers: voice.peers.filter((v) => !gone.includes(v.device_id)), sends: Object.fromEntries(Object.entries(voice.sends).filter(([k]) => !gone.includes(k))), reads: Object.fromEntries(Object.entries(voice.reads).filter(([k]) => !gone.includes(k))) }); o.log("voice_removed", { count: gone.length }); } // audit P3-4: the other keys' reads stay
+      if (gone.length) { const ids = voice.peers.map((v) => v.device_id).filter((id) => !gone.includes(id)); saveVoice({ peers: voice.peers.filter((v) => !gone.includes(v.device_id)), sends: keptFor(voice.sends, ids), reads: keptFor(voice.reads, ids), last: keptFor(voice.last, ids) }); o.log("voice_removed", { count: gone.length }); } // audit P3-4: the other keys' reads stay
       return gone;
     },
   };
@@ -241,7 +339,8 @@ export async function voiceCommand(io, rest, { apply, settings }) { // `read on|
   if (rest[0] === "remove") {
     const voice = loadVoice(), named = rest[1] ? String(rest[1]).toUpperCase() : null;
     const gone = voice.peers.filter((v) => !named || v.fingerprint === named || v.parent?.fingerprint === named);
-    saveVoice({ peers: voice.peers.filter((v) => !gone.includes(v)), sends: Object.fromEntries(Object.entries(voice.sends).filter(([k]) => !gone.some((v) => v.device_id === k))), reads: Object.fromEntries(Object.entries(voice.reads).filter(([k]) => !gone.some((v) => v.device_id === k))) }); // audit P3-4: the other keys' reads stay
+    const ids = voice.peers.filter((v) => !gone.includes(v)).map((v) => v.device_id);
+    saveVoice({ peers: voice.peers.filter((v) => !gone.includes(v)), sends: keptFor(voice.sends, ids), reads: keptFor(voice.reads, ids), last: keptFor(voice.last, ids) }); // audit P3-4: the other keys' reads stay
     return io.say(gone.length ? `  ✓ Removed ${gone.length} voice key${gone.length === 1 ? "" : "s"}${named ? ` of phone ${named}` : ""}. The phone can enrol a new one while voice is on.` : "  No voice key to remove.");
   }
   if (rest[0] !== undefined && rest[0] !== "status") return io.fail("npx worktrust remote voice on|off | read on|off | remove [<fingerprint>] | status");
